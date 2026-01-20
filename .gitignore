@@ -71,3 +71,6 @@ artifacts/
 # Rider
 .idea/
 *.sln.iml
+
+# Release packages
+*.zip
