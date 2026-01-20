@@ -15,20 +15,39 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 
 ## Prerequisites
 
-1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
-2. **Node.js** - Required for the Copilot CLI runtime
-3. **GitHub Copilot SDK CLI** - The .NET SDK communicates with Copilot via a CLI subprocess:
+**For pre-built release:**
+1. **Windows x64** operating system
+2. **Node.js** - Required for the Copilot CLI runtime - [Download](https://nodejs.org/)
+3. **GitHub Copilot SDK CLI** - Install via npm:
    ```bash
    npm install -g @github/copilot-sdk
    ```
 4. **GitHub Copilot Access** - Active GitHub Copilot subscription
 
-> **Note**: The GitHub.Copilot.SDK NuGet package (already included in the project) provides the .NET API. The npm package provides the CLI runtime that the SDK spawns internally for JSON-RPC communication with the Copilot API.
+**For building from source:**
+1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
+2. All prerequisites listed above
+
+> **Note**: The pre-built release includes a self-contained .NET runtime, so you don't need to install .NET SDK unless you're building from source.
 
 ## Installation
 
+### Option 1: Download Pre-built Release (Recommended)
+
+1. **Download the latest release** from [Releases](https://github.com/sasler/TroubleScout/releases)
+2. **Extract** `TroubleScout.exe` and the `runtimes/` folder to a directory
+3. **Install prerequisites**:
+   - [Node.js](https://nodejs.org/) (for Copilot CLI runtime)
+   - Install GitHub Copilot CLI: `npm install -g @github/copilot-sdk`
+4. **Run** `TroubleScout.exe` from the command line
+
+> **Note**: The release includes a self-contained .NET runtime - no .NET SDK installation required!
+
+### Option 2: Build from Source
+
 ```bash
-# Clone or download the project
+# Clone the repository
+git clone https://github.com/sasler/TroubleScout.git
 cd TroubleScout
 
 # Build the project
@@ -38,22 +57,36 @@ dotnet build
 dotnet run
 ```
 
+**Build a self-contained executable:**
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+# Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe
+```
+
 ## Usage
 
 ### Interactive Mode (Default)
 
 ```bash
-# Troubleshoot localhost
+# Using pre-built release
+TroubleScout.exe
+
+# Using source build
 dotnet run
 
 # Troubleshoot a remote server
+TroubleScout.exe --server myserver.domain.com
+# or
 dotnet run -- --server myserver.domain.com
 ```
 
 ### Headless Mode
 
 ```bash
-# Single prompt execution for scripting
+# Single prompt execution for scripting (pre-built release)
+TroubleScout.exe --server localhost --prompt "Check why the SQL Server service is stopped"
+
+# Using source build
 dotnet run -- --server localhost --prompt "Check why the SQL Server service is stopped"
 ```
 
