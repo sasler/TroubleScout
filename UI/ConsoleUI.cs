@@ -179,6 +179,14 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Creates a live thinking indicator that can be updated and stopped
+    /// </summary>
+    public static LiveThinkingIndicator CreateLiveThinkingIndicator()
+    {
+        return new LiveThinkingIndicator();
+    }
+
+    /// <summary>
     /// Run an async task with an animated spinner
     /// </summary>
     public static async Task<T> RunWithSpinnerAsync<T>(string message, Func<Action<string>, Task<T>> action)
@@ -433,5 +441,105 @@ public static class ConsoleUI
             }
             _cts.Dispose();
         }
+    }
+}
+
+/// <summary>
+/// A live thinking indicator that shows animated status and can be updated or stopped
+/// </summary>
+public class LiveThinkingIndicator : IDisposable
+{
+    private readonly CancellationTokenSource _cts = new();
+    private string _currentStatus = "Thinking...";
+    private bool _isRunning;
+    private bool _hasStartedResponse;
+    private readonly object _lock = new();
+    private Task? _spinnerTask;
+    private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
+    private int _spinnerIndex;
+
+    public void Start()
+    {
+        lock (_lock)
+        {
+            if (_isRunning) return;
+            _isRunning = true;
+            _hasStartedResponse = false;
+        }
+
+        _spinnerTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    lock (_lock)
+                    {
+                        if (_hasStartedResponse) break;
+                        
+                        // Clear the current line and write status
+                        Console.Write($"\r\x1b[K[cyan]{_currentStatus}{SpinnerFrames[_spinnerIndex]}[/]".Replace("[cyan]", "\u001b[36m").Replace("[/]", "\u001b[0m"));
+                        _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+                    }
+                    await Task.Delay(200, _cts.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+        });
+    }
+
+    public void UpdateStatus(string status)
+    {
+        lock (_lock)
+        {
+            _currentStatus = status;
+        }
+    }
+
+    public void ShowToolExecution(string toolName)
+    {
+        lock (_lock)
+        {
+            _currentStatus = $"Running {toolName}";
+        }
+    }
+
+    public void StopForResponse()
+    {
+        lock (_lock)
+        {
+            if (_hasStartedResponse) return;
+            _hasStartedResponse = true;
+            
+            // Clear the status line
+            Console.Write("\r\x1b[K");
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        
+        lock (_lock)
+        {
+            if (!_hasStartedResponse)
+            {
+                // Clear the status line if we haven't started a response
+                Console.Write("\r\x1b[K");
+            }
+        }
+        
+        try
+        {
+            _spinnerTask?.Wait(TimeSpan.FromSeconds(1));
+        }
+        catch
+        {
+            // Ignore
+        }
+        _cts.Dispose();
     }
 }

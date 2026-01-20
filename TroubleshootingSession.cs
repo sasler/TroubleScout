@@ -120,6 +120,7 @@ public class TroubleshootingSession : IAsyncDisposable
             updateStatus?.Invoke("Detecting AI model...");
             
             var modelCaptured = new TaskCompletionSource<bool>();
+            var sessionIdle = new TaskCompletionSource<bool>();
             using var subscription = _copilotSession.On(evt =>
             {
                 switch (evt)
@@ -143,8 +144,9 @@ public class TroubleshootingSession : IAsyncDisposable
                         }
                         break;
                     case SessionIdleEvent:
-                        // Session finished, set result even if no model was found
+                        // Session finished processing
                         modelCaptured.TrySetResult(true);
+                        sessionIdle.TrySetResult(true);
                         break;
                 }
             });
@@ -152,8 +154,8 @@ public class TroubleshootingSession : IAsyncDisposable
             // Send a minimal message to get the model info from usage events
             await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
             
-            // Wait for model info or timeout
-            await Task.WhenAny(modelCaptured.Task, Task.Delay(10000));
+            // Wait for session to become idle (consume all streaming response)
+            await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
             
             _isInitialized = true;
             return true;
@@ -203,6 +205,7 @@ public class TroubleshootingSession : IAsyncDisposable
             updateStatus?.Invoke("Verifying model...");
             
             var modelCaptured = new TaskCompletionSource<bool>();
+            var sessionIdle = new TaskCompletionSource<bool>();
             using var subscription = _copilotSession.On(evt =>
             {
                 switch (evt)
@@ -222,12 +225,15 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     case SessionIdleEvent:
                         modelCaptured.TrySetResult(true);
+                        sessionIdle.TrySetResult(true);
                         break;
                 }
             });
 
             await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
-            await Task.WhenAny(modelCaptured.Task, Task.Delay(10000));
+            
+            // Wait for session to become idle (consume all streaming response)
+            await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
 
             return true;
         }
@@ -344,31 +350,64 @@ public class TroubleshootingSession : IAsyncDisposable
 
         try
         {
-            ConsoleUI.StartAIResponse();
-
             var done = new TaskCompletionSource<bool>();
             var hasError = false;
+            var hasStartedStreaming = false;
+            var processedDeltaIds = new HashSet<string>();
+            
+            // Create a live thinking indicator (manually disposed before recursive calls)
+            var thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
+            thinkingIndicator.Start();
 
-            // Subscribe to session events for streaming
-            using var subscription = _copilotSession.On(evt =>
+            // Subscribe to session events for streaming (manually disposed before recursive calls)
+            var subscription = _copilotSession.On(evt =>
             {
                 switch (evt)
                 {
+                    case AssistantTurnStartEvent:
+                        // AI has started processing
+                        thinkingIndicator.UpdateStatus("Analyzing");
+                        break;
+                    
+                    case ToolExecutionStartEvent toolStart:
+                        // Show which tool is being executed
+                        thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
+                        break;
+                    
+                    case ToolExecutionCompleteEvent:
+                        // Tool finished, back to thinking
+                        thinkingIndicator.UpdateStatus("Processing results");
+                        break;
+                    
                     case AssistantMessageDeltaEvent delta:
+                        // Skip if we've already processed this event (deduplicate)
+                        if (!processedDeltaIds.Add(delta.Id.ToString()))
+                            break;
+                        
+                        // First streaming chunk - stop the spinner and start response
+                        if (!hasStartedStreaming)
+                        {
+                            hasStartedStreaming = true;
+                            thinkingIndicator.StopForResponse();
+                            ConsoleUI.StartAIResponse();
+                        }
                         // Streaming message chunk - print incrementally
                         ConsoleUI.WriteAIResponse(delta.Data?.DeltaContent ?? "");
                         break;
                     
                     case AssistantMessageEvent msg:
                         // Final message received (non-streaming fallback)
-                        if (!string.IsNullOrEmpty(msg.Data?.Content))
+                        if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
-                            // Only write if we haven't been streaming
-                            // The delta events would have already printed the content
+                            thinkingIndicator.StopForResponse();
+                            ConsoleUI.StartAIResponse();
+                            ConsoleUI.WriteAIResponse(msg.Data.Content);
+                            hasStartedStreaming = true;
                         }
                         break;
                     
                     case SessionErrorEvent errorEvent:
+                        thinkingIndicator.StopForResponse();
                         ConsoleUI.EndAIResponse();
                         ConsoleUI.ShowError("Session Error", errorEvent.Data?.Message ?? "Unknown error");
                         hasError = true;
@@ -387,10 +426,20 @@ public class TroubleshootingSession : IAsyncDisposable
             
             // Wait for completion
             await done.Task;
+            
+            // Explicitly dispose subscription BEFORE processing approvals
+            // This prevents duplicate event handling when SendMessageAsync is called recursively
+            subscription.Dispose();
 
-            ConsoleUI.EndAIResponse();
+            if (hasStartedStreaming)
+            {
+                ConsoleUI.EndAIResponse();
+            }
+            
+            // Dispose thinking indicator before processing approvals
+            thinkingIndicator.Dispose();
 
-            // Handle any pending approval commands
+            // Handle any pending approval commands (may call SendMessageAsync recursively)
             if (!hasError)
             {
                 await ProcessPendingApprovalsAsync();

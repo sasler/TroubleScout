@@ -145,6 +145,14 @@ public class PowerShellExecutor : IDisposable
             "Reset-", "Invoke-", "Register-", "Unregister-", "Grant-", "Revoke-",
             "Mount-", "Dismount-", "Format-", "Initialize-"
         };
+        
+        // Safe cmdlet prefixes (read-only operations)
+        var safePrefixes = new[]
+        {
+            "Get-", "Format-", "Select-", "Where-", "Sort-", "Group-", 
+            "Measure-", "Test-", "ConvertTo-", "ConvertFrom-", "Compare-",
+            "Find-", "Search-", "Resolve-"
+        };
 
         // Split by common statement separators
         var statements = command
@@ -155,23 +163,33 @@ public class PowerShellExecutor : IDisposable
 
         foreach (var statement in statements)
         {
-            // Skip variable assignments and object declarations
-            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@"))
+            // Skip variable assignments, object declarations, and block delimiters
+            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@") ||
+                statement.StartsWith("{") || statement.StartsWith("}") || statement.StartsWith("(") ||
+                statement.StartsWith(")"))
                 continue;
-
-            // Skip formatting and selection cmdlets (safe read operations)
-            if (statement.StartsWith("Format-") || statement.StartsWith("Select-") || 
-                statement.StartsWith("Where-") || statement.StartsWith("Sort-") ||
-                statement.StartsWith("Group-") || statement.StartsWith("Measure-"))
+            
+            // Skip property assignments inside objects (PropertyName = Value)
+            if (statement.Contains(" = ") && !statement.Contains("-"))
                 continue;
 
             // Check each part of piped commands
             var pipeParts = statement.Split('|').Select(p => p.Trim());
             foreach (var part in pipeParts)
             {
+                if (string.IsNullOrEmpty(part)) continue;
+                
+                // Skip parts that are just block delimiters
+                if (part.StartsWith("{") || part.StartsWith("}") || part == "{" || part == "}")
+                    continue;
+                
                 var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
                 if (words.Length == 0) continue;
                 var cmdlet = words[0];
+                
+                // Skip if it's not a cmdlet (no dash, or starts with special chars)
+                if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
+                    continue;
 
                 // If it's a dangerous cmdlet, the script is not read-only
                 foreach (var dangerous in dangerousPrefixes)
