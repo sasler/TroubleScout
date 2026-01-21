@@ -136,22 +136,18 @@ public class PowerShellExecutor : IDisposable
     /// </summary>
     private bool IsReadOnlyScript(string command)
     {
-        // Define write/modify cmdlet prefixes that require approval
-        var dangerousPrefixes = new[]
-        {
-            "Set-", "Start-", "Stop-", "Restart-", "Remove-", "Clear-",
-            "New-", "Add-", "Enable-", "Disable-", "Install-", "Uninstall-",
-            "Update-", "Move-", "Copy-", "Rename-", "Write-", "Out-File",
-            "Reset-", "Invoke-", "Register-", "Unregister-", "Grant-", "Revoke-",
-            "Mount-", "Dismount-", "Format-", "Initialize-"
-        };
-        
         // Safe cmdlet prefixes (read-only operations)
         var safePrefixes = new[]
         {
-            "Get-", "Format-", "Select-", "Where-", "Sort-", "Group-", 
+            "Get-", "Select-", "Where-", "Sort-", "Group-", 
             "Measure-", "Test-", "ConvertTo-", "ConvertFrom-", "Compare-",
-            "Find-", "Search-", "Resolve-"
+            "Find-", "Search-", "Resolve-", "Out-String", "Out-Null"
+        };
+        
+        // Specific safe Format-* cmdlets (Format-Volume is NOT safe)
+        var safeFormatCmdlets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide"
         };
 
         // Split by common statement separators
@@ -191,13 +187,19 @@ public class PowerShellExecutor : IDisposable
                 if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
                     continue;
 
-                // If it's a dangerous cmdlet, the script is not read-only
-                foreach (var dangerous in dangerousPrefixes)
+                // Check if it's a safe cmdlet prefix
+                var isSafe = safePrefixes.Any(prefix => cmdlet.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+                
+                // Special handling for Format-* cmdlets
+                if (!isSafe && cmdlet.StartsWith("Format-", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (cmdlet.StartsWith(dangerous, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return false;
-                    }
+                    isSafe = safeFormatCmdlets.Contains(cmdlet);
+                }
+                
+                // If not explicitly safe, the script requires approval
+                if (!isSafe)
+                {
+                    return false;
                 }
             }
         }
