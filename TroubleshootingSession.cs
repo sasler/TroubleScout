@@ -19,31 +19,49 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _selectedModel;
     private string? _copilotVersion;
 
-    private static readonly SystemMessageConfig SystemMessageConfig = new()
+    private readonly SystemMessageConfig _systemMessageConfig;
+
+    private SystemMessageConfig CreateSystemMessage(string targetServer)
     {
-        Content = """
+        var targetInfo = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            ? "the local machine (localhost)"
+            : $"the remote server: {targetServer}";
+
+        return new SystemMessageConfig
+        {
+            Content = $"""
             You are TroubleScout, an expert Windows Server troubleshooting assistant. 
             Your role is to diagnose issues on Windows servers by analyzing system data and providing actionable insights.
 
+            ## Target Server Context
+            - You are currently connected to {targetInfo}
+            - ALL commands and diagnostic operations will execute on this target server
+            - When gathering data or making observations, you MUST always state which server the data comes from
+            - Always verify that the data you receive is from the expected target server
+            - If the user doesn't specify a server in their question, assume they mean the current target: {targetServer}
+
             ## Your Capabilities
-            - Execute read-only PowerShell commands (Get-*) to gather diagnostic information
+            - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
             ## Troubleshooting Approach
             1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
-            2. **Gather Data**: Use the diagnostic tools to collect relevant information
-            3. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
-            4. **Diagnose**: Form hypotheses about the root cause based on evidence
-            5. **Recommend**: Provide clear, actionable next steps
+            2. **Gather Data**: Use the diagnostic tools to collect relevant information FROM THE TARGET SERVER
+            3. **Verify Source**: Always confirm the data comes from {targetServer} by checking $env:COMPUTERNAME
+            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
+            5. **Diagnose**: Form hypotheses about the root cause based on evidence
+            6. **Recommend**: Provide clear, actionable next steps
 
             ## Response Format
+            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {targetServer}...")
             - Be concise but thorough
             - Use bullet points for lists
             - Highlight critical findings with **bold**
             - For remediation commands (non-Get commands), explain what they do and why they're needed
             - Always explain your reasoning
+            - When presenting diagnostic data, include the source server name in your explanation
 
             ## Safety
             - Only read-only Get-* commands execute automatically
@@ -51,17 +69,20 @@ public class TroubleshootingSession : IAsyncDisposable
             - Never suggest commands that could cause data loss without clear warnings
             - Always consider the impact of recommended actions
 
-            Remember: Your goal is to help the user understand what's wrong and guide them to a solution, 
-            not just dump raw data. Interpret the findings and provide expert analysis.
+            Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
+            not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
+            server you're working on.
             """
-    };
+        };
+    }
 
     public TroubleshootingSession(string targetServer, string? model = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _requestedModel = model;
+        _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
     }
 
     private readonly string? _requestedModel;
@@ -81,14 +102,18 @@ public class TroubleshootingSession : IAsyncDisposable
 
         try
         {
-            // Test PowerShell connection
+            // Test PowerShell connection and verify target
             updateStatus?.Invoke($"Connecting to {_targetServer}...");
             
-            if (!await _executor.TestConnectionAsync())
+            var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
+            if (!connectionSuccess)
             {
-                ConsoleUI.ShowError("Connection Failed", $"Unable to connect to {_targetServer}");
+                ConsoleUI.ShowError("Connection Failed", connectionError ?? $"Unable to connect to {_targetServer}");
                 return false;
             }
+
+            // Show verified connection
+            updateStatus?.Invoke($"Connected to {_executor.ActualComputerName}...");
 
             // Initialize Copilot client
             updateStatus?.Invoke("Starting Copilot SDK...");
@@ -109,7 +134,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var config = new SessionConfig
             {
                 Model = _requestedModel,
-                SystemMessage = SystemMessageConfig,
+                SystemMessage = _systemMessageConfig,
                 Streaming = true,
                 Tools = _diagnosticTools.GetTools().ToList()
             };
@@ -194,7 +219,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var config = new SessionConfig
             {
                 Model = newModel,
-                SystemMessage = SystemMessageConfig,
+                SystemMessage = _systemMessageConfig,
                 Streaming = true,
                 Tools = _diagnosticTools.GetTools().ToList()
             };

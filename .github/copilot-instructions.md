@@ -83,7 +83,15 @@ dotnet run -- --server localhost
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 
 # Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe + runtimes/
+# NOTE: When releasing, only distribute TroubleScout.exe and the runtimes/ folder (if it exists).
+# The runtimes/ folder contains native dependencies (PowerShell SDK) that cannot be embedded.
+# Do NOT release all files from the publish directory—only .exe and runtimes/ folder.
+# Use GitHub CLI for releases: gh release create v<version> TroubleScout.exe ./runtimes/ --generate-notes
 ```
+
+## Development Workflow
+
+**ALWAYS build after making code changes**: After editing any `.cs` files, run `dotnet build` to check for compilation errors. Use the `get_errors` tool to verify no issues remain. Fix any build errors before proceeding with additional changes or considering the task complete.
 
 ## File Conventions
 

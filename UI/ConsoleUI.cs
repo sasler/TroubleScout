@@ -1,3 +1,4 @@
+using System.Text;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -209,8 +210,11 @@ public static class ConsoleUI
     {
         if (!isComplete)
         {
-            // For streaming, write directly without markup processing
-            Console.Write(text);
+            // Buffer the text for markdown processing
+            _streamBuffer.Append(text);
+            
+            // Process and output any complete segments
+            FlushStreamBuffer(forceFlush: false);
         }
         else
         {
@@ -218,11 +222,163 @@ public static class ConsoleUI
         }
     }
 
+    private static readonly StringBuilder _streamBuffer = new();
+    private static bool _inBold;
+    private static bool _inCode;
+    private static bool _inCodeBlock;
+
+    /// <summary>
+    /// Reset the stream buffer state (call at start of new response)
+    /// </summary>
+    public static void ResetStreamBuffer()
+    {
+        _streamBuffer.Clear();
+        _inBold = false;
+        _inCode = false;
+        _inCodeBlock = false;
+    }
+
+    /// <summary>
+    /// Flush the stream buffer, converting markdown to ANSI
+    /// </summary>
+    private static void FlushStreamBuffer(bool forceFlush)
+    {
+        var content = _streamBuffer.ToString();
+        if (string.IsNullOrEmpty(content)) return;
+
+        var output = new StringBuilder();
+        int i = 0;
+
+        while (i < content.Length)
+        {
+            // Check for code block (```)
+            if (i + 2 < content.Length && content[i] == '`' && content[i + 1] == '`' && content[i + 2] == '`')
+            {
+                // Only process if we can see the end or are forcing
+                if (_inCodeBlock)
+                {
+                    output.Append("\x1b[0m"); // Reset
+                    _inCodeBlock = false;
+                    i += 3;
+                    // Skip optional language identifier on opening
+                    while (i < content.Length && content[i] != '\n' && content[i] != '\r')
+                        i++;
+                    continue;
+                }
+                else
+                {
+                    output.Append("\x1b[90m"); // Gray for code block
+                    _inCodeBlock = true;
+                    i += 3;
+                    // Skip optional language identifier
+                    while (i < content.Length && content[i] != '\n' && content[i] != '\r')
+                        i++;
+                    continue;
+                }
+            }
+
+            // Inside code block, just output as-is
+            if (_inCodeBlock)
+            {
+                output.Append(content[i]);
+                i++;
+                continue;
+            }
+
+            // Check for bold (**text**)
+            if (i + 1 < content.Length && content[i] == '*' && content[i + 1] == '*')
+            {
+                if (_inBold)
+                {
+                    output.Append("\x1b[0m"); // Reset
+                    _inBold = false;
+                }
+                else
+                {
+                    output.Append("\x1b[1;33m"); // Bold yellow
+                    _inBold = true;
+                }
+                i += 2;
+                continue;
+            }
+
+            // Check for inline code (`text`)
+            if (content[i] == '`')
+            {
+                if (_inCode)
+                {
+                    output.Append("\x1b[0m"); // Reset
+                    _inCode = false;
+                }
+                else
+                {
+                    output.Append("\x1b[36m"); // Cyan for inline code
+                    _inCode = true;
+                }
+                i++;
+                continue;
+            }
+
+            // Check for headers (## at start of line)
+            if (content[i] == '#' && (i == 0 || content[i - 1] == '\n'))
+            {
+                int headerLevel = 0;
+                while (i < content.Length && content[i] == '#')
+                {
+                    headerLevel++;
+                    i++;
+                }
+                // Skip space after #
+                if (i < content.Length && content[i] == ' ')
+                    i++;
+                
+                // Output header formatting
+                output.Append("\x1b[1;36m"); // Bold cyan for headers
+                
+                // Find end of line and output
+                while (i < content.Length && content[i] != '\n')
+                {
+                    output.Append(content[i]);
+                    i++;
+                }
+                output.Append("\x1b[0m"); // Reset after header
+                continue;
+            }
+
+            // Check for bullet points
+            if (content[i] == '-' && i + 1 < content.Length && content[i + 1] == ' ' && 
+                (i == 0 || content[i - 1] == '\n'))
+            {
+                output.Append("\x1b[32m-\x1b[0m"); // Green bullet
+                i++;
+                continue;
+            }
+
+            // Check for numbered lists
+            if (char.IsDigit(content[i]) && i + 1 < content.Length && content[i + 1] == '.' &&
+                (i == 0 || content[i - 1] == '\n'))
+            {
+                output.Append($"\x1b[32m{content[i]}.\x1b[0m"); // Green number
+                i += 2;
+                continue;
+            }
+
+            // Regular character
+            output.Append(content[i]);
+            i++;
+        }
+
+        // Write the processed output
+        Console.Write(output.ToString());
+        _streamBuffer.Clear();
+    }
+
     /// <summary>
     /// Start a new AI response block
     /// </summary>
     public static void StartAIResponse()
     {
+        ResetStreamBuffer(); // Reset markdown parsing state
         AnsiConsole.WriteLine();
         AnsiConsole.Markup("[bold green]TroubleScout[/] [grey]>[/] ");
     }
@@ -232,6 +388,8 @@ public static class ConsoleUI
     /// </summary>
     public static void EndAIResponse()
     {
+        // Ensure any remaining formatting is reset
+        Console.Write("\x1b[0m");
         AnsiConsole.WriteLine();
         AnsiConsole.WriteLine();
     }
@@ -382,6 +540,18 @@ public static class ConsoleUI
             : $"[grey]Executing:[/] [cyan]{Markup.Escape(toolName)}[/]";
         
         AnsiConsole.MarkupLine(text);
+    }
+
+    /// <summary>
+    /// Display PowerShell command execution info
+    /// </summary>
+    public static void ShowCommandExecution(string command, string targetServer)
+    {
+        var serverDisplay = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            ? "[green]localhost[/]"
+            : $"[yellow]{Markup.Escape(targetServer)}[/]";
+        
+        AnsiConsole.MarkupLine($"[grey]>[/] [dim]Running on {serverDisplay}:[/] [cyan]{Markup.Escape(command)}[/]");
     }
 
     /// <summary>

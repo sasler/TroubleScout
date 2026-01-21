@@ -2,6 +2,7 @@ using System.ComponentModel;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
 using TroubleScout.Services;
+using TroubleScout.UI;
 
 namespace TroubleScout.Tools;
 
@@ -13,13 +14,15 @@ public class DiagnosticTools
     private readonly PowerShellExecutor _executor;
     private readonly Func<string, string, Task<bool>> _approvalCallback;
     private readonly List<PendingCommand> _pendingCommands = [];
+    private readonly string _targetServer;
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
-    public DiagnosticTools(PowerShellExecutor executor, Func<string, string, Task<bool>> approvalCallback)
+    public DiagnosticTools(PowerShellExecutor executor, Func<string, string, Task<bool>> approvalCallback, string targetServer)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
+        _targetServer = targetServer;
     }
 
     /// <summary>
@@ -84,8 +87,10 @@ public class DiagnosticTools
                    "The command has been queued and will be shown to the user for approval.";
         }
 
-        // Safe command - execute directly
-        var result = await _executor.ExecuteAsync(command);
+        // Safe command - execute directly with target verification
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution(command, _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
 
         if (!result.Success)
         {
@@ -95,6 +100,27 @@ public class DiagnosticTools
         return string.IsNullOrWhiteSpace(result.Output) 
             ? "[OK] Command completed with no output." 
             : result.Output;
+    }
+
+    /// <summary>
+    /// Wrap a command to include target server verification
+    /// </summary>
+    private string WrapCommandWithTargetVerification(string command)
+    {
+        // Get the verified computer name from the executor
+        var expectedComputer = _executor.ActualComputerName ?? _targetServer.Split('.')[0];
+        
+        // Prepend a verification that checks computer name and FAILS if wrong target
+        // This prevents silently running commands on the wrong server
+        return $@"
+            $actualComputer = $env:COMPUTERNAME
+            $expectedComputer = '{expectedComputer}'
+            if ($expectedComputer -ne 'localhost' -and $actualComputer -notlike ""$expectedComputer*"") {{
+                throw ""CRITICAL TARGET MISMATCH: Expected to run on '$expectedComputer' but executing on '$actualComputer'. The remote session may have been lost. Please restart TroubleScout.""
+            }}
+            Write-Output ""[Executing on: $actualComputer]""
+            {command}
+        ".Trim();
     }
 
     /// <summary>
@@ -120,7 +146,10 @@ public class DiagnosticTools
                 LastBoot = $os.LastBootUpTime
             } | Format-List
         ";
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution("Get-SystemInfo", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -147,7 +176,10 @@ public class DiagnosticTools
             Format-Table -AutoSize -Wrap
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution($"Get-EventLog {logName}", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -175,7 +207,10 @@ public class DiagnosticTools
             Format-Table -AutoSize
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution("Get-Service", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -210,7 +245,10 @@ public class DiagnosticTools
             Format-Table -AutoSize
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution($"Get-Process (Top {top})", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -229,7 +267,10 @@ public class DiagnosticTools
             Format-Table -AutoSize
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution("Get-Volume", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -256,7 +297,10 @@ public class DiagnosticTools
             } | Format-List
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution("Get-NetAdapter", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -281,7 +325,10 @@ public class DiagnosticTools
             Format-Table -AutoSize
         ";
         
-        return await RunPowerShellCommandAsync(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        ConsoleUI.ShowCommandExecution($"Get-Counter ({category})", _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
+        return result.Success ? result.Output : $"[ERROR] {result.Error}";
     }
 
     /// <summary>
@@ -297,7 +344,9 @@ public class DiagnosticTools
     /// </summary>
     public async Task<string> ExecuteApprovedCommandAsync(PendingCommand command)
     {
-        var result = await _executor.ExecuteAsync(command.Command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command.Command);
+        ConsoleUI.ShowCommandExecution(command.Command, _targetServer);
+        var result = await _executor.ExecuteAsync(wrappedCommand);
         _pendingCommands.Remove(command);
 
         if (!result.Success)

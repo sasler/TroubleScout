@@ -31,6 +31,17 @@ public class PowerShellExecutor : IDisposable
     private readonly bool _useLocalExecution;
     private Runspace? _runspace;
     private bool _disposed;
+    private string? _actualComputerName;
+
+    /// <summary>
+    /// The target server name that was requested
+    /// </summary>
+    public string TargetServer => _targetServer;
+
+    /// <summary>
+    /// The actual computer name where commands are executing (verified during connection)
+    /// </summary>
+    public string? ActualComputerName => _actualComputerName;
 
     /// <summary>
     /// Commands that are allowed to run automatically (read-only Get-* commands)
@@ -250,13 +261,28 @@ public class PowerShellExecutor : IDisposable
             await InitializeAsync();
         }
 
+        // Check if the runspace is still open
+        if (_runspace!.RunspaceStateInfo.State != RunspaceState.Opened)
+        {
+            return new PowerShellResult(false, string.Empty, 
+                $"Remote session to {_targetServer} has been disconnected. Please restart TroubleScout.");
+        }
+
         return await Task.Run(() =>
         {
             try
             {
                 using var ps = PowerShell.Create();
                 ps.Runspace = _runspace;
-                ps.AddScript(command);
+                
+                // Wrap command with Out-String to ensure text output, and verify target
+                var wrappedCommand = $@"
+                    $ErrorActionPreference = 'Continue'
+                    $currentComputer = $env:COMPUTERNAME
+                    {command} | Out-String -Width 200
+                ";
+                
+                ps.AddScript(wrappedCommand);
 
                 var results = ps.Invoke();
                 var output = new StringBuilder();
@@ -265,7 +291,7 @@ public class PowerShellExecutor : IDisposable
                 {
                     if (result != null)
                     {
-                        output.AppendLine(result.ToString());
+                        output.Append(result.ToString());
                     }
                 }
 
@@ -289,19 +315,40 @@ public class PowerShellExecutor : IDisposable
     }
 
     /// <summary>
-    /// Tests the connection to the target server
+    /// Tests the connection to the target server and verifies we're connected to the right machine
     /// </summary>
-    public async Task<bool> TestConnectionAsync()
+    public async Task<(bool Success, string? Error)> TestConnectionAsync()
     {
         try
         {
             await InitializeAsync();
             var result = await ExecuteAsync("$env:COMPUTERNAME");
-            return result.Success;
+            
+            if (!result.Success)
+            {
+                return (false, result.Error ?? "Failed to execute test command");
+            }
+
+            _actualComputerName = result.Output.Trim();
+
+            // For remote connections, verify we're actually connected to the right server
+            if (!_useLocalExecution)
+            {
+                // Extract the hostname from the target (remove domain if present)
+                var expectedHost = _targetServer.Split('.')[0];
+                
+                if (!_actualComputerName.Equals(expectedHost, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (false, $"Target mismatch! Expected to connect to '{expectedHost}' but connected to '{_actualComputerName}'. " +
+                                   "This may indicate a WinRM configuration issue or the remote session is not being established correctly.");
+                }
+            }
+
+            return (true, null);
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            return (false, ex.Message);
         }
     }
 
@@ -310,7 +357,14 @@ public class PowerShellExecutor : IDisposable
     /// </summary>
     public string GetConnectionMode()
     {
-        return _useLocalExecution ? "Local PowerShell" : $"WinRM to {_targetServer}";
+        if (_useLocalExecution)
+        {
+            return $"Local PowerShell ({_actualComputerName ?? Environment.MachineName})";
+        }
+        
+        return _actualComputerName != null 
+            ? $"WinRM to {_actualComputerName}" 
+            : $"WinRM to {_targetServer} (not verified)";
     }
 
     public void Dispose()
