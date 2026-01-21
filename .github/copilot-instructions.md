@@ -83,10 +83,51 @@ dotnet run -- --server localhost
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 
 # Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe + runtimes/
-# NOTE: When releasing, only distribute TroubleScout.exe and the runtimes/ folder (if it exists).
-# The runtimes/ folder contains native dependencies (PowerShell SDK) that cannot be embedded.
-# Do NOT release all files from the publish directory—only .exe and runtimes/ folder.
-# Use GitHub CLI for releases: gh release create v<version> TroubleScout.exe ./runtimes/ --generate-notes
+# NOTE: The runtimes/ folder contains native dependencies (PowerShell SDK) that cannot be embedded.
+```
+
+## Creating a Release
+
+**IMPORTANT**: Always create a **single zip file** containing both TroubleScout.exe and the runtimes folder.
+
+```powershell
+# 1. Build the release
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+
+# 2. Create release package (single zip file)
+$version = "v1.0.x"  # Update version number
+$publishPath = "bin\Release\net10.0\win-x64\publish"
+$tempDir = "TroubleScout-$version"
+
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
+Copy-Item "$publishPath\runtimes" -Destination $tempDir -Recurse
+Compress-Archive -Path $tempDir -DestinationPath "TroubleScout-$version-win-x64.zip" -Force
+Remove-Item $tempDir -Recurse -Force
+
+# 3. Commit and tag
+git add -A
+git commit -m "Release $version"
+git push
+git tag -a $version -m "Release $version"
+git push origin $version
+
+# 4. Create GitHub release with the single zip file
+gh release create $version `
+  "TroubleScout-$version-win-x64.zip" `
+  --title "$version - <Title>" `
+  --notes "<Release notes here>"
+```
+
+**DO NOT**:
+- Create separate files for TroubleScout.exe and runtimes.zip
+- Create version-specific release notes files (e.g., release-v1.0.3.md)
+- Use the existing release-notes.md file for release descriptions
+
+**DO**:
+- Always package TroubleScout.exe and runtimes/ folder together in a single zip
+- Include release notes directly in the `gh release create` command
+- Use descriptive filenames like `TroubleScout-v1.0.3-win-x64.zip`
 ```
 
 ## Development Workflow
