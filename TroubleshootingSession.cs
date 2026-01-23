@@ -18,6 +18,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private bool _isInitialized;
     private string? _selectedModel;
     private string? _copilotVersion;
+    private List<ModelInfo> _availableModels = new();
 
     private readonly SystemMessageConfig _systemMessageConfig;
 
@@ -89,7 +90,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
-    public string SelectedModel => _selectedModel ?? "default";
+    public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string CopilotVersion => _copilotVersion ?? "unknown";
 
     /// <summary>
@@ -126,7 +127,46 @@ public class TroubleshootingSession : IAsyncDisposable
                 CliPath = cliPath,
                 LogLevel = "info"
             });
-            await _copilotClient.StartAsync();
+
+            try
+            {
+                await _copilotClient.StartAsync();
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsoleUI.ShowError("Initialization Failed",
+                    "SDK protocol version mismatch detected.\n\n" +
+                    "Please update the Copilot CLI to match the SDK:\n" +
+                    "  1. npm install -g @github/copilot@latest\n" +
+                    "  2. npm install -g @github/copilot-sdk@latest\n" +
+                    "  3. copilot auth login\n");
+                _copilotClient = null;
+                return false;
+            }
+
+            var authStatus = await _copilotClient.GetAuthStatusAsync();
+            if (!authStatus.IsAuthenticated)
+            {
+                ConsoleUI.ShowError("Not Authenticated",
+                    "Copilot CLI is not authenticated.\n\n" +
+                    "Run: copilot auth login");
+                return false;
+            }
+
+            updateStatus?.Invoke("Fetching available models...");
+            _availableModels = await _copilotClient.ListModelsAsync();
+
+            if (_availableModels.Count == 0)
+            {
+                ConsoleUI.ShowError("No Models Available", "No models were returned by the Copilot SDK. Ensure you are authenticated and your subscription has access to models.");
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_requestedModel) && _availableModels.All(m => m.Id != _requestedModel))
+            {
+                ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available for your account.");
+                return false;
+            }
 
             // Create session with tools
             updateStatus?.Invoke("Creating AI session...");
@@ -181,6 +221,11 @@ public class TroubleshootingSession : IAsyncDisposable
             
             // Wait for session to become idle (consume all streaming response)
             await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
+
+            if (!string.IsNullOrWhiteSpace(_selectedModel))
+            {
+                SaveLastModel(_selectedModel);
+            }
             
             _isInitialized = true;
             return true;
@@ -200,6 +245,12 @@ public class TroubleshootingSession : IAsyncDisposable
         if (_copilotClient == null)
         {
             ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
+            return false;
+        }
+
+        if (_availableModels.Count == 0 || _availableModels.All(m => m.Id != newModel))
+        {
+            ConsoleUI.ShowError("Invalid Model", $"The selected model '{newModel}' is not available for your account.");
             return false;
         }
 
@@ -260,6 +311,11 @@ public class TroubleshootingSession : IAsyncDisposable
             // Wait for session to become idle (consume all streaming response)
             await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
 
+            if (!string.IsNullOrWhiteSpace(_selectedModel))
+            {
+                SaveLastModel(_selectedModel);
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -302,6 +358,15 @@ public class TroubleshootingSession : IAsyncDisposable
 
         // Default to copilot in PATH
         return "copilot";
+    }
+
+    private string? GetModelDisplayName(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+            return null;
+
+        var model = _availableModels.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+        return model?.Name ?? modelId;
     }
 
     /// <summary>
@@ -537,6 +602,13 @@ public class TroubleshootingSession : IAsyncDisposable
         return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason));
     }
 
+    private static void SaveLastModel(string model)
+    {
+        var settings = AppSettingsStore.Load();
+        settings.LastModel = model;
+        AppSettingsStore.Save(settings);
+    }
+
     /// <summary>
     /// Run the interactive session loop
     /// </summary>
@@ -579,7 +651,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (lowerInput == "/model")
             {
-                var newModel = ConsoleUI.PromptModelSelection(SelectedModel);
+                var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
                 if (newModel != null && newModel != _selectedModel)
                 {
                     var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {newModel}...", async updateStatus =>
@@ -625,7 +697,14 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (_copilotClient != null)
         {
-            await _copilotClient.DisposeAsync();
+            try
+            {
+                await _copilotClient.DisposeAsync();
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
+            {
+                // Ignore protocol mismatch during cleanup when startup failed
+            }
         }
 
         _executor.Dispose();

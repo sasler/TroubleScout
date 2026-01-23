@@ -1,4 +1,5 @@
 using System.Text;
+using GitHub.Copilot.SDK;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -462,34 +463,51 @@ public static class ConsoleUI
     /// <summary>
     /// Display AI model selection prompt and return the selected model
     /// </summary>
-    public static string? PromptModelSelection(string currentModel)
+    public static string? PromptModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
     {
         AnsiConsole.MarkupLine($"[grey]Current Model:[/] [magenta]{Markup.Escape(currentModel)}[/]");
         AnsiConsole.WriteLine();
-        
-        var models = new[]
-        {
-            ("claude-sonnet-4.5", "Claude Sonnet 4.5", "1x rate"),
-            ("claude-sonnet-4", "Claude Sonnet 4", "1x rate"),
-            ("claude-haiku-4.5", "Claude Haiku 4.5", "0.33x rate"),
-            ("gpt-5", "GPT-5", "1x rate")
-        };
-        
-        var choices = models.Select(m => $"{m.Item2} ({m.Item1}) - {m.Item3}").ToList();
-        choices.Add("Cancel");
-        
+
+        var choices = models
+            .Select(m => new ModelChoice(m, GetDisplayName(m, currentModel), GetRateLabel(m)))
+            .ToList();
+
+        var maxNameLength = choices.Count == 0 ? 0 : choices.Max(c => c.DisplayName.Length);
+        choices.Add(ModelChoice.Cancel);
+
         var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
+            new SelectionPrompt<ModelChoice>()
                 .Title("[cyan]Select AI Model:[/]")
-                .PageSize(6)
+                .PageSize(12)
+                .UseConverter(choice =>
+                {
+                    if (choice.IsCancel)
+                        return "Cancel";
+
+                    var name = choice.DisplayName.PadRight(maxNameLength);
+                    var rate = Markup.Escape(choice.RateLabel);
+                    return $"{Markup.Escape(name)}  [grey]{rate}[/]";
+                })
                 .AddChoices(choices));
-        
-        if (selection == "Cancel")
-            return null;
-        
-        // Extract model ID from selection
-        var selectedIndex = choices.IndexOf(selection);
-        return selectedIndex >= 0 && selectedIndex < models.Length ? models[selectedIndex].Item1 : null;
+
+        return selection.IsCancel ? null : selection.Model.Id;
+    }
+
+    private static string GetDisplayName(ModelInfo model, string currentModel)
+    {
+        var isDefault = model.Id.Equals(currentModel, StringComparison.OrdinalIgnoreCase);
+        return isDefault ? $"{model.Name} (default)" : model.Name;
+    }
+
+    private static string GetRateLabel(ModelInfo model)
+    {
+        return model.Billing != null ? $"{model.Billing.Multiplier:0.##}x" : "n/a";
+    }
+
+    private sealed record ModelChoice(ModelInfo Model, string DisplayName, string RateLabel)
+    {
+        public static ModelChoice Cancel { get; } = new(new ModelInfo(), "Cancel", "");
+        public bool IsCancel => ReferenceEquals(this, Cancel);
     }
 
     /// <summary>

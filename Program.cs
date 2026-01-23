@@ -1,4 +1,5 @@
 ﻿using TroubleScout;
+using TroubleScout.Services;
 using TroubleScout.UI;
 
 // Parse command line arguments manually for simplicity
@@ -35,6 +36,15 @@ if (!await TroubleshootingSession.CheckCopilotAvailableAsync())
         "  2. Authenticate: copilot auth login\n\n" +
         "For more info: https://docs.github.com/copilot");
     return 1;
+}
+
+if (string.IsNullOrWhiteSpace(model))
+{
+    var settings = AppSettingsStore.Load();
+    if (!string.IsNullOrWhiteSpace(settings.LastModel))
+    {
+        model = settings.LastModel;
+    }
 }
 
 if (!string.IsNullOrWhiteSpace(prompt))
