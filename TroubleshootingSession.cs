@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Reflection;
 using GitHub.Copilot.SDK;
 using TroubleScout.Services;
 using TroubleScout.Tools;
@@ -10,9 +12,9 @@ namespace TroubleScout;
 /// </summary>
 public class TroubleshootingSession : IAsyncDisposable
 {
-    private readonly string _targetServer;
-    private readonly PowerShellExecutor _executor;
-    private readonly DiagnosticTools _diagnosticTools;
+    private string _targetServer;
+    private PowerShellExecutor _executor;
+    private DiagnosticTools _diagnosticTools;
     private CopilotClient? _copilotClient;
     private CopilotSession? _copilotSession;
     private bool _isInitialized;
@@ -20,7 +22,21 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _copilotVersion;
     private List<ModelInfo> _availableModels = new();
 
-    private readonly SystemMessageConfig _systemMessageConfig;
+    private CopilotUsageSnapshot? _lastUsage;
+
+    private SystemMessageConfig _systemMessageConfig;
+
+    private static readonly string[] SlashCommands =
+    [
+        "/help",
+        "/status",
+        "/clear",
+        "/model",
+        "/connect",
+        "/history",
+        "/exit",
+        "/quit"
+    ];
 
     private SystemMessageConfig CreateSystemMessage(string targetServer)
     {
@@ -92,6 +108,21 @@ public class TroubleshootingSession : IAsyncDisposable
     public string ConnectionMode => _executor.GetConnectionMode();
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string CopilotVersion => _copilotVersion ?? "unknown";
+
+    private sealed record CopilotUsageSnapshot(
+        int? PromptTokens,
+        int? CompletionTokens,
+        int? TotalTokens,
+        int? InputTokens,
+        int? OutputTokens,
+        int? MaxContextTokens,
+        int? UsedContextTokens,
+        int? FreeContextTokens)
+    {
+        public bool HasAny => PromptTokens.HasValue || CompletionTokens.HasValue || TotalTokens.HasValue ||
+                              InputTokens.HasValue || OutputTokens.HasValue || MaxContextTokens.HasValue ||
+                              UsedContextTokens.HasValue || FreeContextTokens.HasValue;
+    }
 
     /// <summary>
     /// Initialize the session and establish connections
@@ -168,63 +199,9 @@ public class TroubleshootingSession : IAsyncDisposable
                 return false;
             }
 
-            // Create session with tools
-            updateStatus?.Invoke("Creating AI session...");
-            
-            var config = new SessionConfig
+            if (!await CreateCopilotSessionAsync(_requestedModel, updateStatus))
             {
-                Model = _requestedModel,
-                SystemMessage = _systemMessageConfig,
-                Streaming = true,
-                Tools = _diagnosticTools.GetTools().ToList()
-            };
-
-            _copilotSession = await _copilotClient.CreateSessionAsync(config);
-            
-            // Subscribe to events to capture model info from usage events
-            updateStatus?.Invoke("Detecting AI model...");
-            
-            var modelCaptured = new TaskCompletionSource<bool>();
-            var sessionIdle = new TaskCompletionSource<bool>();
-            using var subscription = _copilotSession.On(evt =>
-            {
-                switch (evt)
-                {
-                    case SessionStartEvent startEvt:
-                        _selectedModel = startEvt.Data.SelectedModel;
-                        _copilotVersion = startEvt.Data.CopilotVersion;
-                        if (!string.IsNullOrEmpty(_selectedModel))
-                            modelCaptured.TrySetResult(true);
-                        break;
-                    case SessionModelChangeEvent modelChange:
-                        _selectedModel = modelChange.Data.NewModel;
-                        modelCaptured.TrySetResult(true);
-                        break;
-                    case AssistantUsageEvent usageEvt:
-                        // Usage events contain the actual model used
-                        if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
-                        {
-                            _selectedModel = usageEvt.Data.Model;
-                            modelCaptured.TrySetResult(true);
-                        }
-                        break;
-                    case SessionIdleEvent:
-                        // Session finished processing
-                        modelCaptured.TrySetResult(true);
-                        sessionIdle.TrySetResult(true);
-                        break;
-                }
-            });
-
-            // Send a minimal message to get the model info from usage events
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
-            
-            // Wait for session to become idle (consume all streaming response)
-            await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
-
-            if (!string.IsNullOrWhiteSpace(_selectedModel))
-            {
-                SaveLastModel(_selectedModel);
+                return false;
             }
             
             _isInitialized = true;
@@ -264,56 +241,9 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotSession = null;
             }
 
-            // Create new session with the new model
-            updateStatus?.Invoke($"Creating session with {newModel}...");
-            
-            var config = new SessionConfig
+            if (!await CreateCopilotSessionAsync(newModel, updateStatus))
             {
-                Model = newModel,
-                SystemMessage = _systemMessageConfig,
-                Streaming = true,
-                Tools = _diagnosticTools.GetTools().ToList()
-            };
-
-            _copilotSession = await _copilotClient.CreateSessionAsync(config);
-            
-            // Capture model info
-            updateStatus?.Invoke("Verifying model...");
-            
-            var modelCaptured = new TaskCompletionSource<bool>();
-            var sessionIdle = new TaskCompletionSource<bool>();
-            using var subscription = _copilotSession.On(evt =>
-            {
-                switch (evt)
-                {
-                    case SessionStartEvent startEvt:
-                        _selectedModel = startEvt.Data.SelectedModel;
-                        _copilotVersion = startEvt.Data.CopilotVersion;
-                        if (!string.IsNullOrEmpty(_selectedModel))
-                            modelCaptured.TrySetResult(true);
-                        break;
-                    case AssistantUsageEvent usageEvt:
-                        if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
-                        {
-                            _selectedModel = usageEvt.Data.Model;
-                            modelCaptured.TrySetResult(true);
-                        }
-                        break;
-                    case SessionIdleEvent:
-                        modelCaptured.TrySetResult(true);
-                        sessionIdle.TrySetResult(true);
-                        break;
-                }
-            });
-
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
-            
-            // Wait for session to become idle (consume all streaming response)
-            await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
-
-            if (!string.IsNullOrWhiteSpace(_selectedModel))
-            {
-                SaveLastModel(_selectedModel);
+                return false;
             }
 
             return true;
@@ -508,6 +438,9 @@ public class TroubleshootingSession : IAsyncDisposable
                         // Session finished processing
                         done.TrySetResult(true);
                         break;
+                    case AssistantUsageEvent usageEvt:
+                        CaptureUsageMetrics(usageEvt);
+                        break;
                 }
             });
 
@@ -616,7 +549,7 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         while (true)
         {
-            var input = ConsoleUI.GetUserInput().Trim();
+            var input = ConsoleUI.GetUserInput(SlashCommands).Trim();
 
             if (string.IsNullOrWhiteSpace(input))
                 continue;
@@ -633,19 +566,25 @@ public class TroubleshootingSession : IAsyncDisposable
             if (lowerInput == "/clear")
             {
                 ConsoleUI.ShowBanner();
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel);
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, GetUsageFields());
                 continue;
             }
 
             if (lowerInput == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel);
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetUsageFields());
                 continue;
             }
 
             if (lowerInput == "/help")
             {
-                ConsoleUI.ShowWelcomeMessage();
+                ConsoleUI.ShowHelp();
+                continue;
+            }
+
+            if (lowerInput == "/history")
+            {
+                ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory());
                 continue;
             }
 
@@ -677,8 +616,16 @@ public class TroubleshootingSession : IAsyncDisposable
                 else
                 {
                     var newServer = parts[1];
-                    ConsoleUI.ShowWarning("Connecting to a different server requires restarting TroubleScout.");
-                    ConsoleUI.ShowInfo($"Run: dotnet run -- --server {newServer}");
+                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {newServer}...", async updateStatus =>
+                    {
+                        return await ReconnectAsync(newServer, updateStatus);
+                    });
+
+                    if (success)
+                    {
+                        ConsoleUI.ShowSuccess($"Connected to {newServer}");
+                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetUsageFields());
+                    }
                 }
                 continue;
             }
@@ -710,5 +657,222 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.Dispose();
         
         GC.SuppressFinalize(this);
+    }
+
+    private async Task<bool> CreateCopilotSessionAsync(string? model, Action<string>? updateStatus)
+    {
+        if (_copilotClient == null)
+        {
+            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
+            return false;
+        }
+
+        updateStatus?.Invoke("Creating AI session...");
+
+        var config = new SessionConfig
+        {
+            Model = model,
+            SystemMessage = _systemMessageConfig,
+            Streaming = true,
+            Tools = _diagnosticTools.GetTools().ToList()
+        };
+
+        _copilotSession = await _copilotClient.CreateSessionAsync(config);
+        _lastUsage = null;
+
+        // Capture model and usage info
+        updateStatus?.Invoke("Verifying model...");
+
+        var sessionIdle = new TaskCompletionSource<bool>();
+        using var subscription = _copilotSession.On(evt =>
+        {
+            switch (evt)
+            {
+                case SessionStartEvent startEvt:
+                    _selectedModel = startEvt.Data.SelectedModel;
+                    _copilotVersion = startEvt.Data.CopilotVersion;
+                    break;
+                case SessionModelChangeEvent modelChange:
+                    _selectedModel = modelChange.Data.NewModel;
+                    break;
+                case AssistantUsageEvent usageEvt:
+                    CaptureUsageMetrics(usageEvt);
+                    if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
+                    {
+                        _selectedModel = usageEvt.Data.Model;
+                    }
+                    break;
+                case SessionIdleEvent:
+                    sessionIdle.TrySetResult(true);
+                    break;
+            }
+        });
+
+        await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
+        await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
+
+        if (!string.IsNullOrWhiteSpace(_selectedModel))
+        {
+            SaveLastModel(_selectedModel);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)
+    {
+        if (string.IsNullOrWhiteSpace(newServer))
+        {
+            ConsoleUI.ShowWarning("Server name cannot be empty");
+            return false;
+        }
+
+        newServer = newServer.Trim();
+
+        if (newServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+        {
+            ConsoleUI.ShowInfo($"Already connected to {newServer}");
+            return true;
+        }
+
+        updateStatus?.Invoke("Closing current PowerShell session...");
+        _executor.Dispose();
+
+        _targetServer = newServer;
+        _systemMessageConfig = CreateSystemMessage(_targetServer);
+        _executor = new PowerShellExecutor(_targetServer);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
+
+        updateStatus?.Invoke($"Connecting to {_targetServer}...");
+        var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
+        if (!connectionSuccess)
+        {
+            ConsoleUI.ShowError("Connection Failed", connectionError ?? $"Unable to connect to {_targetServer}");
+            return false;
+        }
+
+        if (_copilotClient != null)
+        {
+            if (_copilotSession != null)
+            {
+                updateStatus?.Invoke("Closing AI session...");
+                await _copilotSession.DisposeAsync();
+                _copilotSession = null;
+            }
+
+            var modelToUse = !string.IsNullOrWhiteSpace(_selectedModel)
+                ? _selectedModel
+                : _requestedModel;
+
+            if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private IReadOnlyList<(string Label, string Value)> GetUsageFields()
+    {
+        if (_lastUsage == null || !_lastUsage.HasAny)
+            return Array.Empty<(string, string)>();
+
+        var fields = new List<(string Label, string Value)>();
+
+        AddUsageField(fields, "Prompt tokens", _lastUsage.PromptTokens);
+        AddUsageField(fields, "Completion tokens", _lastUsage.CompletionTokens);
+        AddUsageField(fields, "Total tokens", _lastUsage.TotalTokens);
+        AddUsageField(fields, "Input tokens", _lastUsage.InputTokens);
+        AddUsageField(fields, "Output tokens", _lastUsage.OutputTokens);
+        AddUsageField(fields, "Context max", _lastUsage.MaxContextTokens);
+        AddUsageField(fields, "Context used", _lastUsage.UsedContextTokens);
+        AddUsageField(fields, "Context free", _lastUsage.FreeContextTokens);
+
+        return fields;
+    }
+
+    private static void AddUsageField(List<(string Label, string Value)> fields, string label, int? value)
+    {
+        if (!value.HasValue)
+            return;
+
+        fields.Add((label, value.Value.ToString("N0", CultureInfo.InvariantCulture)));
+    }
+
+    private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
+    {
+        var data = usageEvt.Data;
+        if (data == null)
+            return;
+
+        var usageObj = GetPropertyValue(data, "Usage") ?? data;
+
+        var promptTokens = ReadIntProperty(usageObj, "PromptTokens", "InputTokens", "RequestTokens");
+        var completionTokens = ReadIntProperty(usageObj, "CompletionTokens", "OutputTokens", "ResponseTokens");
+        var totalTokens = ReadIntProperty(usageObj, "TotalTokens", "Tokens");
+
+        var inputTokens = ReadIntProperty(usageObj, "InputTokens", "PromptTokens", "RequestTokens");
+        var outputTokens = ReadIntProperty(usageObj, "OutputTokens", "CompletionTokens", "ResponseTokens");
+
+        var usedContext = ReadIntProperty(usageObj, "UsedTokens", "ContextTokensUsed", "ContextTokens", "UsedContextTokens");
+        var maxContext = ReadIntProperty(usageObj, "MaxTokens", "MaxContextTokens", "ContextWindowTokens", "ContextTokensMax");
+        var freeContext = ReadIntProperty(usageObj, "FreeTokens", "RemainingTokens", "ContextTokensRemaining");
+
+        if (maxContext.HasValue && usedContext.HasValue && !freeContext.HasValue)
+        {
+            freeContext = Math.Max(0, maxContext.Value - usedContext.Value);
+        }
+
+        var snapshot = new CopilotUsageSnapshot(
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            inputTokens,
+            outputTokens,
+            maxContext,
+            usedContext,
+            freeContext);
+
+        if (snapshot.HasAny)
+        {
+            _lastUsage = snapshot;
+        }
+    }
+
+    private static object? GetPropertyValue(object instance, string propertyName)
+    {
+        var prop = instance.GetType().GetProperty(propertyName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        return prop?.GetValue(instance);
+    }
+
+    private static int? ReadIntProperty(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+            return null;
+
+        foreach (var name in propertyNames)
+        {
+            var prop = instance.GetType().GetProperty(name,
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (prop == null)
+                continue;
+
+            var value = prop.GetValue(instance);
+            if (value == null)
+                continue;
+
+            if (value is int i)
+                return i;
+            if (value is long l)
+                return (int)l;
+            if (value is double d)
+                return (int)d;
+            if (value is float f)
+                return (int)f;
+        }
+
+        return null;
     }
 }

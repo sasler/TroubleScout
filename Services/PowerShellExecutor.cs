@@ -32,6 +32,8 @@ public class PowerShellExecutor : IDisposable
     private Runspace? _runspace;
     private bool _disposed;
     private string? _actualComputerName;
+    private readonly List<string> _commandHistory = new();
+    private readonly object _historyLock = new();
 
     /// <summary>
     /// The target server name that was requested
@@ -42,6 +44,17 @@ public class PowerShellExecutor : IDisposable
     /// The actual computer name where commands are executing (verified during connection)
     /// </summary>
     public string? ActualComputerName => _actualComputerName;
+
+    /// <summary>
+    /// Gets a snapshot of PowerShell commands executed in this session
+    /// </summary>
+    public IReadOnlyList<string> GetCommandHistory()
+    {
+        lock (_historyLock)
+        {
+            return _commandHistory.ToList();
+        }
+    }
 
     /// <summary>
     /// Commands that are allowed to run automatically (read-only Get-* commands)
@@ -261,6 +274,8 @@ public class PowerShellExecutor : IDisposable
             await InitializeAsync();
         }
 
+        TrackCommand(command);
+
         // Check if the runspace is still open
         if (_runspace!.RunspaceStateInfo.State != RunspaceState.Opened)
         {
@@ -312,6 +327,17 @@ public class PowerShellExecutor : IDisposable
                 return new PowerShellResult(false, string.Empty, ex.Message);
             }
         });
+    }
+
+    private void TrackCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return;
+
+        lock (_historyLock)
+        {
+            _commandHistory.Add(command.Trim());
+        }
     }
 
     /// <summary>

@@ -100,8 +100,7 @@ static async Task RunInteractiveModeAsync(string server, string? model)
     // Show status panel once with full info
     ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel);
     
-    // Show diagnostic categories and help
-    ConsoleUI.ShowDiagnosticCategories();
+    // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
     ConsoleUI.ShowRule();
     Console.WriteLine();

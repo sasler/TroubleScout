@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -33,7 +34,12 @@ public static class ConsoleUI
     /// <summary>
     /// Display the status panel with connection and auth info
     /// </summary>
-    public static void ShowStatusPanel(string targetServer, string connectionMode, bool copilotReady, string? model = null)
+    public static void ShowStatusPanel(
+        string targetServer,
+        string connectionMode,
+        bool copilotReady,
+        string? model = null,
+        IReadOnlyList<(string Label, string Value)>? usageFields = null)
     {
         var grid = new Grid();
         grid.AddColumn(new GridColumn().PadRight(2));
@@ -57,6 +63,19 @@ public static class ConsoleUI
                 ? $"[magenta]{model}[/]" 
                 : "[grey]default[/]";
             grid.AddRow("[grey]AI Model:[/]", modelDisplay);
+        }
+
+        if (usageFields != null)
+        {
+            foreach (var (label, value) in usageFields)
+            {
+                if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                grid.AddRow(
+                    $"[grey]{Markup.Escape(label)}:[/]",
+                    $"[cyan]{Markup.Escape(value)}[/]");
+            }
         }
         
         var panel = new Panel(grid)
@@ -147,7 +166,11 @@ public static class ConsoleUI
             new Markup("  [cyan]/clear[/]          - Clear the screen"),
             new Markup("  [cyan]/status[/]         - Show connection status"),
             new Markup("  [cyan]/model[/]          - Change AI model"),
-            new Markup("  [cyan]/connect[/] <server> - Connect to a different server")
+            new Markup("  [cyan]/connect[/] <server> - Connect to a different server"),
+            new Markup("  [cyan]/history[/]        - Show PowerShell commands run this session"),
+            new Markup("  [cyan]/help[/]           - Show help, examples, and categories"),
+            new Markup(""),
+            new Markup("[grey]Tip:[/] Press [cyan]Tab[/] to complete /commands")
         );
 
         var panel = new Panel(tips)
@@ -160,12 +183,198 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Display full help including categories
+    /// </summary>
+    public static void ShowHelp()
+    {
+        ShowWelcomeMessage();
+        ShowDiagnosticCategories();
+    }
+
+    /// <summary>
     /// Get user input with a styled prompt
     /// </summary>
-    public static string GetUserInput()
+    public static string GetUserInput(IReadOnlyList<string>? slashCommands = null)
     {
         AnsiConsole.Markup("[bold cyan]You[/] [grey]>[/] ");
-        return Console.ReadLine() ?? string.Empty;
+        if (slashCommands == null || slashCommands.Count == 0)
+        {
+            return Console.ReadLine() ?? string.Empty;
+        }
+
+        var buffer = new StringBuilder();
+        var completionIndex = -1;
+        List<string>? matches = null;
+
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+
+            if (key.Key == ConsoleKey.Enter)
+            {
+                Console.WriteLine();
+                return buffer.ToString();
+            }
+
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (buffer.Length > 0)
+                {
+                    buffer.Length--;
+                    completionIndex = -1;
+                    matches = null;
+                    RedrawInputLine(buffer.ToString());
+                }
+                continue;
+            }
+
+            if (key.Key == ConsoleKey.Tab)
+            {
+                var current = buffer.ToString();
+                if (!current.StartsWith("/", StringComparison.OrdinalIgnoreCase) || current.Contains(' '))
+                {
+                    continue;
+                }
+
+                matches ??= slashCommands
+                    .Where(cmd => cmd.StartsWith(current, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matches.Count == 0)
+                {
+                    Console.Beep();
+                    matches = null;
+                    continue;
+                }
+
+                completionIndex = (completionIndex + 1) % matches.Count;
+                buffer.Clear();
+                buffer.Append(matches[completionIndex]);
+                RedrawInputLine(buffer.ToString());
+                continue;
+            }
+
+            if (!char.IsControl(key.KeyChar))
+            {
+                buffer.Append(key.KeyChar);
+                completionIndex = -1;
+                matches = null;
+                Console.Write(key.KeyChar);
+            }
+        }
+    }
+
+    private static void RedrawInputLine(string text)
+    {
+        Console.Write("\r");
+        Console.Write(new string(' ', Math.Max(0, Console.WindowWidth - 1)));
+        Console.Write("\r");
+        AnsiConsole.Markup("[bold cyan]You[/] [grey]>[/] ");
+        Console.Write(text);
+    }
+
+    /// <summary>
+    /// Display PowerShell command history for the session
+    /// </summary>
+    public static void ShowCommandHistory(IReadOnlyList<string> commands)
+    {
+        if (commands.Count == 0)
+        {
+            ShowInfo("No PowerShell commands have been executed in this session.");
+            return;
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[bold]#[/]").Centered())
+            .AddColumn(new TableColumn("[bold]Command[/]"));
+
+        for (int i = 0; i < commands.Count; i++)
+        {
+            table.AddRow(
+                new Markup($"[cyan]{i + 1}[/]"),
+                new Markup(HighlightPowerShellMarkup(commands[i])));
+        }
+
+        var panel = new Panel(table)
+            .Header("[bold cyan] PowerShell History [/]")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Grey);
+
+        AnsiConsole.Write(panel);
+        AnsiConsole.WriteLine();
+    }
+
+    private static readonly Regex PowerShellTokenRegex = new(
+        "(?<string>'([^'\\\\]|\\\\.)*'|\"([^\"\\\\]|\\\\.)*\")" +
+        "|(?<variable>\\$\\{[^}]+\\}|\\$[A-Za-z_][\\w:]*|\\$\\([^)]+\\))" +
+        "|(?<keyword>\\b(?:if|else|elseif|foreach|for|while|do|switch|try|catch|finally|throw|return|function|param|begin|process|end|break|continue|class|enum|using|in|default)\\b)" +
+        "|(?<op>(?:-eq|-ne|-gt|-ge|-lt|-le|-and|-or|-not)\\b|\\|\\||&&|[|;])" +
+        "|(?<cmdlet>\\b[A-Za-z]+-[A-Za-z][A-Za-z0-9]*\\b)" +
+        "|(?<param>-[A-Za-z][\\w-]*)" +
+        "|(?<number>\\b\\d+(?:\\.\\d+)?\\b)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string HighlightPowerShellMarkup(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+
+        var builder = new StringBuilder(input.Length + 16);
+        int lastIndex = 0;
+
+        foreach (Match match in PowerShellTokenRegex.Matches(input))
+        {
+            if (!match.Success)
+                continue;
+
+            if (match.Index > lastIndex)
+            {
+                builder.Append(Markup.Escape(input.Substring(lastIndex, match.Index - lastIndex)));
+            }
+
+            var tokenText = Markup.Escape(match.Value);
+            var style = GetPowerShellTokenStyle(match);
+
+            if (string.IsNullOrEmpty(style))
+            {
+                builder.Append(tokenText);
+            }
+            else
+            {
+                builder.Append('[').Append(style).Append(']').Append(tokenText).Append("[/]");
+            }
+
+            lastIndex = match.Index + match.Length;
+        }
+
+        if (lastIndex < input.Length)
+        {
+            builder.Append(Markup.Escape(input.Substring(lastIndex)));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? GetPowerShellTokenStyle(Match match)
+    {
+        if (match.Groups["string"].Success)
+            return "green";
+        if (match.Groups["variable"].Success)
+            return "deepskyblue1";
+        if (match.Groups["keyword"].Success)
+            return "violet";
+        if (match.Groups["cmdlet"].Success)
+            return "cyan";
+        if (match.Groups["param"].Success)
+            return "yellow";
+        if (match.Groups["number"].Success)
+            return "blue";
+        if (match.Groups["op"].Success)
+            return "magenta";
+
+        return null;
     }
 
     /// <summary>
