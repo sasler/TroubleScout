@@ -67,18 +67,15 @@ Both workflow runs have **completed successfully** ✅
 The repository currently contains **1 workflow file** in `.github/workflows/`, and there are **2 additional GitHub-managed Copilot workflows** that are active but **not stored in this repository**:
 
 1. **Build and Test** (`.github/workflows/build.yml`)
-   - Created: 2026-01-24 09:20:46
    - Status: Active
    - Purpose: CI/CD for builds and tests
 
-2. **Copilot code review** (GitHub-managed dynamic workflow)
-   - Identifier: `dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer` (not stored in this repository)
-   - Created: 2026-01-24 09:25:12
+2. **Copilot code review** (Dynamic workflow)
+   - Path: `dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer`
    - Status: Active
 
-3. **Copilot coding agent** (GitHub-managed dynamic workflow)
-   - Identifier: `dynamic/copilot-swe-agent/copilot` (not stored in this repository)
-   - Created: 2026-01-24 09:18:35
+3. **Copilot coding agent** (Dynamic workflow)
+   - Path: `dynamic/copilot-swe-agent/copilot`
    - Status: Active
 
 ## Verification
