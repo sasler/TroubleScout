@@ -98,8 +98,8 @@ The workflow runs on Ubuntu despite the application using PowerShell SDK because
 
 ### Build Configuration
 - Uses **Release** configuration for production-quality builds
-- Implements caching through `--no-restore` and `--no-build` flags
-- Follows .NET best practices for CI/CD pipelines
+- Uses `--no-restore` and `--no-build` flags to avoid redundant restore/build work within a single job (these flags do **not** provide caching)
+- Relies on GitHub Actions caching mechanisms (such as NuGet caching in `actions/setup-dotnet`) and follows .NET best practices for CI/CD pipelines
 
 ## Security Improvements
 
