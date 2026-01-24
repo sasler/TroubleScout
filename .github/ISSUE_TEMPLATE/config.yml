@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Ask a Question
+    url: https://github.com/sasler/TroubleScout/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: 📚 Documentation
+    url: https://github.com/sasler/TroubleScout/blob/main/README.md
+    about: Read the documentation for usage and troubleshooting help
+  - name: 🔐 Security Vulnerability
+    url: https://github.com/sasler/TroubleScout/security/advisories/new
+    about: Report a security vulnerability (privately)
