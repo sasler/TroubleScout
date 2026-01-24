@@ -245,7 +245,3 @@ The `main` branch is now protected with:
 **The main branch can no longer receive direct commits and all changes must go through a reviewed, tested pull request process.**
 
 ---
-
-**Created:** January 24, 2026
-**Branch:** `copilot/protect-main-branch`
-**Status:** ✅ Ready for review and merge
