@@ -66,6 +66,10 @@ jobs:
             if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
                 continue
             
+            # Allow automated update commits (common with bots and automated tools)
+            if re.match(r'^Update\s.+', commit):
+                continue
+            
             invalid_commits.append(commit)
         
         if invalid_commits:
@@ -77,6 +81,7 @@ jobs:
             print("1. Start with an emoji (e.g., ✨ Add new feature)")
             print("2. Follow Conventional Commits (e.g., feat: add new feature)")
             print("3. Be a simple plan commit (e.g., Initial plan, WIP)")
+            print("4. Be an automated update (e.g., Update README.md)")
             sys.exit(1)
         
         print("✅ All commit messages follow the required format")
