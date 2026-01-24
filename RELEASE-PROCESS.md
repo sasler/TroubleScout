@@ -62,8 +62,7 @@ git push origin v1.0.1
 The GitHub Actions workflow will automatically:
 - Build the self-contained executable
 - Package TroubleScout.exe + runtimes/ folder into a zip
-- Create a GitHub release with auto-generated release notes from commits
-- Create a GitHub release at: `https://github.com/sasler/TroubleScout/releases`
+- Create a GitHub release at `https://github.com/sasler/TroubleScout/releases` with auto-generated release notes from commits
 
 You can monitor the progress at: `https://github.com/sasler/TroubleScout/actions`
 

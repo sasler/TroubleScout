@@ -46,7 +46,7 @@ jobs:
 
           # Verify runtimes folder exists
           if (-not (Test-Path "$publishPath\runtimes")) {
-            Write-Error "runtimes folder not found at $publishPath\runtimes. Verify the publish output and build configuration."
+            Write-Error "runtimes folder not found at $publishPath\runtimes. This typically indicates a build configuration issue. Verify that dotnet publish is creating the runtimes folder with PowerShell SDK dependencies."
             exit 1
           }
 
