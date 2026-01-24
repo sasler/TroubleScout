@@ -107,7 +107,7 @@ Remove-Item $tempDir -Recurse -Force
 
 # 3. Commit and tag
 git add -A
-git commit -m "Release $version"
+git commit -m "🔖 Release $version"
 git push
 git tag -a $version -m "Release $version"
 git push origin $version
@@ -133,6 +133,19 @@ gh release create $version `
 ## Development Workflow
 
 **ALWAYS build after making code changes**: After editing any `.cs` files, run `dotnet build` to check for compilation errors. Use the `get_errors` tool to verify no issues remain. Fix any build errors before proceeding with additional changes or considering the task complete.
+
+**Git/PR workflow (required)**:
+- **ALWAYS check what git branch you are on before starting work** (use `git branch --show-current` or `git status -sb`).
+- **Never make changes directly on `main`**. If the current branch is `main`, immediately create and switch to a new branch:
+    - Use `feature/<short-desc>` when adding or changing things.
+    - Use `fix/<short-desc>` when fixing things.
+    - Keep `<short-desc>` lowercase and hyphenated.
+- **All git commit subject lines must begin with an emoji**, followed by a space, then the summary (example: `✨ Add WinRM connectivity check`).
+- **All pull request titles must begin with an emoji**, followed by a space.
+- **All issue titles must begin with an emoji**, followed by a space.
+- **After creating commits on a feature/fix branch, push to `origin` without asking if not already pushed/upstreamed**.
+    - Never force-push.
+    - If push is rejected (permissions, auth, protected branches, missing `origin`, network failure), stop and report the exact error and safe next options.
 
 ## File Conventions
 
