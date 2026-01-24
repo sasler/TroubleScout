@@ -68,12 +68,11 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task CheckCopilotAvailable_ShouldNotThrow()
     {
-        // Act
-        var isAvailable = await TroubleshootingSession.CheckCopilotAvailableAsync();
-
-        // Assert - Just verify it doesn't throw
+        // Act & Assert - Just verify it doesn't throw
         // The actual result depends on the test environment
-        isAvailable.Should().Be(isAvailable);
+        Func<Task> act = () => TroubleshootingSession.CheckCopilotAvailableAsync();
+
+        await act.Should().NotThrowAsync();
     }
 
     #endregion

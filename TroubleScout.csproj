@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TroubleScout.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="TroubleScout.Tests\**" />
     <EmbeddedResource Remove="TroubleScout.Tests\**" />
     <None Remove="TroubleScout.Tests\**" />

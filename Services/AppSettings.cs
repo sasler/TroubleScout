@@ -17,7 +17,7 @@ public static class AppSettingsStore
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "TroubleScout",
             "settings.json");
-        set => _settingsPath = value;
+        internal set => _settingsPath = value;
     }
 
     public static AppSettings Load()

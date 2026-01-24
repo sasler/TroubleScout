@@ -28,7 +28,7 @@ jobs:
       run: dotnet build --no-restore --configuration Release
     
     - name: Run tests
-      run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+      run: dotnet test TroubleScout.Tests/TroubleScout.Tests.csproj --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
     
     - name: Upload test results
       if: always()

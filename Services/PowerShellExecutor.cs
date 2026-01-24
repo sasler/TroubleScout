@@ -118,14 +118,9 @@ public class PowerShellExecutor : IDisposable
         if (command.Contains('|'))
         {
             // Use IsReadOnlyScript to validate the entire pipeline
-            if (IsReadOnlyScript(command))
-            {
-                return new CommandValidation(true, false);
-            }
-            else
-            {
-                return new CommandValidation(true, true, "Pipeline contains commands that can modify system state and requires approval");
-            }
+            return IsReadOnlyScript(command)
+                ? new CommandValidation(true, false)
+                : new CommandValidation(true, true, "Pipeline contains commands that can modify system state and requires approval");
         }
 
         // Parse the command to get the cmdlet name
@@ -182,9 +177,6 @@ public class PowerShellExecutor : IDisposable
             "Find-", "Search-", "Resolve-", "Out-String", "Out-Null"
         };
         
-        // Cmdlets that can execute code need special checking (handled by script block validation)
-        var codeExecutionCmdlets = new[] { "Invoke-", "%", "?", "foreach", "where" };
-        
         // Specific safe Format-* cmdlets (Format-Volume is NOT safe)
         var safeFormatCmdlets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -224,10 +216,13 @@ public class PowerShellExecutor : IDisposable
                 if (part.Contains("{") && part.Contains("}"))
                 {
                     var scriptBlockContent = part.Substring(part.IndexOf('{') + 1, part.LastIndexOf('}') - part.IndexOf('{') - 1);
-                    // Check for dangerous methods/properties
-                    if (scriptBlockContent.Contains(".Kill(") || scriptBlockContent.Contains(".Stop(") ||
-                        scriptBlockContent.Contains("Stop-") || scriptBlockContent.Contains("Restart-") ||
-                        scriptBlockContent.Contains("Remove-") || scriptBlockContent.Contains("Set-"))
+                    // Check for dangerous methods/properties (case-insensitive to match PowerShell semantics)
+                    if (scriptBlockContent.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Set-", StringComparison.OrdinalIgnoreCase))
                     {
                         return false;
                     }
@@ -240,7 +235,11 @@ public class PowerShellExecutor : IDisposable
                 // Skip if it's not a cmdlet (no dash, or starts with special chars)
                 if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
                     continue;
-
+                // Check if cmdlet is explicitly blocked (e.g., Get-Credential, Get-Secret)
+                if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
                 // Check if it's a safe cmdlet prefix
                 var isSafe = safePrefixes.Any(prefix => cmdlet.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
                 

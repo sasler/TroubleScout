@@ -8,18 +8,26 @@ namespace TroubleScout.Tests.Services;
 public class AppSettingsStoreTests : IDisposable
 {
     private readonly string _testDirectory;
+    private readonly string? _originalSettingsPath;
 
     public AppSettingsStoreTests()
     {
         _testDirectory = TestHelpers.CreateTempDirectory();
         
-        // Set test settings path using the new property
+        // Save original settings path and set test settings path
+        _originalSettingsPath = AppSettingsStore.SettingsPath;
         var testSettingsPath = Path.Combine(_testDirectory, "settings.json");
         AppSettingsStore.SettingsPath = testSettingsPath;
     }
 
     public void Dispose()
     {
+        // Restore original settings path
+        if (_originalSettingsPath != null)
+        {
+            AppSettingsStore.SettingsPath = _originalSettingsPath;
+        }
+        
         // Clean up test directory
         TestHelpers.CleanupTempDirectory(_testDirectory);
         GC.SuppressFinalize(this);
@@ -55,7 +63,7 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_WhenDirectoryDoesNotExist_ShouldCreateIt()
+    public void Save_ShouldCreateDirectoryAndPersist()
     {
         // Arrange
         var settings = new AppSettings { LastModel = "claude-sonnet-4.5" };

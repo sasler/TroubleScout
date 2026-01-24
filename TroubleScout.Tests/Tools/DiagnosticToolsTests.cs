@@ -222,7 +222,6 @@ public class DiagnosticToolsTests : IDisposable
     {
         // Arrange
         var command = "Stop-Service -Name wuauserv";
-        var pendingCommand = new PendingCommand(command, "Requires approval");
         
         _mockExecutor.Setup(x => x.ValidateCommand(command))
             .Returns(new CommandValidation(true, true, "Requires approval"));
