@@ -11,75 +11,79 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.0.x'
-    
-    - name: Extract version from tag
-      id: version
-      shell: pwsh
-      run: |
-        $tag = "${{ github.ref_name }}"
-        Write-Output "Tag: $tag"
-        Write-Output "version=$tag" >> $env:GITHUB_OUTPUT
-    
-    - name: Restore dependencies
-      run: dotnet restore
-    
-    - name: Build self-contained release
-      run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
-    
-    - name: Package release
-      shell: pwsh
-      run: |
-        $version = "${{ steps.version.outputs.version }}"
-        $publishPath = "bin\Release\net10.0\win-x64\publish"
-        $tempDir = "TroubleScout-$version"
-        
-        # Create temporary directory and copy files
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-        Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
-        Copy-Item "$publishPath\runtimes" -Destination $tempDir -Recurse
-        
-        # Create zip file
-        Compress-Archive -Path $tempDir -DestinationPath "TroubleScout-$version-win-x64.zip" -Force
-        
-        # Clean up temp directory
-        Remove-Item $tempDir -Recurse -Force
-        
-        Write-Output "Package created: TroubleScout-$version-win-x64.zip"
-    
-    - name: Extract release notes
-      id: release_notes
-      shell: pwsh
-      run: |
-        $version = "${{ steps.version.outputs.version }}"
-        $notes = Get-Content release-notes.md -Raw
-        
-        # Replace version placeholder in release notes if it exists
-        $notes = $notes -replace 'v1\.0\.0', $version
-        
-        # Write to GitHub output (multiline)
-        $delimiter = "EOF_$(Get-Random)"
-        Write-Output "notes<<$delimiter" >> $env:GITHUB_OUTPUT
-        Write-Output $notes >> $env:GITHUB_OUTPUT
-        Write-Output $delimiter >> $env:GITHUB_OUTPUT
-    
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.version.outputs.version }}
-        name: ${{ steps.version.outputs.version }}
-        body: ${{ steps.release_notes.outputs.notes }}
-        files: |
-          TroubleScout-${{ steps.version.outputs.version }}-win-x64.zip
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          Write-Output "Tag: $tag"
+          Write-Output "version=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build self-contained release
+        run: >
+          dotnet publish -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=true
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $publishPath = "bin\Release\net10.0\win-x64\publish"
+          $tempDir = "TroubleScout-$version"
+
+          # Create temporary directory and copy files
+          New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+          Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
+          Copy-Item "$publishPath\runtimes" -Destination $tempDir -Recurse
+
+          # Create zip file
+          $zipName = "TroubleScout-$version-win-x64.zip"
+          Compress-Archive -Path $tempDir -DestinationPath $zipName -Force
+
+          # Clean up temp directory
+          Remove-Item $tempDir -Recurse -Force
+
+          Write-Output "Package created: $zipName"
+
+      - name: Extract release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $notes = Get-Content release-notes.md -Raw
+
+          # Replace version placeholder in release notes if it exists
+          $notes = $notes -replace 'v1\.0\.0', $version
+
+          # Write to GitHub output (multiline)
+          $delimiter = "EOF_$(Get-Random)"
+          Write-Output "notes<<$delimiter" >> $env:GITHUB_OUTPUT
+          Write-Output $notes >> $env:GITHUB_OUTPUT
+          Write-Output $delimiter >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.notes }}
+          files: |
+            TroubleScout-${{ steps.version.outputs.version }}-win-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
