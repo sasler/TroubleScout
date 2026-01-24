@@ -9,10 +9,16 @@ public sealed class AppSettings
 
 public static class AppSettingsStore
 {
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "TroubleScout",
-        "settings.json");
+    private static string? _settingsPath;
+    
+    public static string SettingsPath
+    {
+        get => _settingsPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "TroubleScout",
+            "settings.json");
+        internal set => _settingsPath = value;
+    }
 
     public static AppSettings Load()
     {

@@ -1,6 +1,6 @@
 # TroubleScout
 
-**AI-Powered Windows Server Troubleshooting Assistant**
+## AI-Powered Windows Server Troubleshooting Assistant
 
 TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an AI-powered Windows Server troubleshooting assistant. Describe your issue in natural language, and TroubleScout will investigate using safe, read-only PowerShell commands.
 
@@ -16,15 +16,19 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 ## Prerequisites
 
 **For pre-built release:**
+
 1. **Windows x64** operating system
 2. **Node.js** - Required for the Copilot CLI runtime - [Download](https://nodejs.org/)
 3. **GitHub Copilot SDK CLI** - Install via npm:
+
    ```bash
    npm install -g @github/copilot-sdk
    ```
+
 4. **GitHub Copilot Access** - Active GitHub Copilot subscription
 
 **For building from source:**
+
 1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
 2. All prerequisites listed above
 
@@ -58,6 +62,7 @@ dotnet run
 ```
 
 **Build a self-contained executable:**
+
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 # Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe
@@ -92,12 +97,12 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 
 ### Command Line Options
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--server` | `-s` | Target server name or IP (default: localhost) |
-| `--model` | `-m` | AI model to use (e.g., gpt-4o, claude-sonnet-4) |
-| `--prompt` | `-p` | Initial prompt for headless mode |
-| `--help` | `-h` | Show help information |
+| Option     | Short | Description                                      |
+| ---------- | ----- | ------------------------------------------------ |
+| `--server` | `-s`  | Target server name or IP (default: localhost)    |
+| `--model`  | `-m`  | AI model to use (e.g., gpt-4o, claude-sonnet-4)  |
+| `--prompt` | `-p`  | Initial prompt for headless mode                 |
+| `--help`   | `-h`  | Show help information                            |
 
 ### Model Selection
 
@@ -123,45 +128,48 @@ Available models depend on your GitHub Copilot subscription. If not specified, t
 
 ## Diagnostic Categories
 
-| Category | Description | Example Commands |
-|----------|-------------|------------------|
-| System | OS info, uptime, hardware specs | `Get-ComputerInfo`, `Get-CimInstance` |
-| Events | Windows Event Log analysis | `Get-EventLog`, `Get-WinEvent` |
-| Services | Windows service status | `Get-Service` |
-| Processes | Running processes and resource usage | `Get-Process` |
-| Performance | CPU, memory, disk metrics | `Get-Counter` |
-| Network | Network adapters and configuration | `Get-NetAdapter`, `Get-NetIPAddress` |
-| Storage | Disk space and volume health | `Get-Volume`, `Get-Disk` |
+| Category    | Description                          | Example Commands                          |
+| ----------- | ------------------------------------ | ----------------------------------------- |
+| System      | OS info, uptime, hardware specs      | `Get-ComputerInfo`, `Get-CimInstance`     |
+| Events      | Windows Event Log analysis           | `Get-EventLog`, `Get-WinEvent`            |
+| Services    | Windows service status               | `Get-Service`                             |
+| Processes   | Running processes and resource usage | `Get-Process`                             |
+| Performance | CPU, memory, disk metrics            | `Get-Counter`                             |
+| Network     | Network adapters and configuration   | `Get-NetAdapter`, `Get-NetIPAddress`      |
+| Storage     | Disk space and volume health         | `Get-Volume`, `Get-Disk`                  |
 
 ## Security Model
 
 TroubleScout uses a permission-based security model:
 
 ### Automatic Execution (No Approval Required)
+
 - All `Get-*` commands (read-only)
 - Multi-line scripts containing only safe read operations
 - Commands like `Format-*`, `Select-*`, `Where-*`, `Sort-*`
 
 ### Requires User Approval
+
 - `Set-*`, `Start-*`, `Stop-*`, `Restart-*`
 - `Remove-*`, `New-*`, `Add-*`, `Enable-*`, `Disable-*`
 - Any command that can modify system state
 
 ### Blocked Commands
+
 - `Get-Credential` (sensitive credential handling)
 - `Get-Secret` (secret management)
 
 ## Interactive Commands
 
-| Command | Description |
-|---------|-------------|
-| `/exit` or `/quit` | End the session |
-| `/clear` | Clear the screen |
-| `/status` | Show connection status |
+| Command            | Description            |
+| ------------------ | ---------------------- |
+| `/exit` or `/quit` | End the session        |
+| `/clear`           | Clear the screen       |
+| `/status`          | Show connection status |
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │                 TroubleScout CLI                │
 ├─────────────────────────────────────────────────┤
@@ -201,8 +209,8 @@ TroubleScout uses a permission-based security model:
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
+| Variable           | Description                               |
+| ------------------ | ----------------------------------------- |
 | `COPILOT_CLI_PATH` | Custom path to the Copilot CLI executable |
 
 ## Remote Server Requirements (WinRM)
@@ -210,6 +218,7 @@ TroubleScout uses a permission-based security model:
 When troubleshooting remote servers:
 
 1. **WinRM must be enabled** on the target server:
+
    ```powershell
    Enable-PSRemoting -Force
    ```
@@ -221,17 +230,21 @@ When troubleshooting remote servers:
 ## Troubleshooting
 
 ### "Copilot CLI Not Found"
+
 Ensure the `@github/copilot-sdk` npm package is installed globally:
+
 ```bash
 npm install -g @github/copilot-sdk
 ```
 
 ### "JSON-RPC connection lost"
+
 - Ensure Node.js is installed and in PATH
 - Check that you have an active GitHub Copilot subscription
 - Verify authentication with `copilot` interactive mode
 
 ### "Connection Failed" (Remote Server)
+
 - Verify WinRM is enabled on the target server
 - Check firewall allows port 5985/5986
 - Ensure your account has admin privileges on the target

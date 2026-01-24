@@ -43,7 +43,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// The actual computer name where commands are executing (verified during connection)
     /// </summary>
-    public string? ActualComputerName => _actualComputerName;
+    public virtual string? ActualComputerName => _actualComputerName;
 
     /// <summary>
     /// Gets a snapshot of PowerShell commands executed in this session
@@ -91,7 +91,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Validates a command and determines if it can be auto-executed or requires approval
     /// </summary>
-    public CommandValidation ValidateCommand(string command)
+    public virtual CommandValidation ValidateCommand(string command)
     {
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -112,6 +112,15 @@ public class PowerShellExecutor : IDisposable
             {
                 return new CommandValidation(true, true, "Script contains commands that can modify system state and requires approval");
             }
+        }
+
+        // Check if it's a pipeline - if so, validate ALL cmdlets in the pipeline
+        if (command.Contains('|'))
+        {
+            // Use IsReadOnlyScript to validate the entire pipeline
+            return IsReadOnlyScript(command)
+                ? new CommandValidation(true, false)
+                : new CommandValidation(true, true, "Pipeline contains commands that can modify system state and requires approval");
         }
 
         // Parse the command to get the cmdlet name
@@ -163,7 +172,7 @@ public class PowerShellExecutor : IDisposable
         // Safe cmdlet prefixes (read-only operations)
         var safePrefixes = new[]
         {
-            "Get-", "Select-", "Where-", "Sort-", "Group-", 
+            "Get-", "Select-", "Sort-", "Group-", "Where-", "ForEach-",
             "Measure-", "Test-", "ConvertTo-", "ConvertFrom-", "Compare-",
             "Find-", "Search-", "Resolve-", "Out-String", "Out-Null"
         };
@@ -203,6 +212,22 @@ public class PowerShellExecutor : IDisposable
                 if (part.StartsWith("{") || part.StartsWith("}") || part == "{" || part == "}")
                     continue;
                 
+                // Check for dangerous code in script blocks (e.g., ForEach-Object { $_.Kill() })
+                if (part.Contains("{") && part.Contains("}"))
+                {
+                    var scriptBlockContent = part.Substring(part.IndexOf('{') + 1, part.LastIndexOf('}') - part.IndexOf('{') - 1);
+                    // Check for dangerous methods/properties (case-insensitive to match PowerShell semantics)
+                    if (scriptBlockContent.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
+                        scriptBlockContent.Contains("Set-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+                
                 var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
                 if (words.Length == 0) continue;
                 var cmdlet = words[0];
@@ -210,7 +235,11 @@ public class PowerShellExecutor : IDisposable
                 // Skip if it's not a cmdlet (no dash, or starts with special chars)
                 if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
                     continue;
-
+                // Check if cmdlet is explicitly blocked (e.g., Get-Credential, Get-Secret)
+                if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
                 // Check if it's a safe cmdlet prefix
                 var isSafe = safePrefixes.Any(prefix => cmdlet.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
                 
@@ -267,7 +296,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Executes a PowerShell command and returns the result
     /// </summary>
-    public async Task<PowerShellResult> ExecuteAsync(string command)
+    public virtual async Task<PowerShellResult> ExecuteAsync(string command)
     {
         if (_runspace == null)
         {
@@ -356,6 +385,12 @@ public class PowerShellExecutor : IDisposable
             }
 
             _actualComputerName = result.Output.Trim();
+            
+            // Fallback to Environment.MachineName if PowerShell didn't return a value
+            if (string.IsNullOrWhiteSpace(_actualComputerName))
+            {
+                _actualComputerName = Environment.MachineName;
+            }
 
             // For remote connections, verify we're actually connected to the right server
             if (!_useLocalExecution)
