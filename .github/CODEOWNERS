@@ -1,0 +1,19 @@
+# CODEOWNERS file
+# These owners will be automatically requested for review when PRs modify these files
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repository
+* @sasler
+
+# Core application files
+*.cs @sasler
+*.csproj @sasler
+
+# GitHub workflows and CI/CD
+/.github/ @sasler
+
+# Documentation
+*.md @sasler
+
+# Configuration files
+.gitignore @sasler

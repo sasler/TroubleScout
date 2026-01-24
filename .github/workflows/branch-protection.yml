@@ -1,0 +1,114 @@
+name: Branch Protection
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    name: Validate PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate branch naming
+      run: |
+        BRANCH_NAME="${{ github.head_ref }}"
+        echo "Branch name: $BRANCH_NAME"
+        
+        # Allow specific branch name patterns
+        if [[ "$BRANCH_NAME" =~ ^(feature|fix|hotfix|chore|docs|test|refactor|perf|ci|build|revert)/[a-z0-9-]+$ ]] || \
+           [[ "$BRANCH_NAME" =~ ^(dependabot|renovate|copilot)/ ]]; then
+          echo "✅ Branch name follows convention"
+        else
+          echo "❌ Branch name must follow pattern: {type}/{description}"
+          echo "   Valid types: feature, fix, hotfix, chore, docs, test, refactor, perf, ci, build, revert"
+          echo "   Description should be lowercase with hyphens"
+          echo "   Example: feature/add-new-tool or fix/memory-leak"
+          exit 1
+        fi
+
+    - name: Validate commit messages
+      run: |
+        echo "Checking commit messages..."
+        COMMITS=$(git log origin/main..${{ github.sha }} --pretty=format:"%s" --no-merges)
+        
+        INVALID_COMMITS=()
+        while IFS= read -r commit; do
+          # Skip empty lines
+          [ -z "$commit" ] && continue
+          
+          # Check if commit message starts with emoji or conventional commit pattern
+          if [[ ! "$commit" =~ ^[🎨🔥📝✨🐛🚑💄♻️⚡️🔒⬆️⬇️📌👷💚🔧🌐✏️💩⏪🔀📦🚀📄📊🎉💡🗑️🚧🍱♿️🔊🔇📸⚗️🔍🏷️🌱🚩💬🥚🗃️🔈🤡🥚🧪📽️🕸️🔀💫🏴🚸📱🤖🍎🐧🏁🪟🤖👽🍻💬🚚] ]] && \
+             [[ ! "$commit" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?:\ .+ ]]; then
+            INVALID_COMMITS+=("$commit")
+          fi
+        done <<< "$COMMITS"
+        
+        if [ ${#INVALID_COMMITS[@]} -gt 0 ]; then
+          echo "❌ The following commits do not follow the required format:"
+          printf '%s\n' "${INVALID_COMMITS[@]}"
+          echo ""
+          echo "Commit messages must either:"
+          echo "1. Start with an emoji (e.g., ✨ Add new feature)"
+          echo "2. Follow Conventional Commits (e.g., feat: add new feature)"
+          exit 1
+        fi
+        
+        echo "✅ All commit messages follow the required format"
+
+    - name: Check for required files
+      run: |
+        echo "Checking for required files..."
+        
+        REQUIRED_FILES=(
+          "README.md"
+          ".github/workflows/build.yml"
+          ".github/workflows/tests.yml"
+          ".gitignore"
+        )
+        
+        MISSING_FILES=()
+        for file in "${REQUIRED_FILES[@]}"; do
+          if [ ! -f "$file" ]; then
+            MISSING_FILES+=("$file")
+          fi
+        done
+        
+        if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+          echo "❌ Missing required files:"
+          printf '%s\n' "${MISSING_FILES[@]}"
+          exit 1
+        fi
+        
+        echo "✅ All required files present"
+
+    - name: Verify PR targets main branch
+      run: |
+        if [ "${{ github.base_ref }}" != "main" ]; then
+          echo "❌ PRs must target the main branch"
+          exit 1
+        fi
+        echo "✅ PR correctly targets main branch"
+
+  # This job ensures that required checks are defined
+  required-checks-status:
+    name: Required Checks Summary
+    runs-on: ubuntu-latest
+    needs: [validate]
+    if: always()
+    steps:
+    - name: Check required jobs
+      run: |
+        if [ "${{ needs.validate.result }}" != "success" ]; then
+          echo "❌ Required validation checks failed"
+          exit 1
+        fi
+        echo "✅ All required checks passed"

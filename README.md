@@ -1,5 +1,9 @@
 # TroubleScout
 
+[![Build and Test](https://github.com/sasler/TroubleScout/actions/workflows/build.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/build.yml)
+[![Tests](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml)
+[![Branch Protection](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml)
+
 ## AI-Powered Windows Server Troubleshooting Assistant
 
 TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an AI-powered Windows Server troubleshooting assistant. Describe your issue in natural language, and TroubleScout will investigate using safe, read-only PowerShell commands.
@@ -255,4 +259,23 @@ MIT
 
 ## Contributing
 
-Contributions are welcome! Please submit pull requests or open issues for bugs and feature requests.
+Contributions are welcome! This repository has branch protection enabled on the `main` branch to maintain code quality.
+
+**Before contributing:**
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines
+- Follow branch naming conventions: `feature/`, `fix/`, `docs/`, etc.
+- Use emoji-prefixed or conventional commit messages
+- Ensure all tests pass locally before opening a PR
+
+**Quick Start:**
+1. Fork the repository
+2. Create a branch: `git checkout -b feature/your-feature`
+3. Make changes and commit: `git commit -m "✨ Add your feature"`
+4. Push and open a pull request
+
+All pull requests require:
+- ✅ Passing CI/CD checks (build and tests)
+- ✅ Code owner review and approval
+- ✅ Branch up-to-date with main
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
