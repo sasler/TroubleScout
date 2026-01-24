@@ -8,29 +8,19 @@ namespace TroubleScout.Tests.Services;
 public class AppSettingsStoreTests : IDisposable
 {
     private readonly string _testDirectory;
-    private readonly string _originalSettingsPath;
 
     public AppSettingsStoreTests()
     {
         _testDirectory = TestHelpers.CreateTempDirectory();
         
-        // Store original settings path using reflection
-        var settingsPathField = typeof(AppSettingsStore).GetField("SettingsPath",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        _originalSettingsPath = (string)settingsPathField!.GetValue(null)!;
-        
-        // Set test settings path
+        // Set test settings path using the new property
         var testSettingsPath = Path.Combine(_testDirectory, "settings.json");
-        settingsPathField.SetValue(null, testSettingsPath);
+        AppSettingsStore.SettingsPath = testSettingsPath;
     }
 
     public void Dispose()
     {
-        // Restore original settings path
-        var settingsPathField = typeof(AppSettingsStore).GetField("SettingsPath",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        settingsPathField!.SetValue(null, _originalSettingsPath);
-        
+        // Clean up test directory
         TestHelpers.CleanupTempDirectory(_testDirectory);
         GC.SuppressFinalize(this);
     }
@@ -83,9 +73,7 @@ public class AppSettingsStoreTests : IDisposable
     public void Load_WhenFileIsCorrupted_ShouldReturnDefault()
     {
         // Arrange
-        var settingsPathField = typeof(AppSettingsStore).GetField("SettingsPath",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var settingsPath = (string)settingsPathField!.GetValue(null)!;
+        var settingsPath = AppSettingsStore.SettingsPath;
         
         Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
         File.WriteAllText(settingsPath, "{ invalid json }");
@@ -118,9 +106,7 @@ public class AppSettingsStoreTests : IDisposable
     public void Load_WhenFileIsEmpty_ShouldReturnDefault()
     {
         // Arrange
-        var settingsPathField = typeof(AppSettingsStore).GetField("SettingsPath",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var settingsPath = (string)settingsPathField!.GetValue(null)!;
+        var settingsPath = AppSettingsStore.SettingsPath;
         
         Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
         File.WriteAllText(settingsPath, string.Empty);
@@ -138,9 +124,7 @@ public class AppSettingsStoreTests : IDisposable
     {
         // Arrange
         var settings = new AppSettings { LastModel = "gpt-4o" };
-        var settingsPathField = typeof(AppSettingsStore).GetField("SettingsPath",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var settingsPath = (string)settingsPathField!.GetValue(null)!;
+        var settingsPath = AppSettingsStore.SettingsPath;
 
         // Act
         AppSettingsStore.Save(settings);

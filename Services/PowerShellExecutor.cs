@@ -43,7 +43,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// The actual computer name where commands are executing (verified during connection)
     /// </summary>
-    public string? ActualComputerName => _actualComputerName;
+    public virtual string? ActualComputerName => _actualComputerName;
 
     /// <summary>
     /// Gets a snapshot of PowerShell commands executed in this session
@@ -91,7 +91,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Validates a command and determines if it can be auto-executed or requires approval
     /// </summary>
-    public CommandValidation ValidateCommand(string command)
+    public virtual CommandValidation ValidateCommand(string command)
     {
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -111,6 +111,20 @@ public class PowerShellExecutor : IDisposable
             else
             {
                 return new CommandValidation(true, true, "Script contains commands that can modify system state and requires approval");
+            }
+        }
+
+        // Check if it's a pipeline - if so, validate ALL cmdlets in the pipeline
+        if (command.Contains('|'))
+        {
+            // Use IsReadOnlyScript to validate the entire pipeline
+            if (IsReadOnlyScript(command))
+            {
+                return new CommandValidation(true, false);
+            }
+            else
+            {
+                return new CommandValidation(true, true, "Pipeline contains commands that can modify system state and requires approval");
             }
         }
 
@@ -163,10 +177,13 @@ public class PowerShellExecutor : IDisposable
         // Safe cmdlet prefixes (read-only operations)
         var safePrefixes = new[]
         {
-            "Get-", "Select-", "Where-", "Sort-", "Group-", 
+            "Get-", "Select-", "Sort-", "Group-", "Where-", "ForEach-",
             "Measure-", "Test-", "ConvertTo-", "ConvertFrom-", "Compare-",
             "Find-", "Search-", "Resolve-", "Out-String", "Out-Null"
         };
+        
+        // Cmdlets that can execute code need special checking (handled by script block validation)
+        var codeExecutionCmdlets = new[] { "Invoke-", "%", "?", "foreach", "where" };
         
         // Specific safe Format-* cmdlets (Format-Volume is NOT safe)
         var safeFormatCmdlets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -202,6 +219,19 @@ public class PowerShellExecutor : IDisposable
                 // Skip parts that are just block delimiters
                 if (part.StartsWith("{") || part.StartsWith("}") || part == "{" || part == "}")
                     continue;
+                
+                // Check for dangerous code in script blocks (e.g., ForEach-Object { $_.Kill() })
+                if (part.Contains("{") && part.Contains("}"))
+                {
+                    var scriptBlockContent = part.Substring(part.IndexOf('{') + 1, part.LastIndexOf('}') - part.IndexOf('{') - 1);
+                    // Check for dangerous methods/properties
+                    if (scriptBlockContent.Contains(".Kill(") || scriptBlockContent.Contains(".Stop(") ||
+                        scriptBlockContent.Contains("Stop-") || scriptBlockContent.Contains("Restart-") ||
+                        scriptBlockContent.Contains("Remove-") || scriptBlockContent.Contains("Set-"))
+                    {
+                        return false;
+                    }
+                }
                 
                 var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
                 if (words.Length == 0) continue;
@@ -267,7 +297,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Executes a PowerShell command and returns the result
     /// </summary>
-    public async Task<PowerShellResult> ExecuteAsync(string command)
+    public virtual async Task<PowerShellResult> ExecuteAsync(string command)
     {
         if (_runspace == null)
         {
