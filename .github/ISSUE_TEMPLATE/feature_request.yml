@@ -1,0 +1,69 @@
+name: ✨ Feature Request
+description: Suggest a new feature or enhancement
+title: "✨ [Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide details below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem? Please describe.
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like
+      placeholder: I would like TroubleScout to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions or features you've considered
+      placeholder: I've also thought about...
+
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use Case
+      description: Describe how this feature would be used
+      placeholder: |
+        This would help when...
+        Example scenario: ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: What category does this feature fall into?
+      options:
+        - Diagnostics (new diagnostic tool or check)
+        - User Interface (TUI improvements)
+        - Remote Management (WinRM/connectivity)
+        - AI/Copilot (AI capabilities)
+        - Security (security features)
+        - Performance (performance improvements)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or examples about the feature
+      placeholder: Any additional information...

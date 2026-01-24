@@ -1,0 +1,95 @@
+name: 🐛 Bug Report
+description: Report a bug or unexpected behavior
+title: "🐛 [Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug
+      placeholder: Tell us what happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Run TroubleScout with '...'
+        2. Enter prompt '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen
+      placeholder: Tell us what should happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened
+      placeholder: Tell us what actually happened
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TroubleScout Version
+      description: What version of TroubleScout are you running?
+      placeholder: "e.g., v1.0.0 or commit hash"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: What operating system are you using?
+      placeholder: "e.g., Windows 11, Windows Server 2022"
+    validations:
+      required: true
+
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET Version
+      description: What .NET version? (run `dotnet --version`)
+      placeholder: "e.g., 10.0.100"
+
+  - type: input
+    id: powershell
+    attributes:
+      label: PowerShell Version
+      description: What PowerShell version? (run `$PSVersionTable.PSVersion`)
+      placeholder: "e.g., 7.5.0"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Messages / Logs
+      description: Any error messages or relevant log output
+      placeholder: Paste error messages or logs here
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context about the problem
+      placeholder: Add any other context about the problem here
