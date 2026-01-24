@@ -62,6 +62,16 @@ Example: ✨ Add WinRM connectivity check
 Example: feat(diagnostics): add WinRM connectivity check
 ```
 
+**Option 3: Simple Plan Commits** (for workflow tracking)
+```
+Initial plan
+WIP
+Work in progress
+Checkpoint
+
+Note: These are allowed for initial planning commits but should be avoided in final PRs.
+```
+
 **Common Emojis:**
 - ✨ `:sparkles:` - New features
 - 🐛 `:bug:` - Bug fixes

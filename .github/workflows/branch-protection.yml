@@ -62,6 +62,10 @@ jobs:
             if re.match(r'^[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]\s.+', commit):
                 continue
             
+            # Allow simple plan/work tracking commits (common in automated workflows)
+            if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
+                continue
+            
             invalid_commits.append(commit)
         
         if invalid_commits:
@@ -72,6 +76,7 @@ jobs:
             print("Commit messages must either:")
             print("1. Start with an emoji (e.g., ✨ Add new feature)")
             print("2. Follow Conventional Commits (e.g., feat: add new feature)")
+            print("3. Be a simple plan commit (e.g., Initial plan, WIP)")
             sys.exit(1)
         
         print("✅ All commit messages follow the required format")
