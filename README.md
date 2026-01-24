@@ -3,6 +3,7 @@
 [![Build and Test](https://github.com/sasler/TroubleScout/actions/workflows/build.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/build.yml)
 [![Tests](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml)
 [![Branch Protection](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml)
+[![Release](https://github.com/sasler/TroubleScout/actions/workflows/release.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/release.yml)
 
 ## AI-Powered Windows Server Troubleshooting Assistant
 
@@ -277,5 +278,9 @@ All pull requests require:
 - ✅ Passing CI/CD checks (build and tests)
 - ✅ Code owner review and approval
 - ✅ Branch up-to-date with main
+
+## Release Process
+
+Releases are automatically published via GitHub Actions when version tags are pushed. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions on creating new releases.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
