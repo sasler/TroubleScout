@@ -29,10 +29,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Constructor_WithRemoteServer_ShouldSetTargetServer()
+    public async Task Constructor_WithRemoteServer_ShouldSetTargetServer()
     {
         // Arrange & Act
-        using var session = new TroubleshootingSession("remoteserver");
+        await using var session = new TroubleshootingSession("remoteserver");
 
         // Assert
         session.TargetServer.Should().Be("remoteserver");
@@ -42,20 +42,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [InlineData("")]
     [InlineData("   ")]
     [InlineData(null)]
-    public void Constructor_WithEmptyOrNullServer_ShouldDefaultToLocalhost(string? server)
+    public async Task Constructor_WithEmptyOrNullServer_ShouldDefaultToLocalhost(string? server)
     {
         // Arrange & Act
-        using var session = new TroubleshootingSession(server!);
+        await using var session = new TroubleshootingSession(server!);
 
         // Assert
         session.TargetServer.Should().Be("localhost");
     }
 
     [Fact]
-    public void Constructor_WithModel_ShouldAcceptModelParameter()
+    public async Task Constructor_WithModel_ShouldAcceptModelParameter()
     {
         // Arrange & Act
-        using var session = new TroubleshootingSession("localhost", "gpt-4o");
+        await using var session = new TroubleshootingSession("localhost", "gpt-4o");
 
         // Assert
         session.TargetServer.Should().Be("localhost");
@@ -167,20 +167,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [InlineData("localhost")]
     [InlineData("LOCALHOST")]
     [InlineData("Localhost")]
-    public void TargetServer_CaseVariations_ShouldBePreserved(string serverName)
+    public async Task TargetServer_CaseVariations_ShouldBePreserved(string serverName)
     {
         // Arrange & Act
-        using var session = new TroubleshootingSession(serverName);
+        await using var session = new TroubleshootingSession(serverName);
 
         // Assert
         session.TargetServer.Should().Be(serverName);
     }
 
     [Fact]
-    public void Constructor_WithComplexServerName_ShouldHandleCorrectly()
+    public async Task Constructor_WithComplexServerName_ShouldHandleCorrectly()
     {
         // Arrange & Act
-        using var session = new TroubleshootingSession("server.domain.com");
+        await using var session = new TroubleshootingSession("server.domain.com");
 
         // Assert
         session.TargetServer.Should().Be("server.domain.com");

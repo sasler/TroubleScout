@@ -38,7 +38,7 @@ public class DiagnosticToolsTests : IDisposable
         tools.Should().NotBeEmpty();
         tools.Should().HaveCountGreaterOrEqualTo(8);
         
-        var toolNames = tools.Select(t => t.Metadata.Name).ToArray();
+        var toolNames = tools.Select(t => t.Name).ToArray();
         toolNames.Should().Contain("run_powershell");
         toolNames.Should().Contain("get_system_info");
         toolNames.Should().Contain("get_event_logs");
@@ -58,7 +58,7 @@ public class DiagnosticToolsTests : IDisposable
         // Assert
         tools.Should().AllSatisfy(tool =>
         {
-            tool.Metadata.Description.Should().NotBeNullOrEmpty();
+            tool.Description.Should().NotBeNullOrEmpty();
         });
     }
 
@@ -85,8 +85,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         // Assert
         capturedCommand.Should().NotBeNull();
@@ -110,8 +110,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var getSystemInfoTool = tools.First(t => t.Metadata.Name == "get_system_info");
-        await getSystemInfoTool.InvokeAsync(new Dictionary<string, object?>());
+        var getSystemInfoTool = tools.First(t => t.Name == "get_system_info");
+        await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
 
         // Assert
         capturedCommand.Should().NotBeNull();
@@ -140,8 +140,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        var result = await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        var result = await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         // Assert
         result.Should().NotBeNull();
@@ -160,8 +160,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        var result = await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        var result = await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         // Assert
         var resultString = result?.ToString();
@@ -182,8 +182,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        var result = await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        var result = await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         // Assert
         var resultString = result?.ToString();
@@ -197,18 +197,18 @@ public class DiagnosticToolsTests : IDisposable
     #region Pending Command Management Tests
 
     [Fact]
-    public void ClearPendingCommands_ShouldRemoveAllPending()
+    public async Task ClearPendingCommands_ShouldRemoveAllPending()
     {
         // Arrange
         _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
             .Returns(new CommandValidation(true, true, "Requires approval"));
 
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
 
         // Add multiple pending commands
-        runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = "Stop-Service wuauserv" }).Wait();
-        runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = "Restart-Computer" }).Wait();
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = "Stop-Service wuauserv" });
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = "Restart-Computer" });
 
         // Act
         _diagnosticTools.ClearPendingCommands();
@@ -235,8 +235,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Add pending command first
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         var actualPendingCommand = _diagnosticTools.PendingCommands[0];
 
@@ -270,8 +270,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var runPowerShellTool = tools.First(t => t.Metadata.Name == "run_powershell");
-        var result = await runPowerShellTool.InvokeAsync(new Dictionary<string, object?> { ["command"] = command });
+        var runPowerShellTool = tools.First(t => t.Name == "run_powershell");
+        var result = await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
         // Assert
         var resultString = result?.ToString();
@@ -291,8 +291,8 @@ public class DiagnosticToolsTests : IDisposable
 
         // Act
         var tools = _diagnosticTools.GetTools().ToList();
-        var getSystemInfoTool = tools.First(t => t.Metadata.Name == "get_system_info");
-        var result = await getSystemInfoTool.InvokeAsync(new Dictionary<string, object?>());
+        var getSystemInfoTool = tools.First(t => t.Name == "get_system_info");
+        var result = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
 
         // Assert
         var resultString = result?.ToString();
