@@ -27,9 +27,9 @@ Use this skill when you need to turn working changes into one or more high-signa
    - Keep it short and specific; use imperative mood.
 7. Commit without bypassing hooks (do not use `--no-verify`).
 
-## Emoji suggestions (optional)
+## Emoji prefixes
 
-Use any emoji; these are common conventions:
+Commit subjects must start with an emoji. Use any emoji; these are common conventions:
 
 - ✨ New behavior / feature
 - 🐛 Bug fix

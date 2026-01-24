@@ -142,6 +142,7 @@ gh release create $version `
     - Keep `<short-desc>` lowercase and hyphenated.
 - **All git commit subject lines must begin with an emoji**, followed by a space, then the summary (example: `✨ Add WinRM connectivity check`).
 - **All pull request titles must begin with an emoji**, followed by a space.
+- **All issue titles must begin with an emoji**, followed by a space.
 - **After creating commits on a feature/fix branch, push to `origin` without asking if not already pushed/upstreamed**.
     - Never force-push.
     - If push is rejected (permissions, auth, protected branches, missing `origin`, network failure), stop and report the exact error and safe next options.

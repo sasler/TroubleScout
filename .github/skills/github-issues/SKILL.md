@@ -35,14 +35,16 @@ When leaving review comments on a PR, use the pending-review workflow:
 
 ## Recommended title patterns
 
-- Bug: `Bug: <symptom> when <condition>`
-- Feature: `Feature: <capability> for <scenario>`
-- Task: `Task: <deliverable>`
+- Bug: `<emoji> Bug: <symptom> when <condition>`
+- Feature: `<emoji> Feature: <capability> for <scenario>`
+- Task: `<emoji> Task: <deliverable>`
 
 Examples:
-- Bug: Crash when parsing empty event log output
-- Feature: Add command approval prompt for Restart-* scripts
-- Task: Document publish + zip release procedure
+- 🐛 Bug: Crash when parsing empty event log output
+- ✨ Feature: Add command approval prompt for Restart-* scripts
+- 📝 Task: Document publish + zip release procedure
+
+Note: Issue titles must start with an emoji (same convention as commits and PR titles).
 
 ## Bug report checklist
 
