@@ -44,6 +44,12 @@ jobs:
           $publishPath = "bin\Release\net10.0\win-x64\publish"
           $tempDir = "TroubleScout-$version"
 
+          # Verify runtimes folder exists
+          if (-not (Test-Path "$publishPath\runtimes")) {
+            Write-Error "runtimes folder not found at $publishPath\runtimes. Verify the publish output and build configuration."
+            exit 1
+          }
+
           # Create temporary directory and copy files
           New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
           Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
@@ -58,28 +64,12 @@ jobs:
 
           Write-Output "Package created: $zipName"
 
-      - name: Extract release notes
-        id: release_notes
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $notes = Get-Content release-notes.md -Raw
-
-          # Replace version placeholder in release notes if it exists
-          $notes = $notes -replace 'v1\.0\.0', $version
-
-          # Write to GitHub output (multiline)
-          $delimiter = "EOF_$(Get-Random)"
-          Write-Output "notes<<$delimiter" >> $env:GITHUB_OUTPUT
-          Write-Output $notes >> $env:GITHUB_OUTPUT
-          Write-Output $delimiter >> $env:GITHUB_OUTPUT
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
-          body: ${{ steps.release_notes.outputs.notes }}
+          generate_release_notes: true
           files: |
             TroubleScout-${{ steps.version.outputs.version }}-win-x64.zip
           draft: false

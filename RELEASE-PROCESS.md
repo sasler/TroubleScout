@@ -27,43 +27,42 @@ Edit `TroubleScout.csproj` and update the version numbers:
 <FileVersion>1.0.1.0</FileVersion>
 ```
 
-#### 2. Update Release Notes
+#### 2. Commit and Push Changes
 
-Edit `release-notes.md` with the new version information and changelog:
+```powershell
+git add TroubleScout.csproj
+git commit -m "🔖 Prepare release v1.0.1"
+git push origin main
+```
 
-```markdown
-## 🎉 TroubleScout v1.0.1 - Bug Fixes
+#### 3. Create and Push Version Tag with Release Notes
+
+Create an annotated tag with detailed release notes in the tag message:
+
+```powershell
+git tag -a v1.0.1 -m "Release v1.0.1
 
 ### 🐛 Bug Fixes
 - Fixed connection timeout issue
 - Improved error handling
 
+### ✨ Enhancements
+- Added better logging
+
 ### 📋 Requirements
 - Windows x64
 - Node.js
-- Active GitHub Copilot subscription
-```
+- Active GitHub Copilot subscription"
 
-#### 3. Commit and Push Changes
-
-```powershell
-git add TroubleScout.csproj release-notes.md
-git commit -m "🔖 Prepare release v1.0.1"
-git push origin main
-```
-
-#### 4. Create and Push Version Tag
-
-```powershell
-git tag -a v1.0.1 -m "Release v1.0.1"
 git push origin v1.0.1
 ```
 
-#### 5. Monitor Release Workflow
+#### 4. Monitor Release Workflow
 
 The GitHub Actions workflow will automatically:
 - Build the self-contained executable
 - Package TroubleScout.exe + runtimes/ folder into a zip
+- Create a GitHub release with auto-generated release notes from commits
 - Create a GitHub release at: `https://github.com/sasler/TroubleScout/releases`
 
 You can monitor the progress at: `https://github.com/sasler/TroubleScout/actions`
@@ -98,4 +97,7 @@ Releases are **only** triggered by version tags matching the pattern `v*.*.*`. T
 **Release not appearing?**
 - The workflow requires `contents: write` permission (already configured)
 - Check GitHub Actions logs for errors
-- Verify the `release-notes.md` file exists and is valid
+
+**Want to customize release notes?**
+- After the workflow creates the release, you can edit it on GitHub to add custom notes
+- Alternatively, include detailed information in your tag annotation message
