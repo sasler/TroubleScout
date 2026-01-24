@@ -385,6 +385,12 @@ public class PowerShellExecutor : IDisposable
             }
 
             _actualComputerName = result.Output.Trim();
+            
+            // Fallback to Environment.MachineName if PowerShell didn't return a value
+            if (string.IsNullOrWhiteSpace(_actualComputerName))
+            {
+                _actualComputerName = Environment.MachineName;
+            }
 
             // For remote connections, verify we're actually connected to the right server
             if (!_useLocalExecution)
