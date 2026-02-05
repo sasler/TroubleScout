@@ -25,7 +25,7 @@ jobs:
         shell: pwsh
         run: |
           [xml]$csproj = Get-Content TroubleScout.csproj
-          $version = $csproj.Project.PropertyGroup.Version
+          $version = ($csproj.Project.PropertyGroup | Where-Object { $_.Version }).Version
 
           if (-not $version) {
             Write-Error "Could not find version in TroubleScout.csproj"
@@ -42,9 +42,10 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $tag = "v$version"
 
-          $existingTag = git tag -l $tag
+          git rev-parse $tag 2>$null
+          $tagExists = ($LASTEXITCODE -eq 0)
 
-          if ($existingTag) {
+          if ($tagExists) {
             Write-Output "Tag $tag already exists, skipping release"
             Write-Output "skip=true" >> $env:GITHUB_OUTPUT
           } else {
@@ -64,7 +65,15 @@ jobs:
 
           # Create annotated tag
           git tag -a $tag -m "Release $tag"
+
+          # Push tag and check for errors
           git push origin $tag
+          $pushExitCode = $LASTEXITCODE
+
+          if ($pushExitCode -ne 0) {
+            Write-Error "Failed to push tag $tag to origin. Exit code: $pushExitCode"
+            exit 1
+          }
 
           Write-Output "✅ Created and pushed tag: $tag"
           Write-Output "🚀 Release workflow will now build and publish automatically"
