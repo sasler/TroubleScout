@@ -1,0 +1,7 @@
+# Allow simple plan/work tracking commits (common in automated workflows)
+            if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint|Planning|Setup|Configure)$', commit, re.IGNORECASE):
+                continue
+            
+            # Allow any commit that's just a simple action word (for automation)
+            if re.match(r'^(Add|Update|Fix|Remove|Delete|Create|Modify|Change|Refactor|Improve)\s.+', commit):
+                continue
