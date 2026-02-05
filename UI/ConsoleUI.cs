@@ -306,7 +306,18 @@ public static class ConsoleUI
             return 1;
         }
 
-        return (totalLength + width - 1) / width;
+        var rows = (totalLength + width - 1) / width;
+
+        // When totalLength is an exact multiple of the console width, the console
+        // automatically wraps to the beginning of the next line. This means the text
+        // occupies "rows" lines, but the cursor is on the following line. To ensure
+        // ClearInputRows clears all visually affected rows, we treat this as one extra row.
+        if (totalLength % width == 0)
+        {
+            rows++;
+        }
+
+        return rows;
     }
 
     private static void ClearInputRows(int rows, int width)
