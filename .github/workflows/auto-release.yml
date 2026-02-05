@@ -316,7 +316,8 @@ jobs:
           
           # Check if there are changes to commit
           git diff --cached --quiet
-          if ($LASTEXITCODE -ne 0) {
+          $hasChanges = ($LASTEXITCODE -ne 0)
+          if ($hasChanges) {
             # There are changes, commit and push
             git commit -m "🔖 Release v$version"
             git push origin $branch
