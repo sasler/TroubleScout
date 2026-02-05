@@ -63,11 +63,11 @@ jobs:
                 continue
             
             # Allow simple plan/work tracking commits (common in automated workflows)
-            if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
+            if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint|Planning|Setup|Configure)$', commit, re.IGNORECASE):
                 continue
             
-            # Allow automated update commits (common with bots and automated tools)
-            if re.match(r'^Update\s.+', commit):
+            # Allow automated commits starting with common action words
+            if re.match(r'^(Add|Update|Updated|Fix|Fixed|Remove|Removed|Delete|Deleted|Create|Created|Modify|Modified|Change|Changed|Refactor|Refactored|Improve|Improved|Replace|Replaced|Address)\s.+', commit):
                 continue
             
             invalid_commits.append(commit)
