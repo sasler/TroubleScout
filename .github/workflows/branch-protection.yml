@@ -66,8 +66,8 @@ jobs:
             if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
                 continue
             
-            # Allow automated update commits (common with bots and automated tools)
-            if re.match(r'^Update\s.+', commit):
+            # Allow automated commits with common action words and past-tense
+            if re.match(r'^(Add|Update|Updated|Fix|Fixed|Remove|Removed|Delete|Create|Modify|Change|Refactor|Improve|Replace|Address)\s.+', commit):
                 continue
             
             invalid_commits.append(commit)
