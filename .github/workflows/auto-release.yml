@@ -290,18 +290,19 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $branch = "release/v$version"
           
-          # Check if branch exists remotely and fetch it
-          git fetch origin $branch 2>$null
+          # Check if branch exists remotely
           $remoteBranch = git ls-remote --heads origin $branch
           
           if ($remoteBranch) {
             Write-Output "Branch $branch exists remotely, checking out and syncing"
-            git checkout $branch 2>$null
-            if ($LASTEXITCODE -ne 0) {
+            # Check if branch exists locally
+            $localBranch = git rev-parse --verify $branch 2>$null
+            if (-not $localBranch) {
               # Branch doesn't exist locally, create tracking branch
               git checkout -b $branch origin/$branch
             } else {
-              # Branch exists locally, pull latest
+              # Branch exists locally, switch to it and pull latest
+              git checkout $branch
               git pull origin $branch
             }
           } else {
@@ -313,8 +314,8 @@ jobs:
           git add TroubleScout.csproj CHANGELOG.md
           
           # Check if there are changes to commit
-          $changes = git diff --cached
-          if (-not $changes) {
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
             Write-Output "No changes to commit, branch is already up to date"
           } else {
             # Commit changes
