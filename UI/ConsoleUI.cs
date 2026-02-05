@@ -853,9 +853,21 @@ public static class ConsoleUI
 
     private static void EnsureLineBreak()
     {
-        if (Console.CursorLeft != 0)
+        if (Console.IsOutputRedirected)
         {
-            Console.WriteLine();
+            return;
+        }
+
+        try
+        {
+            if (Console.CursorLeft != 0)
+            {
+                Console.WriteLine();
+            }
+        }
+        catch (IOException)
+        {
+            // Ignore cursor checks when no console is attached (e.g., test runs).
         }
     }
 
