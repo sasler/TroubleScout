@@ -4,438 +4,67 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+    paths:
+      - 'TroubleScout.csproj'
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  # Job 1: Compute next version and create release PR
-  create-release-pr:
-    if: github.event_name == 'push'
+  auto-release:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for version detection
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Compute next version
+      - name: Get version from csproj
         id: version
         shell: pwsh
         run: |
-          # Get the last release tag
-          $lastTag = git describe --tags --abbrev=0 --match "v*.*.*" 2>$null
-          if (-not $lastTag) {
-            $lastTag = "v0.0.0"
-            Write-Output "No previous tags found, starting from v0.0.0"
+          [xml]$csproj = Get-Content TroubleScout.csproj
+          $version = $csproj.Project.PropertyGroup.Version
+
+          if (-not $version) {
+            Write-Error "Could not find version in TroubleScout.csproj"
+            exit 1
           }
-          Write-Output "Last tag: $lastTag"
-          
-          # Get commits since last tag
-          $commits = git log "$lastTag..HEAD" --oneline
-          if (-not $commits) {
-            Write-Output "No new commits since last release"
-            Write-Output "skip=true" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-          
-          Write-Output "Commits since last tag:"
-          Write-Output $commits
-          
-          # Parse current version
-          $currentVersion = $lastTag -replace '^v', ''
-          $parts = $currentVersion -split '\.'
-          [int]$major = $parts[0]
-          [int]$minor = $parts[1]
-          [int]$patch = $parts[2]
-          
-          # Analyze commits for version bump
-          $hasMajor = $false
-          $hasMinor = $false
-          $hasPatch = $false
-          
-          foreach ($commit in $commits) {
-            # Check for major version bump (breaking changes)
-            if ($commit -match '💥|BREAKING CHANGE:|breaking:') {
-              $hasMajor = $true
-            }
-            # Check for minor version bump (features)
-            elseif ($commit -match '✨|feat:|feature:') {
-              $hasMinor = $true
-            }
-            # Check for patch version bump (fixes, performance, refactor)
-            elseif ($commit -match '🐛|fix:|⚡|perf:|♻️|refactor:') {
-              $hasPatch = $true
-            }
-          }
-          
-          # Check if only non-release commits (docs, tests, ci, chore)
-          $allCommitsSkippable = $true
-          foreach ($commit in $commits) {
-            if ($commit -notmatch '📝|docs:|🧪|test:|👷|ci:|chore:') {
-              $allCommitsSkippable = $false
-              break
-            }
-          }
-          
-          if ($allCommitsSkippable) {
-            Write-Output "All commits are non-release types (docs/test/ci/chore), skipping release"
-            Write-Output "skip=true" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-          
-          # Determine version bump
-          if ($hasMajor) {
-            $major++
-            $minor = 0
-            $patch = 0
-            $bumpType = "major"
-          }
-          elseif ($hasMinor) {
-            $minor++
-            $patch = 0
-            $bumpType = "minor"
-          }
-          elseif ($hasPatch) {
-            $patch++
-            $bumpType = "patch"
-          }
-          else {
-            Write-Output "No version bump needed"
-            Write-Output "skip=true" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-          
-          $nextVersion = "$major.$minor.$patch"
-          Write-Output "Next version: v$nextVersion (bump: $bumpType)"
-          
-          # Check if this version already has a tag
-          $existingTag = git tag -l "v$nextVersion"
+
+          Write-Output "Current version in csproj: $version"
+          Write-Output "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: check_tag
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tag = "v$version"
+
+          $existingTag = git tag -l $tag
+
           if ($existingTag) {
-            Write-Output "Version v$nextVersion already exists, skipping"
+            Write-Output "Tag $tag already exists, skipping release"
             Write-Output "skip=true" >> $env:GITHUB_OUTPUT
-            exit 0
+          } else {
+            Write-Output "Tag $tag does not exist, will create release"
+            Write-Output "skip=false" >> $env:GITHUB_OUTPUT
           }
-          
-          Write-Output "skip=false" >> $env:GITHUB_OUTPUT
-          Write-Output "version=$nextVersion" >> $env:GITHUB_OUTPUT
-          Write-Output "last_tag=$lastTag" >> $env:GITHUB_OUTPUT
-          Write-Output "bump_type=$bumpType" >> $env:GITHUB_OUTPUT
 
-      - name: Update TroubleScout.csproj
-        if: steps.version.outputs.skip != 'true'
+      - name: Create release tag
+        if: steps.check_tag.outputs.skip != 'true'
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          Write-Output "Updating TroubleScout.csproj to version $version"
-          
-          $csprojPath = "TroubleScout.csproj"
-          [xml]$xml = Get-Content $csprojPath
-          
-          # Update all three version properties
-          $propertyGroup = $xml.Project.PropertyGroup | Where-Object { $_.Version }
-          $propertyGroup.Version = $version
-          $propertyGroup.AssemblyVersion = "$version.0"
-          $propertyGroup.FileVersion = "$version.0"
-          
-          $xml.Save((Resolve-Path $csprojPath))
-          Write-Output "Updated version properties:"
-          Write-Output "  Version: $version"
-          Write-Output "  AssemblyVersion: $version.0"
-          Write-Output "  FileVersion: $version.0"
+          $tag = "v$version"
 
-      - name: Generate CHANGELOG entry
-        if: steps.version.outputs.skip != 'true'
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $lastTag = "${{ steps.version.outputs.last_tag }}"
-          $date = Get-Date -Format "yyyy-MM-dd"
-          
-          Write-Output "Generating CHANGELOG entry for v$version"
-          
-          # Get commits and categorize them
-          $commits = git log "$lastTag..HEAD" --pretty=format:"%s" 2>$null
-          if (-not $commits) {
-            $commits = @()
-          } elseif ($commits -is [string]) {
-            $commits = @($commits)
-          }
-          
-          $breaking = @()
-          $features = @()
-          $fixes = @()
-          $perf = @()
-          $refactor = @()
-          $other = @()
-          
-          foreach ($commit in $commits) {
-            if ($commit -match '💥|BREAKING CHANGE:|breaking:') {
-              $breaking += $commit
-            }
-            elseif ($commit -match '✨|feat:|feature:') {
-              $features += $commit
-            }
-            elseif ($commit -match '🐛|fix:') {
-              $fixes += $commit
-            }
-            elseif ($commit -match '⚡|perf:') {
-              $perf += $commit
-            }
-            elseif ($commit -match '♻️|refactor:') {
-              $refactor += $commit
-            }
-            elseif ($commit -notmatch '📝|docs:|🧪|test:|👷|ci:|chore:|🔖|Merge') {
-              $other += $commit
-            }
-          }
-          
-          # Build CHANGELOG content
-          $changelog = "## [v$version] - $date`n"
-          
-          if ($breaking.Count -gt 0) {
-            $changelog += "`n### 💥 Breaking Changes`n`n"
-            foreach ($item in $breaking) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          if ($features.Count -gt 0) {
-            $changelog += "`n### ✨ Features`n`n"
-            foreach ($item in $features) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          if ($fixes.Count -gt 0) {
-            $changelog += "`n### 🐛 Bug Fixes`n`n"
-            foreach ($item in $fixes) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          if ($perf.Count -gt 0) {
-            $changelog += "`n### ⚡ Performance`n`n"
-            foreach ($item in $perf) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          if ($refactor.Count -gt 0) {
-            $changelog += "`n### ♻️ Refactoring`n`n"
-            foreach ($item in $refactor) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          if ($other.Count -gt 0) {
-            $changelog += "`n### 🔧 Other Changes`n`n"
-            foreach ($item in $other) {
-              $changelog += "- $item`n"
-            }
-          }
-          
-          # Prepend to existing CHANGELOG.md or create new one
-          if (Test-Path "CHANGELOG.md") {
-            $existingContent = Get-Content "CHANGELOG.md" -Raw
-            $newContent = $changelog + "`n`n" + $existingContent
-          } else {
-            $header = "# Changelog`n`nAll notable changes to TroubleScout will be documented in this file.`n`n"
-            $newContent = $header + $changelog
-          }
-          
-          Set-Content -Path "CHANGELOG.md" -Value $newContent -NoNewline
-          Write-Output "CHANGELOG.md updated"
-
-      - name: Check for existing release PR
-        if: steps.version.outputs.skip != 'true'
-        id: check_pr
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $branch = "release/v$version"
-          
-          # Check if PR already exists
-          $existingPR = gh pr list --head $branch --json number --jq '.[0].number' 2>$null
-          
-          if ($existingPR) {
-            Write-Output "Release PR already exists: #$existingPR"
-            Write-Output "pr_exists=true" >> $env:GITHUB_OUTPUT
-            Write-Output "pr_number=$existingPR" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Output "No existing release PR found"
-            Write-Output "pr_exists=false" >> $env:GITHUB_OUTPUT
-          }
-
-      - name: Create release PR
-        if: steps.version.outputs.skip != 'true' && steps.check_pr.outputs.pr_exists != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $branch = "release/v$version"
-          
-          # Check if branch exists remotely
-          $remoteBranch = git ls-remote --heads origin $branch
-          
-          if ($remoteBranch) {
-            Write-Output "Branch $branch exists remotely, checking out and syncing"
-            # Check if branch exists locally
-            git rev-parse --verify $branch 2>$null
-            $branchExistsLocally = ($LASTEXITCODE -eq 0)
-            if (-not $branchExistsLocally) {
-              # Branch doesn't exist locally, create tracking branch
-              git checkout -b $branch origin/$branch
-            } else {
-              # Branch exists locally, switch to it and pull latest
-              git checkout $branch
-              git pull origin $branch
-            }
-          } else {
-            Write-Output "Creating new branch $branch"
-            git checkout -b $branch
-          }
-          
-          # Stage changes
-          git add TroubleScout.csproj CHANGELOG.md
-          
-          # Check if there are changes to commit
-          git diff --cached --quiet
-          $hasChanges = ($LASTEXITCODE -ne 0)
-          if ($hasChanges) {
-            # There are changes, commit and push
-            git commit -m "🔖 Release v$version"
-            git push origin $branch
-          } else {
-            Write-Output "No changes to commit, branch is already up to date"
-          }
-          
-          # Extract CHANGELOG entry for PR body
-          $changelogContent = Get-Content "CHANGELOG.md" -Raw
-          $pattern = "(?s)## \[v$version\].*?(?=## \[|$)"
-          if ($changelogContent -match $pattern) {
-            $prBody = $Matches[0].Trim()
-          } else {
-            $prBody = "Release v$version"
-          }
-          
-          # Add checklist to PR body
-          $prBody += "`n`n---`n`n"
-          $prBody += "### Release Checklist`n`n"
-          $prBody += "- [ ] Review CHANGELOG.md for accuracy`n"
-          $prBody += "- [ ] Verify version numbers in TroubleScout.csproj`n"
-          $prBody += "- [ ] CI checks pass (build & tests)`n"
-          $prBody += "- [ ] Ready to create release tag and publish`n"
-          
-          # Create PR
-          gh pr create `
-            --title "🔖 Release v$version" `
-            --body $prBody `
-            --base main `
-            --head $branch `
-            --label "release,automated"
-          
-          Write-Output "✅ Release PR created for v$version"
-
-      - name: Update existing release PR
-        if: steps.version.outputs.skip != 'true' && steps.check_pr.outputs.pr_exists == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $branch = "release/v$version"
-          $prNumber = "${{ steps.check_pr.outputs.pr_number }}"
-          
-          # Fetch and checkout release branch
-          git fetch origin $branch
-          git checkout $branch
-          
-          # Stage changes
-          git add TroubleScout.csproj CHANGELOG.md
-          
-          # Check if there are changes
-          $changes = git diff --cached
-          if ($changes) {
-            # Commit and force push updates
-            git commit -m "🔖 Release v$version"
-            git push origin $branch --force
-            
-            Write-Output "✅ Updated existing release PR #$prNumber"
-          } else {
-            Write-Output "No changes to update in PR #$prNumber"
-          }
-
-  # Job 2: Create tag when release PR is merged
-  create-release-tag:
-    if: |
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'release/')
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Git
-        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Extract version and create tag
-        shell: pwsh
-        run: |
-          $branch = "${{ github.event.pull_request.head.ref }}"
-          Write-Output "Release branch: $branch"
-          
-          # Extract version from branch name (release/vX.Y.Z -> vX.Y.Z)
-          if ($branch -match 'release/(v[\d.]+)') {
-            $version = $Matches[1]
-            Write-Output "Creating release tag: $version"
-            
-            # Create annotated tag with CHANGELOG content
-            $changelogEntry = ""
-            if (Test-Path "CHANGELOG.md") {
-              $changelogContent = Get-Content "CHANGELOG.md" -Raw
-              $pattern = "(?s)## \[$version\].*?(?=## \[|$)"
-              if ($changelogContent -match $pattern) {
-                $changelogEntry = $Matches[0].Trim()
-              }
-            }
-            
-            if ($changelogEntry) {
-              $tagMessage = $changelogEntry
-            } else {
-              $tagMessage = "Release $version"
-            }
-            
-            # Create and push tag
-            git tag -a $version -m "$tagMessage"
-            git push origin $version
-            
-            Write-Output "✅ Created and pushed tag: $version"
-            Write-Output "🚀 Release workflow should now trigger automatically"
-          } else {
-            Write-Error "Could not extract version from branch name: $branch"
-            exit 1
-          }
+          # Create annotated tag
+          git tag -a $tag -m "Release $tag"
+          git push origin $tag
+
+          Write-Output "✅ Created and pushed tag: $tag"
+          Write-Output "🚀 Release workflow will now build and publish automatically"
