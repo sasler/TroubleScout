@@ -332,15 +332,11 @@ public static class ConsoleUI
         var rowsToClear = Math.Min(rows, maxRowsAvailable);
         var startRow = cursorTop - (rowsToClear - 1);
 
-        Console.SetCursorPosition(0, startRow);
 
-        for (var i = 0; i < rowsToClear; i++)
+        for (var i = 0; i < rows; i++)
         {
+            Console.SetCursorPosition(0, startRow + i);
             Console.Write(new string(' ', width));
-            if (i < rowsToClear - 1)
-            {
-                Console.WriteLine();
-            }
         }
 
         Console.SetCursorPosition(0, startRow);
