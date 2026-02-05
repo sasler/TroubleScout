@@ -322,13 +322,22 @@ public static class ConsoleUI
 
     private static void ClearInputRows(int rows, int width)
     {
-        var startRow = Math.Max(0, Console.CursorTop - Math.Max(0, rows - 1));
+        if (rows <= 0 || width <= 0)
+        {
+            return;
+        }
+
+        var cursorTop = Console.CursorTop;
+        var maxRowsAvailable = cursorTop + 1;
+        var rowsToClear = Math.Min(rows, maxRowsAvailable);
+        var startRow = cursorTop - (rowsToClear - 1);
+
         Console.SetCursorPosition(0, startRow);
 
-        for (var i = 0; i < rows; i++)
+        for (var i = 0; i < rowsToClear; i++)
         {
             Console.Write(new string(' ', width));
-            if (i < rows - 1)
+            if (i < rowsToClear - 1)
             {
                 Console.WriteLine();
             }
