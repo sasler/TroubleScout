@@ -290,16 +290,43 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $branch = "release/v$version"
           
-          # Create and switch to release branch
-          git checkout -b $branch
+          # Fetch all remote branches
+          git fetch origin
+          
+          # Check if branch exists remotely
+          $remoteBranch = git ls-remote --heads origin $branch
+          
+          if ($remoteBranch) {
+            Write-Output "Branch $branch exists remotely, checking out and syncing"
+            
+            # Check if local branch exists
+            $localBranch = git branch --list $branch
+            
+            if (-not $localBranch) {
+              # Create local tracking branch
+              git checkout -b $branch origin/$branch
+            } else {
+              # Switch to existing local branch and sync
+              git checkout $branch
+              git pull origin $branch
+            }
+          } else {
+            Write-Output "Creating new branch $branch"
+            git checkout -b $branch
+          }
           
           # Stage changes
           git add TroubleScout.csproj CHANGELOG.md
           
-          # Commit changes
-          git commit -m "🔖 Release v$version"
+          # Check if there are changes to commit
+          if (git diff --cached --quiet) {
+            Write-Output "No changes to commit, branch is already up to date"
+          } else {
+            # Commit changes
+            git commit -m "🔖 Release v$version"
+          }
           
-          # Push branch
+          # Push branch (will be no-op if no changes)
           git push origin $branch
           
           # Extract CHANGELOG entry for PR body
