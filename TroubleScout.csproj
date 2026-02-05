@@ -1,4 +1,5 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Trigger auto-release workflow for v1.2.0 -->
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
