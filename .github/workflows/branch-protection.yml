@@ -24,7 +24,7 @@ jobs:
         echo "Branch name: $BRANCH_NAME"
         
         # Allow specific branch name patterns
-        if [[ "$BRANCH_NAME" =~ ^(feature|fix|hotfix|chore|docs|test|refactor|perf|ci|build|revert|release)/[a-z0-9-]+$ ]] || \
+        if [[ "$BRANCH_NAME" =~ ^(feature|fix|hotfix|chore|docs|test|refactor|perf|ci|build|revert|release)/[a-z0-9.-]+$ ]] || \
            [[ "$BRANCH_NAME" =~ ^(dependabot|renovate|copilot)/ ]]; then
           echo "✅ Branch name follows convention"
         else
