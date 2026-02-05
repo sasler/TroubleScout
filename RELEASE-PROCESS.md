@@ -4,65 +4,51 @@ This document explains how TroubleScout releases are created and published.
 
 ## Automated Release System
 
-TroubleScout uses a fully automated release system powered by GitHub Actions. When you merge a PR to main, the system analyzes commits to determine if a release is needed and automatically creates a release PR. When that PR is merged, the release is published automatically.
+TroubleScout uses a simple automated release system powered by GitHub Actions. When you update the version in `TroubleScout.csproj` and push to main, a release tag is automatically created, which triggers the build and publish workflow.
 
 ### How It Works
 
-The release process has three main stages:
+The release process has two main stages:
 
-1. **PR Merge to Main**: When any PR is merged to `main`, the `auto-release.yml` workflow triggers
-2. **Version Detection & Release PR**: The workflow:
-   - Analyzes commits since the last release
-   - Determines the version bump (major/minor/patch) using semantic versioning rules
-   - Updates `TroubleScout.csproj` with new version numbers
-   - Generates `CHANGELOG.md` entry from commits
-   - Creates a "Release vX.Y.Z" PR automatically
-3. **Release Publishing**: When the release PR is merged:
-   - A version tag is created automatically
+1. **Version Update to Main**: When `TroubleScout.csproj` is updated on `main`, the `auto-release.yml` workflow triggers
+2. **Automatic Tag Creation**: The workflow:
+   - Reads the version from `TroubleScout.csproj`
+   - Checks if a tag exists for that version
+   - If no tag exists, creates and pushes the tag (e.g., `v1.2.0`)
+   - Tag creation triggers the `release.yml` workflow
+3. **Release Publishing**: When the tag is pushed:
    - The `release.yml` workflow builds the self-contained executable
    - A GitHub release is published with the packaged zip file
 
-### Semantic Versioning Rules
+### Normal Release Flow (Simple!)
 
-The automation uses commit message prefixes (emoji or conventional) to determine version bumps:
-
-| Commit Type | Version Bump | Examples |
-|-------------|--------------|----------|
-| **Major** (x.0.0) | Breaking changes | `💥`, `BREAKING CHANGE:`, `breaking:` |
-| **Minor** (0.x.0) | New features | `✨`, `feat:`, `feature:` |
-| **Patch** (0.0.x) | Bug fixes, performance, refactoring | `🐛`, `fix:`, `⚡`, `perf:`, `♻️`, `refactor:` |
-| **Skip Release** | Documentation, tests, CI, chores | `📝`, `docs:`, `🧪`, `test:`, `👷`, `ci:`, `chore:` |
-
-### Normal Release Flow (Automated)
-
-**You don't need to do anything!** Just merge PRs with proper commit messages:
-
-1. **Create and merge your feature/fix PR** to `main` with appropriate commit message:
-   ```bash
-   git commit -m "✨ Add WinRM connection timeout configuration"
-   # or
-   git commit -m "🐛 Fix input wrap redraw issue"
+1. **Update version in TroubleScout.csproj**:
+   ```xml
+   <Version>1.3.0</Version>
+   <AssemblyVersion>1.3.0.0</AssemblyVersion>
+   <FileVersion>1.3.0.0</FileVersion>
    ```
 
-2. **Wait for release PR**: Within 1-2 minutes, a release PR will be created automatically:
-   - Title: `🔖 Release vX.Y.Z`
-   - Contents: Updated `TroubleScout.csproj` and `CHANGELOG.md`
-   - Labels: `release`, `automated`
+2. **Commit and push to main**:
+   ```bash
+   git add TroubleScout.csproj
+   git commit -m "🔖 Bump version to 1.3.0"
+   git push origin main
+   ```
 
-3. **Review and merge release PR**:
-   - Verify the version number is correct
-   - Review the CHANGELOG.md entries
-   - Ensure CI checks pass
-   - Merge the PR (no special merge strategy required)
+3. **Automatic tag creation**:
+   - Within 1-2 minutes, `auto-release.yml` workflow runs
+   - Creates tag `v1.3.0` automatically
+   - Tag is pushed to the repository
 
 4. **Release publishes automatically**:
-   - Tag is created: `vX.Y.Z`
-   - Build workflow runs
+   - `release.yml` workflow runs
+   - Builds and packages the release
    - GitHub release is published at `https://github.com/sasler/TroubleScout/releases`
 
 ### Manual Release Override
 
-In rare cases where you need to create a release manually (e.g., automation failure, hotfix), you can bypass the automated system:
+In rare cases where you need to create a release manually (e.g., automation failure), you can create the tag yourself:
 
 #### 1. Update Version Number
 
@@ -74,39 +60,22 @@ Edit `TroubleScout.csproj` and update the version numbers:
 <FileVersion>1.0.1.0</FileVersion>
 ```
 
-#### 2. Update CHANGELOG.md
-
-Add a new section at the top of `CHANGELOG.md`:
-
-```markdown
-## [v1.0.1] - 2026-02-05
-
-### 🐛 Bug Fixes
-- Fixed critical security issue
-```
-
-#### 3. Commit and Push Changes
+#### 2. Commit and Push Changes
 
 ```powershell
-git add TroubleScout.csproj CHANGELOG.md
+git add TroubleScout.csproj
 git commit -m "🔖 Release v1.0.1"
 git push origin main
 ```
 
-#### 4. Create and Push Version Tag
-
-Create an annotated tag with the CHANGELOG content:
+#### 3. Create and Push Version Tag Manually (if automation fails)
 
 ```powershell
-git tag -a v1.0.1 -m "Release v1.0.1
-
-### 🐛 Bug Fixes
-- Fixed critical security issue"
-
+git tag -a v1.0.1 -m "Release v1.0.1"
 git push origin v1.0.1
 ```
 
-#### 5. Monitor Release Workflow
+#### 4. Monitor Release Workflow
 
 The GitHub Actions workflow will automatically:
 - Build the self-contained executable
@@ -124,64 +93,35 @@ Each release includes a single zip file named `TroubleScout-{version}-win-x64.zi
 
 **Important**: Both files must be extracted together. The executable requires the `runtimes/` folder to function.
 
-### What Gets Released?
+### Version Numbering
 
-The automation system is smart about what triggers a release:
+TroubleScout follows semantic versioning (MAJOR.MINOR.PATCH):
 
-**Creates a release for:**
-- New features (`✨ feat:`)
-- Bug fixes (`🐛 fix:`)
-- Performance improvements (`⚡ perf:`)
-- Code refactoring (`♻️ refactor:`)
-- Breaking changes (`💥 BREAKING CHANGE:`)
+- **MAJOR**: Breaking changes or significant rewrites
+- **MINOR**: New features, backwards-compatible
+- **PATCH**: Bug fixes, performance improvements, backwards-compatible
 
-**Skips release for:**
-- Documentation changes only (`📝 docs:`)
-- Test changes only (`🧪 test:`)
-- CI/CD changes only (`👷 ci:`)
-- Chores and maintenance (`chore:`)
-
-**Note**: If a PR contains both release-worthy commits (like features) AND non-release commits (like docs), a release will be created.
-
-### Release PR Review Checklist
-
-When a release PR is automatically created, review these items before merging:
-
-- [ ] **Version number is correct**: Check if major/minor/patch bump is appropriate
-- [ ] **CHANGELOG.md is accurate**: Ensure commit messages were categorized correctly
-- [ ] **All CI checks pass**: Build and test workflows must succeed
-- [ ] **No breaking changes missed**: If breaking changes exist, ensure major version bumped
-- [ ] **Documentation is current**: README and docs reflect new version's features
+When updating the version in `TroubleScout.csproj`, choose the appropriate bump based on your changes.
 
 ### Troubleshooting
 
-**No release PR created after merging?**
-- Check if commits match non-release types (docs/test/ci/chore only)
-- Verify `auto-release.yml` workflow ran: Check Actions tab
+**No tag created after version update?**
+- Verify the change to `TroubleScout.csproj` was pushed to main
+- Check if `auto-release.yml` workflow ran: Check Actions tab
 - Look for errors in the workflow logs
+- Verify the tag doesn't already exist: `git tag -l`
 
-**Release PR has wrong version?**
-- Check commit message prefixes match the semantic versioning rules
-- Manually close the PR and update commit messages if needed
-- The automation will create a new PR on the next push to main
+**Tag already exists for version?**
+- The workflow will skip tag creation if it already exists
+- To create a new release, bump the version number in `TroubleScout.csproj`
+- Commit and push the updated version
 
-**Multiple release PRs open?**
-- This shouldn't happen - only one release PR per version
-- Close older/stale release PRs manually
-- The latest PR reflects the current state
-
-**Release workflow fails after merging release PR?**
-- Check if the tag was created: `git fetch --tags && git tag -l`
+**Release workflow fails after tag creation?**
 - Verify `release.yml` workflow ran: Check Actions tab
 - Review build errors in workflow logs
-- If build fails, fix the issue and re-run the workflow
+- If build fails, fix the issue and manually re-run the workflow from the Actions tab
 
-**Need to update CHANGELOG after PR created?**
-- Manually edit `CHANGELOG.md` in the release PR branch
-- Commit and push changes to the release PR
-- The changes will be included when the PR merges
-
-**Want to customize release notes?**
-- After the release is published, you can edit it on GitHub
-- Go to Releases → Click the release → Edit button
-- Add additional context, upgrade instructions, or warnings
+**Need to create a hotfix release?**
+- Update version in `TroubleScout.csproj` (e.g., 1.2.0 → 1.2.1)
+- Commit and push to main
+- Tag and release will be created automatically

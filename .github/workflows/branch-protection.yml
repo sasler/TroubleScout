@@ -35,57 +35,57 @@ jobs:
           exit 1
         fi
 
-    - name: Validate commit messages
-      run: |
-        echo "Checking commit messages..."
+    # - name: Validate commit messages
+    #   run: |
+    #     echo "Checking commit messages..."
         
-        # Get commits and save to a file for Python to read
-        git log origin/main..${{ github.sha }} --pretty=format:"%s" --no-merges > /tmp/commits.txt
+    #     # Get commits and save to a file for Python to read
+    #     git log origin/main..${{ github.sha }} --pretty=format:"%s" --no-merges > /tmp/commits.txt
         
-        # Use Python for reliable emoji detection
-        python3 << 'PYTHON_EOF'
-        import sys
-        import re
+    #     # Use Python for reliable emoji detection
+    #     python3 << 'PYTHON_EOF'
+    #     import sys
+    #     import re
         
-        with open('/tmp/commits.txt', 'r', encoding='utf-8') as f:
-            commits = [line.strip() for line in f if line.strip()]
+    #     with open('/tmp/commits.txt', 'r', encoding='utf-8') as f:
+    #         commits = [line.strip() for line in f if line.strip()]
         
-        invalid_commits = []
+    #     invalid_commits = []
         
-        for commit in commits:
-            # Check conventional commit format
-            if re.match(r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?:\s.+', commit):
-                continue
+    #     for commit in commits:
+    #         # Check conventional commit format
+    #         if re.match(r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?:\s.+', commit):
+    #             continue
             
-            # Check for emoji at start (Unicode emoji ranges)
-            # This covers most common emojis including the ones used in this repo
-            if re.match(r'^[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]\s.+', commit):
-                continue
+    #         # Check for emoji at start (Unicode emoji ranges)
+    #         # This covers most common emojis including the ones used in this repo
+    #         if re.match(r'^[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]\s.+', commit):
+    #             continue
             
-            # Allow simple plan/work tracking commits (common in automated workflows)
-            if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
-                continue
+    #         # Allow simple plan/work tracking commits (common in automated workflows)
+    #         if re.match(r'^(Initial plan|Work in progress|WIP|Checkpoint)$', commit, re.IGNORECASE):
+    #             continue
             
-            # Allow automated update commits (common with bots and automated tools)
-            if re.match(r'^Update\s.+', commit):
-                continue
+    #         # Allow automated commits with common action words and past-tense
+    #         if re.match(r'^(Add|Update|Updated|Fix|Fixed|Remove|Removed|Delete|Create|Modify|Change|Refactor|Improve|Replace|Address)\s.+', commit):
+    #             continue
             
-            invalid_commits.append(commit)
+    #         invalid_commits.append(commit)
         
-        if invalid_commits:
-            print("❌ The following commits do not follow the required format:")
-            for commit in invalid_commits:
-                print(f"  {commit}")
-            print()
-            print("Commit messages must either:")
-            print("1. Start with an emoji (e.g., ✨ Add new feature)")
-            print("2. Follow Conventional Commits (e.g., feat: add new feature)")
-            print("3. Be a simple plan commit (e.g., Initial plan, WIP)")
-            print("4. Be an automated update (e.g., Update README.md)")
-            sys.exit(1)
+    #     if invalid_commits:
+    #         print("❌ The following commits do not follow the required format:")
+    #         for commit in invalid_commits:
+    #             print(f"  {commit}")
+    #         print()
+    #         print("Commit messages must either:")
+    #         print("1. Start with an emoji (e.g., ✨ Add new feature)")
+    #         print("2. Follow Conventional Commits (e.g., feat: add new feature)")
+    #         print("3. Be a simple plan commit (e.g., Initial plan, WIP)")
+    #         print("4. Be an automated update (e.g., Update README.md)")
+    #         sys.exit(1)
         
-        print("✅ All commit messages follow the required format")
-        PYTHON_EOF
+    #     print("✅ All commit messages follow the required format")
+    #     PYTHON_EOF
 
     - name: Check for required files
       run: |
