@@ -11,6 +11,10 @@ namespace TroubleScout.UI;
 /// </summary>
 public static class ConsoleUI
 {
+    private const string PromptMarkup = "[bold cyan]You[/] [grey]>[/] ";
+    private const string PromptText = "You > ";
+    private static int _lastInputRowCount = 1;
+
     /// <summary>
     /// Display the application banner
     /// </summary>
@@ -196,7 +200,7 @@ public static class ConsoleUI
     /// </summary>
     public static string GetUserInput(IReadOnlyList<string>? slashCommands = null)
     {
-        AnsiConsole.Markup("[bold cyan]You[/] [grey]>[/] ");
+        AnsiConsole.Markup(PromptMarkup);
         if (slashCommands == null || slashCommands.Count == 0)
         {
             return Console.ReadLine() ?? string.Empty;
@@ -205,6 +209,7 @@ public static class ConsoleUI
         var buffer = new StringBuilder();
         var completionIndex = -1;
         List<string>? matches = null;
+        _lastInputRowCount = 1;
 
         while (true)
         {
@@ -212,7 +217,17 @@ public static class ConsoleUI
 
             if (key.Key == ConsoleKey.Enter)
             {
+                if (Console.KeyAvailable)
+                {
+                    buffer.Append(' ');
+                    completionIndex = -1;
+                    matches = null;
+                    RedrawInputLine(buffer.ToString());
+                    continue;
+                }
+
                 Console.WriteLine();
+                _lastInputRowCount = 1;
                 return buffer.ToString();
             }
 
@@ -260,17 +275,55 @@ public static class ConsoleUI
                 completionIndex = -1;
                 matches = null;
                 Console.Write(key.KeyChar);
+                UpdateInputRowCount(buffer.Length);
             }
         }
     }
 
     private static void RedrawInputLine(string text)
     {
-        Console.Write("\r");
-        Console.Write(new string(' ', Math.Max(0, Console.WindowWidth - 1)));
-        Console.Write("\r");
-        AnsiConsole.Markup("[bold cyan]You[/] [grey]>[/] ");
+        var width = Math.Max(1, Console.BufferWidth);
+        var currentRows = GetInputRowCount(width, text.Length);
+        var rowsToClear = Math.Max(_lastInputRowCount, currentRows);
+
+        ClearInputRows(rowsToClear, width);
+        AnsiConsole.Markup(PromptMarkup);
         Console.Write(text);
+        _lastInputRowCount = currentRows;
+    }
+
+    private static void UpdateInputRowCount(int textLength)
+    {
+        var width = Math.Max(1, Console.BufferWidth);
+        _lastInputRowCount = GetInputRowCount(width, textLength);
+    }
+
+    private static int GetInputRowCount(int width, int textLength)
+    {
+        var totalLength = PromptText.Length + textLength;
+        if (totalLength <= 0)
+        {
+            return 1;
+        }
+
+        return (totalLength + width - 1) / width;
+    }
+
+    private static void ClearInputRows(int rows, int width)
+    {
+        var startRow = Math.Max(0, Console.CursorTop - Math.Max(0, rows - 1));
+        Console.SetCursorPosition(0, startRow);
+
+        for (var i = 0; i < rows; i++)
+        {
+            Console.Write(new string(' ', width));
+            if (i < rows - 1)
+            {
+                Console.WriteLine();
+            }
+        }
+
+        Console.SetCursorPosition(0, startRow);
     }
 
     /// <summary>
@@ -589,7 +642,7 @@ public static class ConsoleUI
     public static void StartAIResponse()
     {
         ResetStreamBuffer(); // Reset markdown parsing state
-        AnsiConsole.WriteLine();
+        EnsureLineBreak();
         AnsiConsole.Markup("[bold green]TroubleScout[/] [grey]>[/] ");
     }
 
@@ -762,6 +815,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowToolExecution(string toolName, string? arguments = null)
     {
+        EnsureLineBreak();
         var text = arguments != null 
             ? $"[grey]Executing:[/] [cyan]{Markup.Escape(toolName)}[/] [grey]{Markup.Escape(arguments)}[/]"
             : $"[grey]Executing:[/] [cyan]{Markup.Escape(toolName)}[/]";
@@ -774,6 +828,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowCommandExecution(string command, string targetServer)
     {
+        EnsureLineBreak();
         var serverDisplay = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? "[green]localhost[/]"
             : $"[yellow]{Markup.Escape(targetServer)}[/]";
@@ -793,6 +848,14 @@ public static class ConsoleUI
         else
         {
             AnsiConsole.Write(new Rule($"[grey]{title}[/]").RuleStyle("grey"));
+        }
+    }
+
+    private static void EnsureLineBreak()
+    {
+        if (Console.CursorLeft != 0)
+        {
+            Console.WriteLine();
         }
     }
 
