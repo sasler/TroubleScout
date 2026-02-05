@@ -296,8 +296,9 @@ jobs:
           if ($remoteBranch) {
             Write-Output "Branch $branch exists remotely, checking out and syncing"
             # Check if branch exists locally
-            $localBranch = git rev-parse --verify $branch 2>$null
-            if (-not $localBranch) {
+            git rev-parse --verify $branch 2>$null
+            $branchExistsLocally = ($LASTEXITCODE -eq 0)
+            if (-not $branchExistsLocally) {
               # Branch doesn't exist locally, create tracking branch
               git checkout -b $branch origin/$branch
             } else {
@@ -315,15 +316,13 @@ jobs:
           
           # Check if there are changes to commit
           git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Output "No changes to commit, branch is already up to date"
-          } else {
-            # Commit changes
+          if ($LASTEXITCODE -ne 0) {
+            # There are changes, commit and push
             git commit -m "🔖 Release v$version"
+            git push origin $branch
+          } else {
+            Write-Output "No changes to commit, branch is already up to date"
           }
-          
-          # Push branch (will be no-op if no changes)
-          git push origin $branch
           
           # Extract CHANGELOG entry for PR body
           $changelogContent = Get-Content "CHANGELOG.md" -Raw
