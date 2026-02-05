@@ -76,7 +76,7 @@ jobs:
               $hasMinor = $true
             }
             # Check for patch version bump (fixes, performance, refactor)
-            elseif ($commit -match '🐛|fix:|🔧|perf:|refactor:') {
+            elseif ($commit -match '🐛|fix:|⚡|perf:|♻️|refactor:') {
               $hasPatch = $true
             }
           }
