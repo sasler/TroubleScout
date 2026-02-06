@@ -2,6 +2,19 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.2] - 2026-02-06
+
+### 🐛 Critical Bug Fixes
+- 🐛 Fix PowerShell SDK initialization failure in published executables
+  - Removed `PublishSingleFile=true` from build configuration
+  - PowerShell SDK requires configuration files on disk that aren't compatible with single-file publishing
+  - Application now ships as TroubleScout.exe with supporting DLLs in the same folder
+
+### 📝 Technical Details
+- Root cause: PowerShell SDK's `PSSnapInReader.ReadEnginePSSnapIns()` calls `Path.Combine` with null paths when configuration files are unavailable
+- Single-file publishing embeds resources but PowerShell SDK needs physical files (PowerShell.Format.ps1xml, etc.)
+- Solution: Distribute as standard published application with all required files
+
 ## [v1.2.1] - 2026-02-06
 
 ### 🐛 Bug Fixes
