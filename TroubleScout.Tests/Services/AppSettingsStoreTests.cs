@@ -5,6 +5,11 @@ using Xunit;
 
 namespace TroubleScout.Tests.Services;
 
+// Define collection to force sequential execution
+[CollectionDefinition("AppSettings", DisableParallelization = true)]
+public class AppSettingsCollection { }
+
+[Collection("AppSettings")]
 public class AppSettingsStoreTests : IDisposable
 {
     private readonly string _testDirectory;
@@ -18,10 +23,18 @@ public class AppSettingsStoreTests : IDisposable
         _originalSettingsPath = AppSettingsStore.SettingsPath;
         var testSettingsPath = Path.Combine(_testDirectory, "settings.json");
         AppSettingsStore.SettingsPath = testSettingsPath;
+        
+        // Force immediate cleanup of any existing file handles
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
     }
 
     public void Dispose()
     {
+        // Force cleanup of any file handles
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        
         // Restore original settings path
         if (_originalSettingsPath != null)
         {
@@ -29,7 +42,14 @@ public class AppSettingsStoreTests : IDisposable
         }
         
         // Clean up test directory
-        TestHelpers.CleanupTempDirectory(_testDirectory);
+        try
+        {
+            TestHelpers.CleanupTempDirectory(_testDirectory);
+        }
+        catch
+        {
+            // Ignore cleanup errors
+        }
         GC.SuppressFinalize(this);
     }
 
@@ -136,6 +156,10 @@ public class AppSettingsStoreTests : IDisposable
 
         // Act
         AppSettingsStore.Save(settings);
+        
+        // Wait briefly to ensure file is flushed
+        System.Threading.Thread.Sleep(50);
+        
         var jsonContent = File.ReadAllText(settingsPath);
 
         // Assert
@@ -146,7 +170,8 @@ public class AppSettingsStoreTests : IDisposable
     [Fact]
     public void SettingsPath_WhenApplicationDataIsNull_ShouldUseFallback()
     {
-        // Arrange - Reset the settings path to force recalculation
+        // Arrange - Save current path and reset to force recalculation
+        var currentPath = AppSettingsStore.SettingsPath;
         AppSettingsStore.SettingsPath = null!;
 
         // Act
@@ -161,6 +186,9 @@ public class AppSettingsStoreTests : IDisposable
         // Verify it's a valid path that can be used
         var directory = Path.GetDirectoryName(settingsPath);
         directory.Should().NotBeNullOrEmpty();
+        
+        // Cleanup - restore the test path
+        AppSettingsStore.SettingsPath = currentPath;
     }
 
     [Fact]

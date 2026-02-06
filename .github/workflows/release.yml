@@ -36,6 +36,7 @@ jobs:
         run: >
           dotnet publish -c Release -r win-x64
           --self-contained true
+          -p:PublishSingleFile=true
 
       - name: Package release
         shell: pwsh
@@ -50,7 +51,7 @@ jobs:
             exit 1
           }
 
-          # Create temporary directory and copy files
+          # Create temporary directory and copy exe + runtimes (single-file mode)
           New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
           Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
           Copy-Item "$publishPath\runtimes" -Destination $tempDir -Recurse
