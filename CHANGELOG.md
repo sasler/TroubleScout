@@ -2,6 +2,14 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.4] - 2026-02-06
+
+### 🐛 Critical Bug Fixes
+- 🐛 Fix release workflow failing to find `runtimes/` during packaging
+  - Publish to an explicit output directory and package from there
+  - Update GitHub Release action to v2
+  - Always include a `runtimes/` directory in the zip (copied if present, otherwise created empty)
+
 ## [v1.2.3] - 2026-02-06
 
 ### 🐛 Critical Bug Fixes

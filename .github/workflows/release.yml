@@ -11,6 +11,8 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      PUBLISH_DIR: publish
 
     steps:
       - name: Checkout code
@@ -33,40 +35,81 @@ jobs:
         run: dotnet restore
 
       - name: Build self-contained release
-        run: >
-          dotnet publish -c Release -r win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
+        shell: pwsh
+        run: |
+          dotnet publish .\TroubleScout.csproj -c Release -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -o $env:PUBLISH_DIR
 
       - name: Package release
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $publishPath = "bin\Release\net10.0\win-x64\publish"
-          $tempDir = "TroubleScout-$version"
+          $publishPath = $env:PUBLISH_DIR
+          $zipName = "TroubleScout-$version-win-x64.zip"
+          $exePath = Join-Path $publishPath "TroubleScout.exe"
 
-          # Verify runtimes folder exists
-          if (-not (Test-Path "$publishPath\runtimes")) {
-            Write-Error "runtimes folder not found at $publishPath\runtimes. This typically indicates a build configuration issue. Verify that dotnet publish is creating the runtimes folder with PowerShell SDK dependencies."
+          # Verify executable exists
+          if (-not (Test-Path $exePath)) {
+            Write-Error "TroubleScout.exe not found at $exePath"
+            Write-Output "Contents of publish directory ($publishPath):"
+            if (Test-Path $publishPath) {
+              Get-ChildItem $publishPath | Select-Object Name,Mode,Length | Format-Table -AutoSize
+            } else {
+              Write-Output "Publish directory does not exist: $publishPath"
+              Get-ChildItem | Select-Object Name,Mode | Format-Table -AutoSize
+            }
             exit 1
           }
 
-          # Create temporary directory and copy exe + runtimes (single-file mode)
-          New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-          Copy-Item "$publishPath\TroubleScout.exe" -Destination $tempDir
-          Copy-Item "$publishPath\runtimes" -Destination $tempDir -Recurse
+          # Create zip file with exact contents at archive root:
+          # - TroubleScout.exe
+          # - runtimes/  (may be empty)
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
 
-          # Create zip file
-          $zipName = "TroubleScout-$version-win-x64.zip"
-          Compress-Archive -Path $tempDir -DestinationPath $zipName -Force
+          $zip = [System.IO.Compression.ZipFile]::Open($zipName, [System.IO.Compression.ZipArchiveMode]::Create)
+          try {
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $exePath, "TroubleScout.exe") | Out-Null
 
-          # Clean up temp directory
-          Remove-Item $tempDir -Recurse -Force
+            $runtimesSource = Join-Path $publishPath "runtimes"
+            if (Test-Path $runtimesSource) {
+              $runtimeFiles = Get-ChildItem $runtimesSource -Recurse -File -ErrorAction SilentlyContinue
+              if ($null -eq $runtimeFiles -or $runtimeFiles.Count -eq 0) {
+                $zip.CreateEntry("runtimes/") | Out-Null
+              } else {
+                foreach ($file in $runtimeFiles) {
+                  $relative = $file.FullName.Substring($runtimesSource.Length).TrimStart('\\','/')
+                  $entryName = ("runtimes/" + ($relative -replace '\\','/'))
+                  [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName) | Out-Null
+                }
+              }
+            } else {
+              $zip.CreateEntry("runtimes/") | Out-Null
+              Write-Output "No runtimes folder found in publish output; added an empty runtimes/ directory to the release package."
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
 
           Write-Output "Package created: $zipName"
 
+      - name: Verify package exists
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zipName = "TroubleScout-$version-win-x64.zip"
+          if (-not (Test-Path $zipName)) {
+            Write-Error "Expected release package '$zipName' was not found in the workspace."
+            Get-ChildItem | Select-Object Name,Length | Format-Table -AutoSize
+            exit 1
+          }
+          Write-Output "Verified package exists: $zipName"
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
