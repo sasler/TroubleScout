@@ -175,5 +175,8 @@ public class AppSettingsStoreTests : IDisposable
 
         // Assert
         retrievedPath.Should().Be(customPath);
+        
+        // Cleanup - restore original path to avoid test interference
+        AppSettingsStore.SettingsPath = Path.Combine(_testDirectory, "settings.json");
     }
 }

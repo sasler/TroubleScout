@@ -35,7 +35,7 @@ jobs:
       - name: Build self-contained release
         run: >
           dotnet publish -c Release -r win-x64
-          --self-contained true -p:PublishSingleFile=true
+          --self-contained true
 
       - name: Package release
         shell: pwsh
