@@ -23,18 +23,10 @@ public class AppSettingsStoreTests : IDisposable
         _originalSettingsPath = AppSettingsStore.SettingsPath;
         var testSettingsPath = Path.Combine(_testDirectory, "settings.json");
         AppSettingsStore.SettingsPath = testSettingsPath;
-        
-        // Force immediate cleanup of any existing file handles
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
     }
 
     public void Dispose()
     {
-        // Force cleanup of any file handles
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        
         // Restore original settings path
         if (_originalSettingsPath != null)
         {
@@ -46,9 +38,13 @@ public class AppSettingsStoreTests : IDisposable
         {
             TestHelpers.CleanupTempDirectory(_testDirectory);
         }
-        catch
+        catch (IOException ex)
         {
-            // Ignore cleanup errors
+            Console.Error.WriteLine($"[TestCleanup] Failed to clean up temp directory '{_testDirectory}': {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Console.Error.WriteLine($"[TestCleanup] Access denied while cleaning up temp directory '{_testDirectory}': {ex.Message}");
         }
         GC.SuppressFinalize(this);
     }
@@ -156,10 +152,6 @@ public class AppSettingsStoreTests : IDisposable
 
         // Act
         AppSettingsStore.Save(settings);
-        
-        // Wait briefly to ensure file is flushed
-        System.Threading.Thread.Sleep(50);
-        
         var jsonContent = File.ReadAllText(settingsPath);
 
         // Assert
