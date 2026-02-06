@@ -13,10 +13,20 @@ public static class AppSettingsStore
     
     public static string SettingsPath
     {
-        get => _settingsPath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "TroubleScout",
-            "settings.json");
+        get
+        {
+            if (_settingsPath != null)
+                return _settingsPath;
+
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(appData))
+            {
+                // Fallback to current directory if ApplicationData is unavailable
+                appData = Environment.CurrentDirectory;
+            }
+
+            return Path.Combine(appData, "TroubleScout", "settings.json");
+        }
         internal set => _settingsPath = value;
     }
 

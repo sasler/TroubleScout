@@ -269,20 +269,23 @@ public class TroubleshootingSession : IAsyncDisposable
 
         // Look for the CLI in common npm global locations
         var npmGlobalRoot = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var possiblePaths = new[]
+        
+        // Only check npm paths if we have a valid ApplicationData folder
+        if (!string.IsNullOrEmpty(npmGlobalRoot))
         {
-            // npm global on Windows
-            Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot-sdk", "node_modules", "@github", "copilot", "index.js"),
-            Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js"),
-            // Fallback to just "copilot" in PATH
-            "copilot"
-        };
-
-        foreach (var path in possiblePaths)
-        {
-            if (path == "copilot" || File.Exists(path))
+            var possiblePaths = new[]
             {
-                return path;
+                // npm global on Windows
+                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot-sdk", "node_modules", "@github", "copilot", "index.js"),
+                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js")
+            };
+
+            foreach (var path in possiblePaths)
+            {
+                if (File.Exists(path))
+                {
+                    return path;
+                }
             }
         }
 
