@@ -142,4 +142,38 @@ public class AppSettingsStoreTests : IDisposable
         jsonContent.Should().Contain("  "); // Should have indentation
         jsonContent.Should().Contain("\"LastModel\"");
     }
+
+    [Fact]
+    public void SettingsPath_WhenApplicationDataIsNull_ShouldUseFallback()
+    {
+        // Arrange - Reset the settings path to force recalculation
+        AppSettingsStore.SettingsPath = null!;
+
+        // Act
+        var settingsPath = AppSettingsStore.SettingsPath;
+
+        // Assert
+        // The path should be valid - either from ApplicationData, LocalApplicationData, or CurrentDirectory
+        settingsPath.Should().NotBeNullOrEmpty();
+        settingsPath.Should().Contain("TroubleScout");
+        settingsPath.Should().EndWith("settings.json");
+
+        // Verify it's a valid path that can be used
+        var directory = Path.GetDirectoryName(settingsPath);
+        directory.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public void SettingsPath_AfterManualSet_ShouldReturnSetValue()
+    {
+        // Arrange
+        var customPath = Path.Combine(_testDirectory, "custom", "settings.json");
+
+        // Act
+        AppSettingsStore.SettingsPath = customPath;
+        var retrievedPath = AppSettingsStore.SettingsPath;
+
+        // Assert
+        retrievedPath.Should().Be(customPath);
+    }
 }

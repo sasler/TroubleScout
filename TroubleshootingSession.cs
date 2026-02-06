@@ -258,7 +258,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// <summary>
     /// Get the path to the Copilot CLI from the SDK package
     /// </summary>
-    private static string GetCopilotCliPath()
+    internal static string GetCopilotCliPath()
     {
         // Check for COPILOT_CLI_PATH environment variable first
         var envPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
@@ -280,12 +280,11 @@ public class TroubleshootingSession : IAsyncDisposable
                 Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js")
             };
 
-            foreach (var path in possiblePaths)
+            // Use explicit filtering to find existing paths
+            var existingPath = possiblePaths.Where(File.Exists).FirstOrDefault();
+            if (existingPath != null)
             {
-                if (File.Exists(path))
-                {
-                    return path;
-                }
+                return existingPath;
             }
         }
 

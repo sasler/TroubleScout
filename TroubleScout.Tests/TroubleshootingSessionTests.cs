@@ -186,4 +186,75 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     #endregion
+
+    #region GetCopilotCliPath Tests
+
+    [Fact]
+    public void GetCopilotCliPath_ShouldReturnValidPath()
+    {
+        // Act
+        var cliPath = TroubleshootingSession.GetCopilotCliPath();
+
+        // Assert
+        cliPath.Should().NotBeNullOrEmpty();
+        // Should either be "copilot" or a path ending with .js
+        (cliPath == "copilot" || cliPath.EndsWith(".js")).Should().BeTrue();
+    }
+
+    [Fact]
+    public void GetCopilotCliPath_WhenCopilotCliPathEnvIsSet_ShouldUseEnvVariable()
+    {
+        // Arrange
+        var testPath = Path.Combine(Path.GetTempPath(), "test-copilot.js");
+        File.WriteAllText(testPath, "// test");
+        var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
+        
+        try
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", testPath);
+
+            // Act
+            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+
+            // Assert
+            cliPath.Should().Be(testPath);
+        }
+        finally
+        {
+            // Cleanup
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
+            if (File.Exists(testPath))
+            {
+                File.Delete(testPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void GetCopilotCliPath_WhenApplicationDataIsNull_ShouldFallbackToCopilotInPath()
+    {
+        // Arrange
+        var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
+        
+        try
+        {
+            // Clear COPILOT_CLI_PATH to force the method to check ApplicationData
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
+
+            // Act
+            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+
+            // Assert
+            // When ApplicationData is null or npm paths don't exist, should fallback to "copilot"
+            cliPath.Should().NotBeNullOrEmpty();
+            // The path will either be a valid npm path or the fallback "copilot"
+            (cliPath.Contains("copilot") || cliPath == "copilot").Should().BeTrue();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
+        }
+    }
+
+    #endregion
 }

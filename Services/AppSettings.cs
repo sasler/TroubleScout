@@ -21,11 +21,17 @@ public static class AppSettingsStore
             var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             if (string.IsNullOrEmpty(appData))
             {
-                // Fallback to current directory if ApplicationData is unavailable
-                appData = Environment.CurrentDirectory;
+                // Fallback to LocalApplicationData if ApplicationData is unavailable
+                appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrEmpty(appData))
+                {
+                    // Final fallback to current directory if no application data folders are available
+                    appData = Environment.CurrentDirectory;
+                }
             }
 
-            return Path.Combine(appData, "TroubleScout", "settings.json");
+            _settingsPath = Path.Combine(appData, "TroubleScout", "settings.json");
+            return _settingsPath;
         }
         internal set => _settingsPath = value;
     }
