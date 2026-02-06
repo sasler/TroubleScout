@@ -258,7 +258,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// <summary>
     /// Get the path to the Copilot CLI from the SDK package
     /// </summary>
-    private static string GetCopilotCliPath()
+    internal static string GetCopilotCliPath()
     {
         // Check for COPILOT_CLI_PATH environment variable first
         var envPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
@@ -269,20 +269,22 @@ public class TroubleshootingSession : IAsyncDisposable
 
         // Look for the CLI in common npm global locations
         var npmGlobalRoot = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var possiblePaths = new[]
+        
+        // Only check npm paths if we have a valid ApplicationData folder
+        if (!string.IsNullOrEmpty(npmGlobalRoot))
         {
-            // npm global on Windows
-            Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot-sdk", "node_modules", "@github", "copilot", "index.js"),
-            Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js"),
-            // Fallback to just "copilot" in PATH
-            "copilot"
-        };
-
-        foreach (var path in possiblePaths)
-        {
-            if (path == "copilot" || File.Exists(path))
+            var possiblePaths = new[]
             {
-                return path;
+                // npm global on Windows
+                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot-sdk", "node_modules", "@github", "copilot", "index.js"),
+                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js")
+            };
+
+            // Use explicit filtering to find existing paths
+            var existingPath = possiblePaths.Where(File.Exists).FirstOrDefault();
+            if (existingPath != null)
+            {
+                return existingPath;
             }
         }
 
