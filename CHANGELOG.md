@@ -2,6 +2,24 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.3] - 2026-02-06
+
+### 🐛 Critical Bug Fixes
+- 🐛 Fix PowerShell SDK initialization in single-file published executables
+  - Added `IncludeNativeLibrariesForSelfExtract` and `IncludeAllContentForSelfExtract` properties to enable proper resource extraction
+  - Re-enabled `PublishSingleFile=true` for clean distribution (exe + runtimes folder only)
+  - PowerShell SDK now extracts required configuration files to temp directory at runtime
+
+### ✅ Testing
+- ✅ Fixed test isolation issues in `AppSettingsStoreTests` with sequential execution
+- ✅ All 74 tests passing with improved file handle cleanup
+- ✅ Added GC collection to prevent file locking issues between tests
+
+### 📝 Technical Details
+- Root cause: PowerShell SDK requires physical configuration files, but single-file mode embeds them
+- Solution: Use .NET's extraction properties to automatically extract embedded resources at runtime
+- Package now distributes as clean single-file exe (125 MB) with runtimes folder, matching v1.0.x structure
+
 ## [v1.2.2] - 2026-02-06
 
 ### 🐛 Critical Bug Fixes
