@@ -132,7 +132,7 @@ gh release create $version `
 
 ## Development Workflow
 
-**ALWAYS build after making code changes**: After editing any `.cs` files, run `dotnet build` to check for compilation errors. Use the `get_errors` tool to verify no issues remain. Fix any build errors before proceeding with additional changes or considering the task complete.
+**ALWAYS build after making code changes**: After editing any `.cs` files, run `dotnet build` to check for compilation errors. Use the `get_errors` tool to verify no issues remain. Fix any build errors before proceeding with additional changes or considering the task complete. **ALWAYS make sure there are no compiler or analyzer issues before stopping.**
 
 **Git/PR workflow (required)**:
 - **ALWAYS check what git branch you are on before starting work** (use `git branch --show-current` or `git status -sb`).
