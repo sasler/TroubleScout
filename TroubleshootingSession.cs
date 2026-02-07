@@ -174,6 +174,15 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotClient = null;
                 return false;
             }
+            catch (System.IO.IOException ex)
+            {
+                ConsoleUI.ShowError("Initialization Failed",
+                    $"Error starting Copilot CLI: {ex.Message}\n\n" +
+                    "Ensure Copilot CLI is installed and updated:\n" +
+                    "  npm install -g @github/copilot@latest && npm install -g @github/copilot-sdk@latest");
+                _copilotClient = null;
+                return false;
+            }
 
             var authStatus = await _copilotClient.GetAuthStatusAsync();
             if (!authStatus.IsAuthenticated)
@@ -443,6 +452,9 @@ public class TroubleshootingSession : IAsyncDisposable
                     case AssistantUsageEvent usageEvt:
                         CaptureUsageMetrics(usageEvt);
                         break;
+                    default:
+                        // Unknown or new event type: ignore to be forward-compatible
+                        break;
                 }
             });
 
@@ -648,11 +660,25 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             try
             {
+                // Try to stop gracefully if supported, then dispose
+                try
+                {
+                    await _copilotClient.StopAsync();
+                }
+                catch
+                {
+                    // Ignore failures in StopAsync
+                }
+
                 await _copilotClient.DisposeAsync();
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
             {
                 // Ignore protocol mismatch during cleanup when startup failed
+            }
+            catch (System.IO.IOException)
+            {
+                // Ignore IO errors during cleanup (e.g., process already terminated)
             }
         }
 

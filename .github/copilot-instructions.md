@@ -15,7 +15,7 @@ ConsoleUI.cs              DiagnosticTools.cs              PowerShellExecutor.cs
 
 ## Key Dependencies
 
-- **GitHub.Copilot.SDK** (0.1.15-preview): Uses event-based streaming via `CopilotSession.On()` - NOT async iterators
+- **GitHub.Copilot.SDK** (0.1.23): Uses event-based streaming via `CopilotSession.On()` - NOT async iterators
 - **Microsoft.PowerShell.SDK** (7.5.4): Embedded PowerShell runspace for command execution
 - **Spectre.Console** (0.54.0): Rich TUI components
 
