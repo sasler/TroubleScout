@@ -33,7 +33,7 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 
 5. **Release publishes automatically**:
    - Pushing the tag triggers `.github/workflows/release.yml` which builds and packages the release.
-   - A GitHub Release is created with the packaged zip file (e.g., `TroubleScout-1.3.0-win-x64.zip`).
+   - A GitHub Release is created with the packaged zip file (e.g., `TroubleScout-v1.3.0-win-x64.zip`).
 
 ### Manual Release Tips
 
@@ -90,12 +90,12 @@ If the release workflow failed after the tag was created, re-run the workflow fr
 
 If the release completed but assets are missing or corrupted, you can recreate the release assets and upload them manually:
 
-- Rebuild the package locally as described in the build steps and create the zip (e.g., `TroubleScout-1.0.1-win-x64.zip`).
+- Rebuild the package locally as described in the build steps and create the zip (e.g., `TroubleScout-v1.0.1-win-x64.zip`).
 - Upload the assets via the GitHub UI on the release page, or use the GitHub CLI:
 
 ```bash
 # Create or update a GitHub release with assets
-gh release create v1.0.1 "dist/TroubleScout-1.0.1-win-x64.zip" --notes "Release v1.0.1"
+gh release create v1.0.1 "dist/TroubleScout-v1.0.1-win-x64.zip" --notes "Release v1.0.1"
 ```
 
 #### 4. Notes & best practices
@@ -108,7 +108,7 @@ You can monitor workflow runs at: `https://github.com/sasler/TroubleScout/action
 
 ### Release Package Contents
 
-Each release includes a single zip file named `TroubleScout-{version}-win-x64.zip` containing:
+Each release includes a single zip file named `TroubleScout-v{version}-win-x64.zip` containing:
 
 - `TroubleScout.exe` - Self-contained executable (~54 MB)
 - `runtimes/` - PowerShell SDK native dependencies
