@@ -17,7 +17,7 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 
 2. **Update the CHANGELOG**:
    - Add a new section for `v1.3.0` (include date and a short summary).
-   - Follow the repo formatting rules: ensure a blank line before and after section headers so the auto-release templates and tooling (if used) match expected formatting.
+   - Follow the repo formatting rules: ensure a blank line before and after section headers so release tooling matches expected formatting.
 
 3. **Create a PR that contains the version bump and CHANGELOG updates**:
    - Use the PR template checklist to confirm the changelog was updated.
@@ -108,25 +108,29 @@ TroubleScout follows semantic versioning (MAJOR.MINOR.PATCH):
 
 When updating the version in `TroubleScout.csproj`, choose the appropriate bump based on your changes.
 
-### Troubleshooting
+### Post-Release Troubleshooting
 
 **No tag created after version update?**
+
 - Verify the change to `TroubleScout.csproj` was pushed to main
-- Check if `auto-release.yml` workflow ran: Check Actions tab
+- Make sure a release tag was created and pushed (we no longer create tags automatically)
 - Look for errors in the workflow logs
 - Verify the tag doesn't already exist: `git tag -l`
 
 **Tag already exists for version?**
+
 - The workflow will skip tag creation if it already exists
 - To create a new release, bump the version number in `TroubleScout.csproj`
 - Commit and push the updated version
 
 **Release workflow fails after tag creation?**
+
 - Verify `release.yml` workflow ran: Check Actions tab
 - Review build errors in workflow logs
 - If build fails, fix the issue and manually re-run the workflow from the Actions tab
 
 **Need to create a hotfix release?**
+
 - Update version in `TroubleScout.csproj` (e.g., 1.2.0 → 1.2.1)
 - Commit and push to main
-- Tag and release will be created automatically
+- Create an annotated tag and push it to trigger the release (see steps above)
