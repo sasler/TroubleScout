@@ -1,3 +1,5 @@
+# Pull Request
+
 ## 📋 Description
 
 <!-- Provide a brief description of your changes -->
@@ -32,6 +34,7 @@ Closes #
 - [ ] I have added tests that prove my fix is effective or that my feature works
 
 **Test environment:**
+
 - OS: <!-- e.g., Windows 11, Windows Server 2022 -->
 - .NET Version: <!-- e.g., .NET 10.0 -->
 
@@ -43,6 +46,7 @@ Closes #
 - [ ] I have performed a self-review of my own code
 - [ ] I have commented my code, particularly in hard-to-understand areas
 - [ ] I have made corresponding changes to the documentation
+- [ ] **If this PR changes a release or version number:** CHANGELOG.md has been updated with a new section for the release
 - [ ] My changes generate no new warnings or errors
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
