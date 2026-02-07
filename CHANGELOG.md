@@ -4,7 +4,6 @@ All notable changes to TroubleScout will be documented in this file.
 
 ## [v1.2.4] - 2026-02-06
 
-
 ### 🐛 Critical Bug Fixes
 
 - 🐛 Fix release workflow failing to find `runtimes/` during packaging
@@ -13,7 +12,6 @@ All notable changes to TroubleScout will be documented in this file.
   - Always include a `runtimes/` directory in the zip (copied if present, otherwise created empty)
 
 ## [v1.2.3] - 2026-02-06
-
 
 ### 🐛 Critical Bug Fixes
 
@@ -29,12 +27,12 @@ All notable changes to TroubleScout will be documented in this file.
 - ✅ Added GC collection to prevent file locking issues between tests
 
 ### 📝 Technical Details
+
 - Root cause: PowerShell SDK requires physical configuration files, but single-file mode embeds them
 - Solution: Use .NET's extraction properties to automatically extract embedded resources at runtime
 - Package now distributes as clean single-file exe (125 MB) with runtimes folder, matching v1.0.x structure
 
 ## [v1.2.2] - 2026-02-06
-
 
 ### 🐛 Critical Bug Fixes
 
@@ -44,12 +42,12 @@ All notable changes to TroubleScout will be documented in this file.
   - Application now ships as TroubleScout.exe with supporting DLLs in the same folder
 
 ### 📝 Technical Details
+
 - Root cause: PowerShell SDK's `PSSnapInReader.ReadEnginePSSnapIns()` calls `Path.Combine` with null paths when configuration files are unavailable
 - Single-file publishing embeds resources but PowerShell SDK needs physical files (PowerShell.Format.ps1xml, etc.)
 - Solution: Distribute as standard published application with all required files
 
 ## [v1.2.1] - 2026-02-06
-
 
 ### 🐛 Bug Fixes
 
@@ -62,20 +60,24 @@ All notable changes to TroubleScout will be documented in this file.
 - ✨ Make `GetCopilotCliPath` testable by changing visibility to `internal`
 
 ### ✅ Testing
+
 - ✅ Add comprehensive test coverage for null ApplicationData scenarios
 - ✅ Add 6 new tests validating fallback behavior and path resolution
 
 ## [v1.2.0] - 2026-02-05
 
-
 ### ✨ Features
+
 - ✨ Add automated release PR workflow
 - ✨ Improve error messages and consolidate documentation
 
 ### 🐛 Bug Fixes
+
 - 🐛 Fix auto-release workflow non-fast-forward push errors
 - 🐛 Fix TUI input redraw and line break issues
 
 ### 🔧 Other Changes
+
 - 🔧 Update release workflow to follow best practices
+
 - 📝 Add implementation summary

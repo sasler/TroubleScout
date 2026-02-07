@@ -9,6 +9,7 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 ### Normal Release Flow (Tag-based)
 
 1. **Update version in `TroubleScout.csproj`**:
+
    ```xml
    <Version>1.3.0</Version>
    <AssemblyVersion>1.3.0.0</AssemblyVersion>
@@ -24,6 +25,7 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
    - Have changes reviewed and merged to `main` following normal branch protection rules.
 
 4. **Create an annotated tag and push it to trigger the release**:
+
    ```bash
    git tag -a v1.3.0 -m "Release v1.3.0"
    git push origin v1.3.0
@@ -42,11 +44,13 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 ### Troubleshooting
 
 **No release after creating a tag?**
+
 - Verify the tag was pushed: `git ls-remote --tags origin | grep v1.3.0`
 - Confirm the `release.yml` workflow ran: Check the Actions tab and the run triggered by your tag push
 - If build fails, review logs in the workflow and fix errors, then re-run the workflow if needed
 
 **Need to create a hotfix release?**
+
 - Update version in `TroubleScout.csproj` (e.g., 1.3.0 → 1.3.1)
 - Update `CHANGELOG.md` for the release
 - Merge to `main` and create an annotated tag to trigger the release
@@ -83,6 +87,7 @@ git push origin v1.0.1
 #### 4. Monitor Release Workflow
 
 The GitHub Actions workflow will automatically:
+
 - Build the self-contained executable
 - Package TroubleScout.exe + runtimes/ folder into a zip
 - Create a GitHub release with the packaged zip file
