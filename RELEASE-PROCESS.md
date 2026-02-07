@@ -2,49 +2,54 @@
 
 This document explains how TroubleScout releases are created and published.
 
-## Automated Release System
+## Tag-based Release Process
 
-TroubleScout uses a simple automated release system powered by GitHub Actions. When you update the version in `TroubleScout.csproj` and push to main, a release tag is automatically created, which triggers the build and publish workflow.
+TroubleScout uses a **tag-based** release process: the `release.yml` workflow is triggered when an annotated tag like `v1.3.0` is pushed to the repository. We intentionally avoid automatic tag creation so that releases are explicit and reviewers can verify changelogs and release notes before publishing.
 
-### How It Works
+### Normal Release Flow (Tag-based)
 
-The release process has two main stages:
-
-1. **Version Update to Main**: When `TroubleScout.csproj` is updated on `main`, the `auto-release.yml` workflow triggers
-2. **Automatic Tag Creation**: The workflow:
-   - Reads the version from `TroubleScout.csproj`
-   - Checks if a tag exists for that version
-   - If no tag exists, creates and pushes the tag (e.g., `v1.2.0`)
-   - Tag creation triggers the `release.yml` workflow
-3. **Release Publishing**: When the tag is pushed:
-   - The `release.yml` workflow builds the self-contained executable
-   - A GitHub release is published with the packaged zip file
-
-### Normal Release Flow (Simple!)
-
-1. **Update version in TroubleScout.csproj**:
+1. **Update version in `TroubleScout.csproj`**:
    ```xml
    <Version>1.3.0</Version>
    <AssemblyVersion>1.3.0.0</AssemblyVersion>
    <FileVersion>1.3.0.0</FileVersion>
    ```
 
-2. **Commit and push to main**:
+2. **Update the CHANGELOG**:
+   - Add a new section for `v1.3.0` (include date and a short summary).
+   - Follow the repo formatting rules: ensure a blank line before and after section headers so the auto-release templates and tooling (if used) match expected formatting.
+
+3. **Create a PR that contains the version bump and CHANGELOG updates**:
+   - Use the PR template checklist to confirm the changelog was updated.
+   - Have changes reviewed and merged to `main` following normal branch protection rules.
+
+4. **Create an annotated tag and push it to trigger the release**:
    ```bash
-   git add TroubleScout.csproj
-   git commit -m "🔖 Bump version to 1.3.0"
-   git push origin main
+   git tag -a v1.3.0 -m "Release v1.3.0"
+   git push origin v1.3.0
    ```
 
-3. **Automatic tag creation**:
-   - Within 1-2 minutes, `auto-release.yml` workflow runs
-   - Creates tag `v1.3.0` automatically
-   - Tag is pushed to the repository
+5. **Release publishes automatically**:
+   - Pushing the tag triggers `.github/workflows/release.yml` which builds and packages the release.
+   - A GitHub Release is created with the packaged zip file (e.g., `TroubleScout-1.3.0-win-x64.zip`).
 
-4. **Release publishes automatically**:
-   - `release.yml` workflow runs
-   - Builds and packages the release
-   - GitHub release is published at `https://github.com/sasler/TroubleScout/releases`
+### Manual Release Tips
+
+- If you need to publish a hotfix, bump the version, update the changelog, merge the PR, and create a tag as above.
+- If the release workflow fails after tagging, check the `release.yml` workflow run in the Actions tab and inspect build logs.
+- If a tag already exists for a version, bump the version number for a new release.
+
+### Troubleshooting
+
+**No release after creating a tag?**
+- Verify the tag was pushed: `git ls-remote --tags origin | grep v1.3.0`
+- Confirm the `release.yml` workflow ran: Check the Actions tab and the run triggered by your tag push
+- If build fails, review logs in the workflow and fix errors, then re-run the workflow if needed
+
+**Need to create a hotfix release?**
+- Update version in `TroubleScout.csproj` (e.g., 1.3.0 → 1.3.1)
+- Update `CHANGELOG.md` for the release
+- Merge to `main` and create an annotated tag to trigger the release
 
 ### Manual Release Override
 
