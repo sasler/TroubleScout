@@ -28,9 +28,9 @@ public class TroubleshootingSessionStreamingTests : IAsyncDisposable
         var sessionMock = new Mock<CopilotSession>();
 
         // Capture the subscriber callback supplied to On(...)
-        Action<object>? capturedCallback = null;
-        sessionMock.Setup(s => s.On(It.IsAny<Action<object>>() ))
-            .Returns<Action<object>>(cb =>
+        SessionEventHandler? capturedCallback = null;
+        sessionMock.Setup(s => s.On(It.IsAny<SessionEventHandler>() ))
+            .Returns<SessionEventHandler>(cb =>
             {
                 capturedCallback = cb;
                 return Mock.Of<IDisposable>();
