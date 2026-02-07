@@ -1,4 +1,4 @@
-## 🎉 TroubleScout v1.0.0 - Initial Release
+# 🎉 TroubleScout v1.0.0 - Initial Release
 
 AI-Powered Windows Server Troubleshooting Assistant using GitHub Copilot SDK
 

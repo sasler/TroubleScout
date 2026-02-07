@@ -49,21 +49,24 @@ Branch names must follow this pattern:
 All commit messages must follow one of these formats:
 
 **Option 1: Emoji Prefix (Preferred)**
-```
+
+```text
 {emoji} {Summary of changes}
 
 Example: ✨ Add WinRM connectivity check
 ```
 
 **Option 2: Conventional Commits**
-```
+
+```text
 {type}({scope}): {summary}
 
 Example: feat(diagnostics): add WinRM connectivity check
 ```
 
 **Option 3: Simple Plan Commits** (for workflow tracking)
-```
+
+```text
 Initial plan
 WIP
 Work in progress
@@ -73,7 +76,8 @@ Note: These are allowed for initial planning commits but should be avoided in fi
 ```
 
 **Option 4: Automated Updates** (for bots and automated tools)
-```
+
+```text
 Update {filename}
 Update {description}
 
