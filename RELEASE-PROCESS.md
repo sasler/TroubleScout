@@ -55,44 +55,56 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 - Update `CHANGELOG.md` for the release
 - Merge to `main` and create an annotated tag to trigger the release
 
-### Manual Release Override
+### Manual Release Recovery & Override
 
-In rare cases where you need to create a release manually (e.g., automation failure), you can create the tag yourself:
+If you need to recover from a failed release or create a release manually, follow these recovery steps. Creating annotated tags is the normal way to trigger releases; the guidance below helps when something goes wrong (bad tag, failed workflow, missing assets).
 
-#### 1. Update Version Number
+#### 1. Create or recreate an annotated tag
 
-Edit `TroubleScout.csproj` and update the version numbers:
-
-```xml
-<Version>1.0.1</Version>
-<AssemblyVersion>1.0.1.0</AssemblyVersion>
-<FileVersion>1.0.1.0</FileVersion>
-```
-
-#### 2. Commit and Push Changes
+If you need to publish a release immediately, create an annotated tag and push it:
 
 ```powershell
-git add TroubleScout.csproj
-git commit -m "🔖 Release v1.0.1"
-git push origin main
-```
-
-#### 3. Create and Push Version Tag Manually (if automation fails)
-
-```powershell
+# Create and push an annotated tag
 git tag -a v1.0.1 -m "Release v1.0.1"
 git push origin v1.0.1
 ```
 
-#### 4. Monitor Release Workflow
+If the tag was pushed erroneously and you need to recreate it:
 
-The GitHub Actions workflow will automatically:
+```powershell
+# Delete local and remote tag, recreate and push
+git tag -d v1.0.1
+git push origin :refs/tags/v1.0.1
+git tag -a v1.0.1 -m "Release v1.0.1"
+git push origin v1.0.1
+```
 
-- Build the self-contained executable
-- Package TroubleScout.exe + runtimes/ folder into a zip
-- Create a GitHub release with the packaged zip file
+#### 2. Re-run the release workflow
 
-You can monitor the progress at: `https://github.com/sasler/TroubleScout/actions`
+If the release workflow failed after the tag was created, re-run the workflow from the **Actions** page:
+
+- Find the run triggered by the tag push and choose **Re-run jobs** (or **Re-run failed jobs**) to retry the build and publish steps.
+- If logs show a reproducible failure, fix the underlying issue and then recreate the tag (delete and re-create the tag) to trigger a fresh run.
+
+#### 3. Re-publish release assets (if needed)
+
+If the release completed but assets are missing or corrupted, you can recreate the release assets and upload them manually:
+
+- Rebuild the package locally as described in the build steps and create the zip (e.g., `TroubleScout-1.0.1-win-x64.zip`).
+- Upload the assets via the GitHub UI on the release page, or use the GitHub CLI:
+
+```bash
+# Create or update a GitHub release with assets
+gh release create v1.0.1 "dist/TroubleScout-1.0.1-win-x64.zip" --notes "Release v1.0.1"
+```
+
+#### 4. Notes & best practices
+
+- Prefer recreating and re-pushing an annotated tag to trigger a clean release run instead of manually attempting to patch runs.
+- Use the Actions logs to identify root causes before re-running.
+- If you need a temporary manual trigger without creating a permanent tag, create a timestamped tag (e.g., `v1.0.1-rc1`) and delete it after verification.
+
+You can monitor workflow runs at: `https://github.com/sasler/TroubleScout/actions`
 
 ### Release Package Contents
 
