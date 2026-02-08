@@ -15,7 +15,7 @@ ConsoleUI.cs              DiagnosticTools.cs              PowerShellExecutor.cs
 
 ## Key Dependencies
 
-- **GitHub.Copilot.SDK** (0.1.15-preview): Uses event-based streaming via `CopilotSession.On()` - NOT async iterators
+- **GitHub.Copilot.SDK** (0.1.23): Uses event-based streaming via `CopilotSession.On()` - NOT async iterators
 - **Microsoft.PowerShell.SDK** (7.5.4): Embedded PowerShell runspace for command execution
 - **Spectre.Console** (0.54.0): Rich TUI components
 
@@ -133,6 +133,12 @@ gh release create $version `
 ## Development Workflow
 
 **ALWAYS build after making code changes**: After editing any `.cs` files, run `dotnet build` to check for compilation errors. Use the `get_errors` tool to verify no issues remain. Fix any build errors before proceeding with additional changes or considering the task complete.
+
+**ALWAYS run an end-to-end verification before committing**: Use a real prompt to ensure the app works and that there are no compiler/analyzer issues:
+
+```powershell
+dotnet run -- --server localhost --prompt "how is this computer doing?"
+```
 
 **Git/PR workflow (required)**:
 - **ALWAYS check what git branch you are on before starting work** (use `git branch --show-current` or `git status -sb`).

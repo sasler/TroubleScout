@@ -162,24 +162,59 @@ public class DiagnosticTools
     {
         count = Math.Min(Math.Max(count, 1), 50);
         
-        var typeFilter = entryType.ToLowerInvariant() switch
+        var level = entryType.ToLowerInvariant() switch
         {
-            "error" => " -EntryType Error",
-            "warning" => " -EntryType Warning",
-            "information" => " -EntryType Information",
+            "error" => "2",
+            "warning" => "3",
+            "information" => "4",
             _ => ""
         };
 
-        var command = $@"
-            Get-EventLog -LogName {logName}{typeFilter} -Newest {count} | 
-            Select-Object TimeGenerated, EntryType, Source, EventID, Message |
-            Format-Table -AutoSize -Wrap
-        ";
+        var entryFilter = entryType.ToLowerInvariant() switch
+        {
+            "error" => "Error",
+            "warning" => "Warning",
+            "information" => "Information",
+            _ => ""
+        };
+
+        var primaryCommand = string.IsNullOrEmpty(level)
+            ? $@"
+                Get-WinEvent -LogName '{logName}' -MaxEvents {count} -ErrorAction Stop 2>$null |
+                    Select-Object TimeCreated, LevelDisplayName, ProviderName, Id, Message |
+                    Format-Table -AutoSize -Wrap
+            "
+            : $@"
+                Get-WinEvent -FilterHashtable @{{ LogName = '{logName}'; Level = {level} }} -MaxEvents {count} -ErrorAction Stop 2>$null |
+                    Select-Object TimeCreated, LevelDisplayName, ProviderName, Id, Message |
+                    Format-Table -AutoSize -Wrap
+            ";
+
+        var fallbackCommand = string.IsNullOrEmpty(entryFilter)
+            ? $@"
+                Get-EventLog -LogName '{logName}' -Newest {count} -ErrorAction Stop 2>$null |
+                    Select-Object TimeGenerated, EntryType, Source, EventID, Message |
+                    Format-Table -AutoSize -Wrap
+            "
+            : $@"
+                Get-EventLog -LogName '{logName}' -EntryType {entryFilter} -Newest {count} -ErrorAction Stop 2>$null |
+                    Select-Object TimeGenerated, EntryType, Source, EventID, Message |
+                    Format-Table -AutoSize -Wrap
+            ";
         
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         ConsoleUI.ShowCommandExecution($"Get-EventLog {logName}", _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        return result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        {
+            return result.Output;
+        }
+
+        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
+        var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
+        return fallbackResult.Success && !string.IsNullOrWhiteSpace(fallbackResult.Output)
+            ? fallbackResult.Output
+            : "[WARN] Event log data unavailable.";
     }
 
     /// <summary>
@@ -189,22 +224,47 @@ public class DiagnosticTools
         [Description("Filter by service status: Running, Stopped, or All")] string status = "All",
         [Description("Search filter for service name (supports wildcards)")] string? nameFilter = null)
     {
-        var whereClause = status.ToLowerInvariant() switch
+        var stateFilter = status.ToLowerInvariant() switch
         {
-            "running" => " | Where-Object { $_.Status -eq 'Running' }",
-            "stopped" => " | Where-Object { $_.Status -eq 'Stopped' }",
+            "running" => "Running",
+            "stopped" => "Stopped",
             _ => ""
         };
 
-        var nameClause = !string.IsNullOrEmpty(nameFilter) 
-            ? $" -Name '*{nameFilter}*'" 
-            : "";
+        var nameFilterValue = !string.IsNullOrWhiteSpace(nameFilter)
+            ? nameFilter.Trim()
+            : string.Empty;
 
         var command = $@"
-            Get-Service{nameClause}{whereClause} | 
-            Select-Object Status, Name, DisplayName, StartType |
-            Sort-Object Status, Name |
-            Format-Table -AutoSize
+            try {{
+                if (-not (Get-Command Get-Service -ErrorAction SilentlyContinue)) {{
+                    throw 'Get-Service not available'
+                }}
+                $ErrorActionPreference = 'Stop'
+                $services = Get-Service -ErrorAction Stop 2>$null
+                if ('{stateFilter}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.Status -eq '{stateFilter}' }}
+                }}
+                if ('{nameFilterValue}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.Name -like '*{nameFilterValue}*' -or $_.DisplayName -like '*{nameFilterValue}*' }}
+                }}
+                $services |
+                    Select-Object Status, Name, DisplayName, StartType |
+                    Sort-Object Status, Name |
+                    Format-Table -AutoSize
+            }} catch {{
+                $services = Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue
+                if ('{stateFilter}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.State -eq '{stateFilter}' }}
+                }}
+                if ('{nameFilterValue}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.Name -like '*{nameFilterValue}*' -or $_.DisplayName -like '*{nameFilterValue}*' }}
+                }}
+                $services |
+                    Select-Object State, Name, DisplayName, StartMode |
+                    Sort-Object State, Name |
+                    Format-Table -AutoSize
+            }}
         ";
         
         var wrappedCommand = WrapCommandWithTargetVerification(command);
@@ -256,21 +316,55 @@ public class DiagnosticTools
     /// </summary>
     private async Task<string> GetDiskSpaceAsync()
     {
-        var command = @"
-            Get-Volume | Where-Object { $_.DriveLetter } |
-            Select-Object DriveLetter, FileSystemLabel, FileSystem,
-                @{N='SizeGB';E={[math]::Round($_.Size / 1GB, 2)}},
-                @{N='FreeGB';E={[math]::Round($_.SizeRemaining / 1GB, 2)}},
-                @{N='UsedGB';E={[math]::Round(($_.Size - $_.SizeRemaining) / 1GB, 2)}},
-                @{N='PercentFree';E={[math]::Round(($_.SizeRemaining / $_.Size) * 100, 1)}},
-                HealthStatus, OperationalStatus |
-            Format-Table -AutoSize
+        var primaryCommand = @"
+            Get-Volume -ErrorAction Stop 2>$null | Where-Object { $_.DriveLetter } |
+                Select-Object DriveLetter, FileSystemLabel, FileSystem,
+                    @{N='SizeGB';E={[math]::Round($_.Size / 1GB, 2)}},
+                    @{N='FreeGB';E={[math]::Round($_.SizeRemaining / 1GB, 2)}},
+                    @{N='UsedGB';E={[math]::Round(($_.Size - $_.SizeRemaining) / 1GB, 2)}},
+                    @{N='PercentFree';E={[math]::Round(($_.SizeRemaining / $_.Size) * 100, 1)}},
+                    HealthStatus, OperationalStatus |
+                Format-Table -AutoSize
+        ";
+
+        var cmdletFallback = @"
+            Get-PSDrive -PSProvider FileSystem |
+                Select-Object Name,
+                    @{N='UsedGB';E={[math]::Round($_.Used / 1GB, 2)}},
+                    @{N='FreeGB';E={[math]::Round($_.Free / 1GB, 2)}} |
+                Format-Table -AutoSize
+        ";
+
+        var cimFallback = @"
+            Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' |
+                Select-Object DeviceID,
+                    @{N='SizeGB';E={[math]::Round($_.Size / 1GB, 2)}},
+                    @{N='FreeGB';E={[math]::Round($_.FreeSpace / 1GB, 2)}},
+                    @{N='UsedGB';E={[math]::Round(($_.Size - $_.FreeSpace) / 1GB, 2)}},
+                    @{N='PercentFree';E={[math]::Round(($_.FreeSpace / $_.Size) * 100, 1)}} |
+                Format-Table -AutoSize
         ";
         
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         ConsoleUI.ShowCommandExecution("Get-Volume", _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        return result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        {
+            return result.Output;
+        }
+
+        var wrappedCmdletFallback = WrapCommandWithTargetVerification(cmdletFallback);
+        var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
+        if (cmdletResult.Success && !string.IsNullOrWhiteSpace(cmdletResult.Output))
+        {
+            return cmdletResult.Output;
+        }
+
+        var wrappedCimFallback = WrapCommandWithTargetVerification(cimFallback);
+        var cimResult = await _executor.ExecuteAsync(wrappedCimFallback);
+        return cimResult.Success
+            ? cimResult.Output
+            : $"[ERROR] {cimResult.Error}";
     }
 
     /// <summary>
@@ -279,22 +373,36 @@ public class DiagnosticTools
     private async Task<string> GetNetworkInfoAsync()
     {
         var command = @"
-            Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } |
-            ForEach-Object {
-                $adapter = $_
-                $ipConfig = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-                $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-                
-                [PSCustomObject]@{
-                    Name = $adapter.Name
-                    Status = $adapter.Status
-                    LinkSpeed = $adapter.LinkSpeed
-                    MacAddress = $adapter.MacAddress
-                    IPAddress = ($ipConfig.IPAddress -join ', ')
-                    SubnetPrefix = ($ipConfig.PrefixLength -join ', ')
-                    DNSServers = ($dns.ServerAddresses -join ', ')
+            try {
+                if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) {
+                    throw 'Get-NetAdapter not available'
                 }
-            } | Format-List
+                $ErrorActionPreference = 'Stop'
+                Get-NetAdapter -ErrorAction Stop 2>$null | Where-Object { $_.Status -eq 'Up' } |
+                    ForEach-Object {
+                        $adapter = $_
+                        $ipConfig = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+                        $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+                        
+                        [PSCustomObject]@{
+                            Name = $adapter.Name
+                            Status = $adapter.Status
+                            LinkSpeed = $adapter.LinkSpeed
+                            MacAddress = $adapter.MacAddress
+                            IPAddress = ($ipConfig.IPAddress -join ', ')
+                            SubnetPrefix = ($ipConfig.PrefixLength -join ', ')
+                            DNSServers = ($dns.ServerAddresses -join ', ')
+                        }
+                    } | Format-List
+            } catch {
+                Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' |
+                    Select-Object Description, MACAddress,
+                        @{N='IPAddress';E={($_.IPAddress -join ', ')}},
+                        @{N='Subnet';E={($_.IPSubnet -join ', ')}},
+                        @{N='DefaultGateway';E={($_.DefaultIPGateway -join ', ')}},
+                        @{N='DNSServers';E={($_.DNSServerSearchOrder -join ', ')}} |
+                    Format-List
+            }
         ";
         
         var wrappedCommand = WrapCommandWithTargetVerification(command);
@@ -318,17 +426,71 @@ public class DiagnosticTools
             _ => @"'\Processor(_Total)\% Processor Time', '\Memory\Available MBytes', '\Memory\% Committed Bytes In Use', '\PhysicalDisk(_Total)\% Disk Time'"
         };
 
-        var command = $@"
-            Get-Counter -Counter {counters} -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty CounterSamples |
-            Select-Object Path, @{{N='Value';E={{[math]::Round($_.CookedValue, 2)}}}} |
-            Format-Table -AutoSize
+        var primaryCommand = $@"
+            $samples = Get-Counter -Counter {counters} -ErrorAction Stop 2>$null |
+                Select-Object -ExpandProperty CounterSamples |
+                Select-Object Path, @{{N='Value';E={{[math]::Round($_.CookedValue, 2)}}}}
+            if (-not $samples) {{
+                Write-Output '[WARN] Performance counter data unavailable.'
+            }} else {{
+                $samples | Format-Table -AutoSize
+            }}
         ";
         
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
+        var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         ConsoleUI.ShowCommandExecution($"Get-Counter ({category})", _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        return result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        {
+            return result.Output;
+        }
+
+        var fallbackCommand = category.ToLowerInvariant() switch
+        {
+            "cpu" => @"
+                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter ""Name='_Total'"" |
+                    Select-Object Name, @{N='CPUPercent';E={$_.PercentProcessorTime}} |
+                    Format-Table -AutoSize
+            ",
+            "memory" => @"
+                $os = Get-CimInstance -ClassName Win32_OperatingSystem
+                [PSCustomObject]@{
+                    FreeMemoryMB = [math]::Round($os.FreePhysicalMemory / 1024, 2)
+                    TotalMemoryMB = [math]::Round($os.TotalVisibleMemorySize / 1024, 2)
+                    CommittedPercent = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
+                } | Format-List
+            ",
+            "disk" => @"
+                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter ""Name='_Total'"" |
+                    Select-Object Name, PercentDiskTime, AvgDiskQueueLength |
+                    Format-Table -AutoSize
+            ",
+            "network" => @"
+                Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface |
+                    Select-Object Name, BytesTotalPersec |
+                    Sort-Object BytesTotalPersec -Descending |
+                    Select-Object -First 5 |
+                    Format-Table -AutoSize
+            ",
+            _ => @"
+                $cpu = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter ""Name='_Total'""
+                $disk = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter ""Name='_Total'""
+                $os = Get-CimInstance -ClassName Win32_OperatingSystem
+                [PSCustomObject]@{
+                    CPUPercent = $cpu.PercentProcessorTime
+                    DiskPercentTime = $disk.PercentDiskTime
+                    DiskQueueLength = $disk.AvgDiskQueueLength
+                    FreeMemoryMB = [math]::Round($os.FreePhysicalMemory / 1024, 2)
+                    TotalMemoryMB = [math]::Round($os.TotalVisibleMemorySize / 1024, 2)
+                } | Format-List
+            "
+        };
+
+        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
+        var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
+        return fallbackResult.Success && !string.IsNullOrWhiteSpace(fallbackResult.Output)
+            ? fallbackResult.Output
+            : "[WARN] Performance counter data unavailable.";
     }
 
     /// <summary>

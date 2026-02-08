@@ -34,6 +34,7 @@ public class PowerShellExecutor : IDisposable
     private string? _actualComputerName;
     private readonly List<string> _commandHistory = new();
     private readonly object _historyLock = new();
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
 
     /// <summary>
     /// The target server name that was requested
@@ -312,50 +313,65 @@ public class PowerShellExecutor : IDisposable
                 $"Remote session to {_targetServer} has been disconnected. Please restart TroubleScout.");
         }
 
-        return await Task.Run(() =>
+        await _executionLock.WaitAsync();
+        try
         {
-            try
+            return await Task.Run(() =>
             {
-                using var ps = PowerShell.Create();
-                ps.Runspace = _runspace;
-                
-                // Wrap command with Out-String to ensure text output, and verify target
-                var wrappedCommand = $@"
-                    $ErrorActionPreference = 'Continue'
-                    $currentComputer = $env:COMPUTERNAME
-                    {command} | Out-String -Width 200
-                ";
-                
-                ps.AddScript(wrappedCommand);
-
-                var results = ps.Invoke();
-                var output = new StringBuilder();
-
-                foreach (var result in results)
+                try
                 {
-                    if (result != null)
-                    {
-                        output.Append(result.ToString());
-                    }
-                }
+                    using var ps = PowerShell.Create();
+                    ps.Runspace = _runspace;
+                    
+                    // Serialize runspace usage to avoid concurrent pipeline execution.
+                    var wrappedCommand = $@"
+                        $ErrorActionPreference = 'Continue'
+                        $currentComputer = $env:COMPUTERNAME
+                        {command} | Out-String -Width 200
+                    ";
+                    
+                    ps.AddScript(wrappedCommand);
 
-                if (ps.HadErrors)
+                    var results = ps.Invoke();
+                    var output = new StringBuilder();
+
+                    foreach (var result in results)
+                    {
+                        if (result != null)
+                        {
+                            output.Append(result.ToString());
+                        }
+                    }
+
+                    if (ps.HadErrors)
+                    {
+                        var errors = new StringBuilder();
+                        foreach (var error in ps.Streams.Error)
+                        {
+                            errors.AppendLine(error.ToString());
+                        }
+
+                        var outputText = output.ToString();
+                        if (!string.IsNullOrWhiteSpace(outputText))
+                        {
+                            return new PowerShellResult(true, outputText, errors.ToString());
+                        }
+
+                        return new PowerShellResult(false, outputText, errors.ToString());
+                    }
+
+                    return new PowerShellResult(true, output.ToString());
+                }
+                catch (Exception ex)
                 {
-                    var errors = new StringBuilder();
-                    foreach (var error in ps.Streams.Error)
-                    {
-                        errors.AppendLine(error.ToString());
-                    }
-                    return new PowerShellResult(false, output.ToString(), errors.ToString());
+                    return new PowerShellResult(false, string.Empty, ex.Message);
                 }
-
-                return new PowerShellResult(true, output.ToString());
-            }
-            catch (Exception ex)
-            {
-                return new PowerShellResult(false, string.Empty, ex.Message);
-            }
-        });
+            });
+        }
+        finally
+        {
+            _executionLock.Release();
+        }
     }
 
     private void TrackCommand(string command)
