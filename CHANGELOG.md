@@ -2,6 +2,14 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.5] - 2026-02-08
+
+### ✨ Improvements
+
+- ✨ Update GitHub.Copilot.SDK to v0.1.23
+- ✨ Prefer native PowerShell cmdlets with resilient fallbacks for diagnostics
+- ✨ Serialize runspace execution to avoid concurrent pipeline errors
+
 ## [v1.2.4] - 2026-02-06
 
 ### 🐛 Critical Bug Fixes

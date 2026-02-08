@@ -34,6 +34,8 @@ public class PowerShellExecutor : IDisposable
     private string? _actualComputerName;
     private readonly List<string> _commandHistory = new();
     private readonly object _historyLock = new();
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private readonly SemaphoreSlim _initLock = new(1, 1);
 
     /// <summary>
     /// The target server name that was requested
@@ -268,29 +270,40 @@ public class PowerShellExecutor : IDisposable
         if (_runspace != null)
             return;
 
-        await Task.Run(() =>
+        await _initLock.WaitAsync();
+        try
         {
-            if (_useLocalExecution)
-            {
-                // Local execution - create a local runspace
-                _runspace = RunspaceFactory.CreateRunspace();
-                _runspace.Open();
-            }
-            else
-            {
-                // Remote execution via WinRM with Windows integrated auth
-                var uri = new Uri($"http://{_targetServer}:5985/WSMAN");
-                var connectionInfo = new WSManConnectionInfo(uri)
-                {
-                    AuthenticationMechanism = AuthenticationMechanism.Default,
-                    OperationTimeout = 4 * 60 * 1000, // 4 minutes
-                    OpenTimeout = 60 * 1000 // 1 minute
-                };
+            if (_runspace != null)
+                return;
 
-                _runspace = RunspaceFactory.CreateRunspace(connectionInfo);
-                _runspace.Open();
-            }
-        });
+            await Task.Run(() =>
+            {
+                if (_useLocalExecution)
+                {
+                    // Local execution - create a local runspace
+                    _runspace = RunspaceFactory.CreateRunspace();
+                    _runspace.Open();
+                }
+                else
+                {
+                    // Remote execution via WinRM with Windows integrated auth
+                    var uri = new Uri($"http://{_targetServer}:5985/WSMAN");
+                    var connectionInfo = new WSManConnectionInfo(uri)
+                    {
+                        AuthenticationMechanism = AuthenticationMechanism.Default,
+                        OperationTimeout = 4 * 60 * 1000, // 4 minutes
+                        OpenTimeout = 60 * 1000 // 1 minute
+                    };
+
+                    _runspace = RunspaceFactory.CreateRunspace(connectionInfo);
+                    _runspace.Open();
+                }
+            });
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     /// <summary>
@@ -298,6 +311,11 @@ public class PowerShellExecutor : IDisposable
     /// </summary>
     public virtual async Task<PowerShellResult> ExecuteAsync(string command)
     {
+        if (_disposed)
+        {
+            return new PowerShellResult(false, string.Empty, "PowerShell executor has been disposed.");
+        }
+
         if (_runspace == null)
         {
             await InitializeAsync();
@@ -305,57 +323,64 @@ public class PowerShellExecutor : IDisposable
 
         TrackCommand(command);
 
-        // Check if the runspace is still open
-        if (_runspace!.RunspaceStateInfo.State != RunspaceState.Opened)
+        await _executionLock.WaitAsync();
+        try
         {
-            return new PowerShellResult(false, string.Empty, 
-                $"Remote session to {_targetServer} has been disconnected. Please restart TroubleScout.");
+            // Check if the runspace is still open
+            if (_runspace!.RunspaceStateInfo.State != RunspaceState.Opened)
+            {
+                return new PowerShellResult(false, string.Empty,
+                    $"Remote session to {_targetServer} has been disconnected. Please restart TroubleScout.");
+            }
+
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    using var ps = PowerShell.Create();
+                    ps.Runspace = _runspace;
+                    
+                    // Serialize runspace usage to avoid concurrent pipeline execution.
+                    var wrappedCommand = $@"
+                        $ErrorActionPreference = 'Continue'
+                        $currentComputer = $env:COMPUTERNAME
+                        {command} | Out-String -Width 200
+                    ";
+                    
+                    ps.AddScript(wrappedCommand);
+
+                    var results = ps.Invoke();
+                    var output = new StringBuilder();
+
+                    foreach (var result in results.Where(result => result != null))
+                    {
+                        output.Append(result);
+                    }
+
+                    if (ps.HadErrors)
+                    {
+                        var errors = new StringBuilder();
+                        foreach (var error in ps.Streams.Error)
+                        {
+                            errors.AppendLine(error.ToString());
+                        }
+
+                        var outputText = output.ToString();
+                        return new PowerShellResult(false, outputText, errors.ToString());
+                    }
+
+                    return new PowerShellResult(true, output.ToString());
+                }
+                catch (Exception ex)
+                {
+                    return new PowerShellResult(false, string.Empty, ex.Message);
+                }
+            });
         }
-
-        return await Task.Run(() =>
+        finally
         {
-            try
-            {
-                using var ps = PowerShell.Create();
-                ps.Runspace = _runspace;
-                
-                // Wrap command with Out-String to ensure text output, and verify target
-                var wrappedCommand = $@"
-                    $ErrorActionPreference = 'Continue'
-                    $currentComputer = $env:COMPUTERNAME
-                    {command} | Out-String -Width 200
-                ";
-                
-                ps.AddScript(wrappedCommand);
-
-                var results = ps.Invoke();
-                var output = new StringBuilder();
-
-                foreach (var result in results)
-                {
-                    if (result != null)
-                    {
-                        output.Append(result.ToString());
-                    }
-                }
-
-                if (ps.HadErrors)
-                {
-                    var errors = new StringBuilder();
-                    foreach (var error in ps.Streams.Error)
-                    {
-                        errors.AppendLine(error.ToString());
-                    }
-                    return new PowerShellResult(false, output.ToString(), errors.ToString());
-                }
-
-                return new PowerShellResult(true, output.ToString());
-            }
-            catch (Exception ex)
-            {
-                return new PowerShellResult(false, string.Empty, ex.Message);
-            }
-        });
+            _executionLock.Release();
+        }
     }
 
     private void TrackCommand(string command)
@@ -435,6 +460,8 @@ public class PowerShellExecutor : IDisposable
 
         _runspace?.Close();
         _runspace?.Dispose();
+        _executionLock.Dispose();
+        _initLock.Dispose();
         _disposed = true;
         GC.SuppressFinalize(this);
     }
