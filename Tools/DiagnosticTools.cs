@@ -25,6 +25,16 @@ public class DiagnosticTools
         _targetServer = targetServer;
     }
 
+    private static string EscapeSingleQuotes(string value)
+    {
+        return value.Replace("'", "''");
+    }
+
+    private static bool IsWarnOutput(string? output)
+    {
+        return !string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith("[WARN]", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Creates AI tools for the Copilot session
     /// </summary>
@@ -161,6 +171,20 @@ public class DiagnosticTools
         [Description("Filter by entry type: Error, Warning, Information, or All")] string entryType = "All")
     {
         count = Math.Min(Math.Max(count, 1), 50);
+
+        var normalizedLogName = logName.Trim();
+        var allowedLogs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "System",
+            "Application",
+            "Security"
+        };
+        if (!allowedLogs.Contains(normalizedLogName))
+        {
+            normalizedLogName = "System";
+        }
+
+        var safeLogName = EscapeSingleQuotes(normalizedLogName);
         
         var level = entryType.ToLowerInvariant() switch
         {
@@ -180,39 +204,42 @@ public class DiagnosticTools
 
         var primaryCommand = string.IsNullOrEmpty(level)
             ? $@"
-                Get-WinEvent -LogName '{logName}' -MaxEvents {count} -ErrorAction Stop 2>$null |
+                Get-WinEvent -LogName '{safeLogName}' -MaxEvents {count} -ErrorAction Stop 2>$null |
                     Select-Object TimeCreated, LevelDisplayName, ProviderName, Id, Message |
                     Format-Table -AutoSize -Wrap
             "
             : $@"
-                Get-WinEvent -FilterHashtable @{{ LogName = '{logName}'; Level = {level} }} -MaxEvents {count} -ErrorAction Stop 2>$null |
+                Get-WinEvent -FilterHashtable @{{ LogName = '{safeLogName}'; Level = {level} }} -MaxEvents {count} -ErrorAction Stop 2>$null |
                     Select-Object TimeCreated, LevelDisplayName, ProviderName, Id, Message |
                     Format-Table -AutoSize -Wrap
             ";
 
         var fallbackCommand = string.IsNullOrEmpty(entryFilter)
             ? $@"
-                Get-EventLog -LogName '{logName}' -Newest {count} -ErrorAction Stop 2>$null |
+                Get-EventLog -LogName '{safeLogName}' -Newest {count} -ErrorAction Stop 2>$null |
                     Select-Object TimeGenerated, EntryType, Source, EventID, Message |
                     Format-Table -AutoSize -Wrap
             "
             : $@"
-                Get-EventLog -LogName '{logName}' -EntryType {entryFilter} -Newest {count} -ErrorAction Stop 2>$null |
+                Get-EventLog -LogName '{safeLogName}' -EntryType {entryFilter} -Newest {count} -ErrorAction Stop 2>$null |
                     Select-Object TimeGenerated, EntryType, Source, EventID, Message |
                     Format-Table -AutoSize -Wrap
             ";
         
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
-        ConsoleUI.ShowCommandExecution($"Get-EventLog {logName}", _targetServer);
+        var displayCommand = string.IsNullOrEmpty(entryFilter)
+            ? $"Get-WinEvent -LogName '{normalizedLogName}' -MaxEvents {count}"
+            : $"Get-WinEvent -LogName '{normalizedLogName}' -Level {entryType} -MaxEvents {count}";
+        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
             return result.Output;
         }
 
         var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
-        return fallbackResult.Success && !string.IsNullOrWhiteSpace(fallbackResult.Output)
+        return fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Event log data unavailable.";
     }
@@ -234,6 +261,7 @@ public class DiagnosticTools
         var nameFilterValue = !string.IsNullOrWhiteSpace(nameFilter)
             ? nameFilter.Trim()
             : string.Empty;
+        var safeNameFilterValue = EscapeSingleQuotes(nameFilterValue);
 
         var command = $@"
             try {{
@@ -245,8 +273,8 @@ public class DiagnosticTools
                 if ('{stateFilter}' -ne '') {{
                     $services = $services | Where-Object {{ $_.Status -eq '{stateFilter}' }}
                 }}
-                if ('{nameFilterValue}' -ne '') {{
-                    $services = $services | Where-Object {{ $_.Name -like '*{nameFilterValue}*' -or $_.DisplayName -like '*{nameFilterValue}*' }}
+                if ('{safeNameFilterValue}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.Name -like '*{safeNameFilterValue}*' -or $_.DisplayName -like '*{safeNameFilterValue}*' }}
                 }}
                 $services |
                     Select-Object Status, Name, DisplayName, StartType |
@@ -257,8 +285,8 @@ public class DiagnosticTools
                 if ('{stateFilter}' -ne '') {{
                     $services = $services | Where-Object {{ $_.State -eq '{stateFilter}' }}
                 }}
-                if ('{nameFilterValue}' -ne '') {{
-                    $services = $services | Where-Object {{ $_.Name -like '*{nameFilterValue}*' -or $_.DisplayName -like '*{nameFilterValue}*' }}
+                if ('{safeNameFilterValue}' -ne '') {{
+                    $services = $services | Where-Object {{ $_.Name -like '*{safeNameFilterValue}*' -or $_.DisplayName -like '*{safeNameFilterValue}*' }}
                 }}
                 $services |
                     Select-Object State, Name, DisplayName, StartMode |
@@ -348,21 +376,21 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         ConsoleUI.ShowCommandExecution("Get-Volume", _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
             return result.Output;
         }
 
         var wrappedCmdletFallback = WrapCommandWithTargetVerification(cmdletFallback);
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
-        if (cmdletResult.Success && !string.IsNullOrWhiteSpace(cmdletResult.Output))
+        if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
             return cmdletResult.Output;
         }
 
         var wrappedCimFallback = WrapCommandWithTargetVerification(cimFallback);
         var cimResult = await _executor.ExecuteAsync(wrappedCimFallback);
-        return cimResult.Success
+        return cimResult.Success && string.IsNullOrWhiteSpace(cimResult.Error)
             ? cimResult.Output
             : $"[ERROR] {cimResult.Error}";
     }
@@ -440,7 +468,7 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         ConsoleUI.ShowCommandExecution($"Get-Counter ({category})", _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
-        if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Contains("[WARN]", StringComparison.OrdinalIgnoreCase))
+        if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
             return result.Output;
         }
@@ -448,7 +476,8 @@ public class DiagnosticTools
         var fallbackCommand = category.ToLowerInvariant() switch
         {
             "cpu" => @"
-                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter ""Name='_Total'"" |
+                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor |
+                    Where-Object { $_.Name -eq '_Total' } |
                     Select-Object Name, @{N='CPUPercent';E={$_.PercentProcessorTime}} |
                     Format-Table -AutoSize
             ",
@@ -461,7 +490,8 @@ public class DiagnosticTools
                 } | Format-List
             ",
             "disk" => @"
-                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter ""Name='_Total'"" |
+                Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk |
+                    Where-Object { $_.Name -eq '_Total' } |
                     Select-Object Name, PercentDiskTime, AvgDiskQueueLength |
                     Format-Table -AutoSize
             ",
@@ -473,8 +503,8 @@ public class DiagnosticTools
                     Format-Table -AutoSize
             ",
             _ => @"
-                $cpu = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter ""Name='_Total'""
-                $disk = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter ""Name='_Total'""
+                $cpu = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor | Where-Object { $_.Name -eq '_Total' }
+                $disk = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk | Where-Object { $_.Name -eq '_Total' }
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 [PSCustomObject]@{
                     CPUPercent = $cpu.PercentProcessorTime
@@ -488,7 +518,7 @@ public class DiagnosticTools
 
         var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
-        return fallbackResult.Success && !string.IsNullOrWhiteSpace(fallbackResult.Output)
+        return fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Performance counter data unavailable.";
     }
