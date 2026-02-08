@@ -153,11 +153,38 @@ public class TroubleshootingSession : IAsyncDisposable
             // Find the SDK CLI path (bundled with @github/copilot-sdk npm package)
             var cliPath = GetCopilotCliPath();
             
-            _copilotClient = new CopilotClient(new CopilotClientOptions
+            var copilotOptions = new CopilotClientOptions
             {
                 CliPath = cliPath,
-                LogLevel = "info"
-            });
+                LogLevel = "debug"
+            };
+
+            // If the SDK exposes a Logger property, attach our diagnostic logger
+            try
+            {
+                var loggerProp = typeof(CopilotClientOptions).GetProperty("Logger");
+                if (loggerProp != null)
+                {
+                    var propType = loggerProp.PropertyType;
+                    // Support common delegate shapes
+                    if (propType == typeof(Action<string>))
+                    {
+                        loggerProp.SetValue(copilotOptions, new Action<string>(s => DiagLogger.Log("SDK: " + s)));
+                    }
+                    else if (propType == typeof(Action<object>))
+                    {
+                        loggerProp.SetValue(copilotOptions, new Action<object>(o => DiagLogger.Log("SDK: " + (o?.ToString() ?? "null"))));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagLogger.Log("Failed to attach SDK Logger via reflection: " + ex.Message);
+            }
+
+            _copilotClient = new CopilotClient(copilotOptions);
+
+            DiagLogger.Log($"CopilotClient created (cliPath={cliPath})");
 
             try
             {
@@ -393,24 +420,35 @@ public class TroubleshootingSession : IAsyncDisposable
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             var subscription = _copilotSession.On(evt =>
             {
+                // Log arrival of event for diagnostics
+                try
+                {
+                    DiagLogger.Log($"Event received: {evt?.GetType().FullName}");
+                }
+                catch { }
+
                 switch (evt)
                 {
                     case AssistantTurnStartEvent:
+                        DiagLogger.Log("Event: AssistantTurnStartEvent");
                         // AI has started processing
                         thinkingIndicator.UpdateStatus("Analyzing");
                         break;
                     
                     case ToolExecutionStartEvent toolStart:
+                        DiagLogger.Log($"Event: ToolExecutionStartEvent tool={toolStart.Data?.ToolName}");
                         // Show which tool is being executed
                         thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
                         break;
                     
                     case ToolExecutionCompleteEvent:
+                        DiagLogger.Log("Event: ToolExecutionCompleteEvent");
                         // Tool finished, back to thinking
                         thinkingIndicator.UpdateStatus("Processing results");
                         break;
                     
                     case AssistantMessageDeltaEvent delta:
+                        DiagLogger.Log($"Event: AssistantMessageDeltaEvent id={delta.Id} len={(delta.Data?.DeltaContent?.Length ?? 0)}");
                         // Skip if we've already processed this event (deduplicate)
                         if (!processedDeltaIds.Add(delta.Id.ToString()))
                             break;
@@ -427,6 +465,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     
                     case AssistantMessageEvent msg:
+                        DiagLogger.Log($"Event: AssistantMessageEvent len={(msg.Data?.Content?.Length ?? 0)}");
                         // Final message received (non-streaming fallback)
                         if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
@@ -438,6 +477,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     
                     case SessionErrorEvent errorEvent:
+                        DiagLogger.Log($"Event: SessionErrorEvent message={errorEvent.Data?.Message}");
                         thinkingIndicator.StopForResponse();
                         ConsoleUI.EndAIResponse();
                         ConsoleUI.ShowError("Session Error", errorEvent.Data?.Message ?? "Unknown error");
@@ -446,20 +486,35 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     
                     case SessionIdleEvent:
+                        DiagLogger.Log("Event: SessionIdleEvent");
                         // Session finished processing
                         done.TrySetResult(true);
                         break;
                     case AssistantUsageEvent usageEvt:
+                        DiagLogger.Log("Event: AssistantUsageEvent");
                         CaptureUsageMetrics(usageEvt);
                         break;
                     default:
+                        DiagLogger.Log($"Event: Unknown type {evt?.GetType().FullName}");
                         // Unknown or new event type: ignore to be forward-compatible
                         break;
                 }
             });
 
             // Send the message
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = userMessage });
+            try
+            {
+                var messagePreview = userMessage?.Length > 20000 ? userMessage.Substring(0, 20000) + "\n\n[TRUNCATED]" : userMessage;
+                DiagLogger.Log($"Sending message (length={userMessage?.Length ?? 0}). Preview:\n{messagePreview}");
+
+                await _copilotSession.SendAsync(new MessageOptions { Prompt = userMessage });
+            }
+            catch (Exception ex)
+            {
+                DiagLogger.Log($"SendAsync failed: {ex.GetType().FullName} - {ex.Message}");
+                DiagLogger.LogException(ex);
+                throw;
+            }
             
             // Wait for completion
             await done.Task;
@@ -467,6 +522,8 @@ public class TroubleshootingSession : IAsyncDisposable
             // Explicitly dispose subscription BEFORE processing approvals
             // This prevents duplicate event handling when SendMessageAsync is called recursively
             subscription.Dispose();
+
+            DiagLogger.Log("SendMessageAsync completed, subscription disposed");
 
             if (hasStartedStreaming)
             {
@@ -511,8 +568,12 @@ public class TroubleshootingSession : IAsyncDisposable
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(pending[0]);
                 ConsoleUI.ShowSuccess("Command executed");
                 
+                // Sanitize and truncate large or non-printable outputs before sending back to AI
+                var sanitized = SanitizeForModel(result);
+                DiagLogger.Log($"Tool result size={result?.Length ?? 0}, sanitizedSize={sanitized?.Length ?? 0}");
+
                 // Feed result back to the AI
-                await SendMessageAsync($"The approved command '{cmd.Command}' has been executed. Result:\n{result}\n\nPlease continue your analysis with this information.");
+                await SendMessageAsync($"The approved command '{cmd.Command}' has been executed. Result:\n{sanitized}\n\nPlease continue your analysis with this information.");
             }
             else
             {
@@ -547,6 +608,34 @@ public class TroubleshootingSession : IAsyncDisposable
     private Task<bool> PromptApprovalAsync(string command, string reason)
     {
         return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason));
+    }
+
+    private static string SanitizeForModel(string? input, int maxLen = 50000)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+
+        // Replace non-printable control characters except common whitespace with '?'
+        var sb = new System.Text.StringBuilder(input.Length);
+        foreach (var ch in input)
+        {
+            if (ch == '\r' || ch == '\n' || ch == '\t' || (ch >= ' ' && ch <= '~'))
+            {
+                sb.Append(ch);
+            }
+            else
+            {
+                sb.Append('?');
+            }
+        }
+
+        var sanitized = sb.ToString();
+        if (sanitized.Length > maxLen)
+        {
+            sanitized = sanitized.Substring(0, maxLen) + "\n\n[TRUNCATED]";
+        }
+
+        return sanitized;
     }
 
     private static void SaveLastModel(string model)
@@ -697,15 +786,66 @@ public class TroubleshootingSession : IAsyncDisposable
 
         updateStatus?.Invoke("Creating AI session...");
 
+        // Guard: Truncate very large system messages to avoid malformed/oversized request bodies
+        var sysMsg = _systemMessageConfig;
+        if (!string.IsNullOrEmpty(sysMsg?.Content) && sysMsg.Content.Length > 20000)
+        {
+            DiagLogger.Log($"SystemMessage length {sysMsg.Content.Length} exceeds 20000; truncating to 20000 chars.");
+            sysMsg = new SystemMessageConfig { Content = sysMsg.Content.Substring(0, 20000) + "\n\n[TRUNCATED]" };
+        }
+
         var config = new SessionConfig
         {
             Model = model,
-            SystemMessage = _systemMessageConfig,
+            SystemMessage = sysMsg,
             Streaming = true,
             Tools = _diagnosticTools.GetTools().ToList()
         };
 
-        _copilotSession = await _copilotClient.CreateSessionAsync(config);
+        DiagLogger.Log($"Creating session with model={model}, systemMessageLength={(sysMsg?.Content?.Length ?? 0)}");
+
+        // Log a sanitized session config for diagnostics
+        try
+        {
+            var toolNames = config.Tools?.Select(t =>
+            {
+                try
+                {
+                    var prop = t.GetType().GetProperty("Name");
+                    return prop?.GetValue(t)?.ToString() ?? t.GetType().Name;
+                }
+                catch
+                {
+                    return t.GetType().Name;
+                }
+            })?.ToList();
+
+            var sessionAudit = new
+            {
+                config.Model,
+                SystemMessagePreview = sysMsg?.Content?.Length > 2000 ? sysMsg?.Content?.Substring(0, 2000) + "\n\n[TRUNCATED]" : sysMsg?.Content,
+                Tools = toolNames,
+                config.Streaming
+            };
+
+            var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = false, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
+            DiagLogger.Log("SessionConfig: " + System.Text.Json.JsonSerializer.Serialize(sessionAudit, options));
+        }
+        catch (Exception ex)
+        {
+            DiagLogger.Log("Failed to serialize session config for diagnostics: " + ex.Message);
+        }
+
+        try
+        {
+            _copilotSession = await _copilotClient.CreateSessionAsync(config);
+            DiagLogger.Log("CreateSessionAsync succeeded");
+        }
+        catch (Exception ex)
+        {
+            DiagLogger.LogException(ex);
+            throw;
+        }
         _lastUsage = null;
 
         // Capture model and usage info
