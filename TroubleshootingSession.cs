@@ -15,6 +15,10 @@ public class TroubleshootingSession : IAsyncDisposable
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotSdkRepoUrl = "https://github.com/github/copilot-sdk";
 
+    internal static Func<string> CopilotCliPathResolver { get; set; } = GetCopilotCliPath;
+    internal static Func<string, bool> FileExistsResolver { get; set; } = File.Exists;
+    internal static Func<string, string, Task<(int ExitCode, string StdOut, string StdErr)>> ProcessRunnerResolver { get; set; } = RunProcessAsync;
+
     private string _targetServer;
     private PowerShellExecutor _executor;
     private DiagnosticTools _diagnosticTools;
@@ -343,9 +347,9 @@ public class TroubleshootingSession : IAsyncDisposable
 
         try
         {
-            var cliPath = GetCopilotCliPath();
+            var cliPath = CopilotCliPathResolver();
 
-            if (cliPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase) && !File.Exists(cliPath))
+            if (cliPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase) && !FileExistsResolver(cliPath))
             {
                 issues.Add(new CopilotPrerequisiteIssue(
                     "Copilot CLI is not installed",
@@ -361,7 +365,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (cliPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
             {
-                var nodeVersion = await RunProcessAsync("node", "--version");
+                var nodeVersion = await ProcessRunnerResolver("node", "--version");
                 if (nodeVersion.ExitCode != 0)
                 {
                     issues.Add(new CopilotPrerequisiteIssue(
@@ -376,7 +380,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             var (versionCommand, versionArguments) = BuildCopilotCommand(cliPath, "--version");
-            var versionResult = await RunProcessAsync(versionCommand, versionArguments);
+            var versionResult = await ProcessRunnerResolver(versionCommand, versionArguments);
 
             if (versionResult.ExitCode != 0)
             {
@@ -397,14 +401,15 @@ public class TroubleshootingSession : IAsyncDisposable
 
             return new CopilotPrerequisiteReport(issues);
         }
-        catch
+        catch (Exception ex)
         {
             issues.Add(new CopilotPrerequisiteIssue(
                 "Could not fully validate Copilot prerequisites",
                 "TroubleScout could not complete the prerequisite check. Verify manually:\n" +
                 "  - copilot --version\n" +
-                "  - npm install -g @github/copilot @github/copilot-sdk",
-                false));
+                "  - npm install -g @github/copilot @github/copilot-sdk\n" +
+                $"Error: {TrimSingleLine(ex.Message)}",
+                true));
             return new CopilotPrerequisiteReport(issues);
         }
     }
@@ -426,28 +431,42 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessAsync(string fileName, string arguments)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo
+        try
         {
-            FileName = fileName,
-            Arguments = arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
 
-        using var process = System.Diagnostics.Process.Start(psi);
-        if (process == null)
-        {
-            return (-1, string.Empty, "Failed to start process.");
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process == null)
+            {
+                return (-1, string.Empty, "Failed to start process.");
+            }
+
+            var stdOutTask = process.StandardOutput.ReadToEndAsync();
+            var stdErrTask = process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync();
+
+            return (process.ExitCode, await stdOutTask, await stdErrTask);
         }
+        catch (Exception ex)
+        {
+            return (-1, string.Empty, ex.Message);
+        }
+    }
 
-        var stdOutTask = process.StandardOutput.ReadToEndAsync();
-        var stdErrTask = process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        return (process.ExitCode, await stdOutTask, await stdErrTask);
+    internal static void ResetPrerequisiteValidationResolvers()
+    {
+        CopilotCliPathResolver = GetCopilotCliPath;
+        FileExistsResolver = File.Exists;
+        ProcessRunnerResolver = RunProcessAsync;
     }
 
     private static string? GetInstalledCopilotSdkVersion()

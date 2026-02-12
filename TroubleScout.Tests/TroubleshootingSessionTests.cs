@@ -85,6 +85,63 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         await act.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenNodeMissing_ShouldReturnBlockingIssue()
+    {
+        // Arrange
+        TroubleshootingSession.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, _) =>
+        {
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node was not found"));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            // Act
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            // Assert
+            report.IsReady.Should().BeFalse();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Title.Should().Be("Node.js runtime is missing");
+            report.Issues[0].IsBlocking.Should().BeTrue();
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenValidationThrows_ShouldReturnBlockingIssueWithDetails()
+    {
+        // Arrange
+        TroubleshootingSession.CopilotCliPathResolver = () => throw new InvalidOperationException("boom");
+
+        try
+        {
+            // Act
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            // Assert
+            report.IsReady.Should().BeFalse();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Title.Should().Be("Could not fully validate Copilot prerequisites");
+            report.Issues[0].IsBlocking.Should().BeTrue();
+            report.Issues[0].Details.Should().Contain("boom");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
     #endregion
 
     #region Connection Mode Tests
