@@ -14,6 +14,7 @@ public class TroubleshootingSession : IAsyncDisposable
 {
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotSdkRepoUrl = "https://github.com/github/copilot-sdk";
+    private const int MinSupportedNodeMajorVersion = 24;
 
     internal static Func<string> CopilotCliPathResolver { get; set; } = GetCopilotCliPath;
     internal static Func<string, bool> FileExistsResolver { get; set; } = File.Exists;
@@ -377,6 +378,25 @@ public class TroubleshootingSession : IAsyncDisposable
 
                     return new CopilotPrerequisiteReport(issues);
                 }
+
+                var detectedVersion = TrimSingleLine(nodeVersion.StdOut);
+                var nodeMajorVersion = ParseNodeMajorVersion(detectedVersion);
+                if (!nodeMajorVersion.HasValue || nodeMajorVersion.Value < MinSupportedNodeMajorVersion)
+                {
+                    issues.Add(new CopilotPrerequisiteIssue(
+                        "Node.js version is unsupported",
+                        $"Copilot SDK on this machine requires Node.js {MinSupportedNodeMajorVersion}+ (LTS recommended).\n" +
+                        $"Detected: {detectedVersion}\n\n" +
+                        "Fix on Windows:\n" +
+                        "  1. winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+                        "  2. Restart your terminal\n" +
+                        "  3. npm install -g @github/copilot-sdk@0.1.23\n" +
+                        "  4. Re-run TroubleScout\n\n" +
+                        $"References:\n- {CopilotCliRepoUrl}\n- {CopilotSdkRepoUrl}",
+                        true));
+
+                    return new CopilotPrerequisiteReport(issues);
+                }
             }
 
             var (versionCommand, versionArguments) = BuildCopilotCommand(cliPath, "--version");
@@ -482,6 +502,23 @@ public class TroubleshootingSession : IAsyncDisposable
         return informational.Split('+')[0];
     }
 
+    private static int? ParseNodeMajorVersion(string? versionText)
+    {
+        if (string.IsNullOrWhiteSpace(versionText))
+            return null;
+
+        var trimmed = versionText.Trim();
+        if (trimmed.StartsWith('v'))
+        {
+            trimmed = trimmed[1..];
+        }
+
+        var dotIndex = trimmed.IndexOf('.');
+        var majorPart = dotIndex >= 0 ? trimmed[..dotIndex] : trimmed;
+
+        return int.TryParse(majorPart, out var major) ? major : null;
+    }
+
     private static string TrimSingleLine(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -497,9 +534,11 @@ public class TroubleshootingSession : IAsyncDisposable
         var sdkVersion = GetInstalledCopilotSdkVersion() ?? "unknown";
         var message = "Copilot SDK protocol version mismatch detected.\n\n" +
                $"This TroubleScout build uses GitHub.Copilot.SDK {sdkVersion}.\n" +
-               "Ensure Copilot CLI prerequisites are installed and compatible, then authenticate:\n" +
-               "  1. npm install -g @github/copilot @github/copilot-sdk\n" +
-               "  2. copilot auth login\n\n" +
+               "Ensure Copilot CLI prerequisites are installed and compatible:\n" +
+               $"  1. Install Node.js {MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+               "  2. Restart your terminal\n" +
+               "  3. npm install -g @github/copilot-sdk@0.1.23\n" +
+               "  4. copilot login\n\n" +
                "References:\n" +
                $"- {CopilotCliRepoUrl}\n" +
                $"- {CopilotSdkRepoUrl}";
@@ -539,16 +578,18 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             return "The Copilot CLI runtime is unavailable.\n\n" +
                    "Install/update prerequisites:\n" +
-                   "  1. Install Node.js: https://nodejs.org/\n" +
-                   "  2. npm install -g @github/copilot @github/copilot-sdk\n" +
-                   "  3. copilot auth login";
+                                     $"  1. Install Node.js {MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+                                     "  2. Restart your terminal\n" +
+                                     "  3. npm install -g @github/copilot-sdk@0.1.23\n" +
+                                     "  4. copilot login";
         }
 
         return "TroubleScout could not initialize the Copilot session.\n\n" +
                "Try:\n" +
                "  - copilot --version\n" +
-             "  - copilot auth login\n" +
-               "  - npm install -g @github/copilot @github/copilot-sdk\n\n" +
+                         "  - copilot login\n" +
+                             $"  - winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+                             "  - npm install -g @github/copilot-sdk@0.1.23\n\n" +
                $"Technical details: {message}";
     }
 
