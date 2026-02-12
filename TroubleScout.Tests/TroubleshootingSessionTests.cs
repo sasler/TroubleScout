@@ -63,113 +63,127 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     #endregion
 
-        #region MCP Configuration Tests
+    #region MCP Configuration Tests
 
-        [Fact]
-        public void LoadMcpServersFromConfig_WhenFileMissing_ShouldReturnEmptyAndWarning()
+    [Fact]
+    public void LoadMcpServersFromConfig_WhenFileMissing_ShouldReturnEmptyAndWarning()
+    {
+        // Arrange
+        var warnings = new List<string>();
+        var path = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json");
+
+        // Act
+        var servers = TroubleshootingSession.LoadMcpServersFromConfig(path, warnings);
+
+        // Assert
+        servers.Should().BeEmpty();
+        warnings.Should().ContainSingle();
+        warnings[0].Should().Contain("not found");
+    }
+
+    [Fact]
+    public void LoadMcpServersFromConfig_WhenPathNotProvided_ShouldReturnEmptyWithoutWarning()
+    {
+        // Arrange
+        var warnings = new List<string>();
+
+        // Act
+        var servers = TroubleshootingSession.LoadMcpServersFromConfig(null, warnings);
+
+        // Assert
+        servers.Should().BeEmpty();
+        warnings.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void LoadMcpServersFromConfig_WithValidJson_ShouldParseRemoteAndLocalServers()
+    {
+        // Arrange
+        var warnings = new List<string>();
+        var filePath = Path.Combine(Path.GetTempPath(), $"mcp-{Guid.NewGuid():N}.json");
+        var json = """
         {
-                // Arrange
-                var warnings = new List<string>();
-                var path = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json");
-
-                // Act
-                var servers = TroubleshootingSession.LoadMcpServersFromConfig(path, warnings);
-
-                // Assert
-                servers.Should().BeEmpty();
-                warnings.Should().ContainSingle();
-                warnings[0].Should().Contain("not found");
+            "mcpServers": {
+                "remote-server": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "tools": ["*"]
+                },
+                "local-server": {
+                    "type": "local",
+                    "command": "node",
+                    "args": ["server.js"]
+                }
+            }
         }
+        """;
 
-        [Fact]
-        public void LoadMcpServersFromConfig_WithValidJson_ShouldParseRemoteAndLocalServers()
+        File.WriteAllText(filePath, json);
+
+        try
         {
-                // Arrange
-                var warnings = new List<string>();
-                var filePath = Path.Combine(Path.GetTempPath(), $"mcp-{Guid.NewGuid():N}.json");
-                var json = """
-                {
-                    "mcpServers": {
-                        "remote-server": {
-                            "type": "http",
-                            "url": "https://example.com/mcp",
-                            "tools": ["*"]
-                        },
-                        "local-server": {
-                            "type": "local",
-                            "command": "node",
-                            "args": ["server.js"]
-                        }
-                    }
-                }
-                """;
+            // Act
+            var servers = TroubleshootingSession.LoadMcpServersFromConfig(filePath, warnings);
 
-                File.WriteAllText(filePath, json);
-
-                try
-                {
-                        // Act
-                        var servers = TroubleshootingSession.LoadMcpServersFromConfig(filePath, warnings);
-
-                        // Assert
-                        warnings.Should().BeEmpty();
-                        servers.Should().HaveCount(2);
-                        servers.Keys.Should().Contain(["remote-server", "local-server"]);
-                        servers["remote-server"].GetType().Name.Should().Be("McpRemoteServerConfig");
-                        servers["local-server"].GetType().Name.Should().Be("McpLocalServerConfig");
-                }
-                finally
-                {
-                        if (File.Exists(filePath))
-                        {
-                                File.Delete(filePath);
-                        }
-                }
+            // Assert
+            warnings.Should().BeEmpty();
+            servers.Should().HaveCount(2);
+            servers.Keys.Should().Contain(["remote-server", "local-server"]);
+            servers["remote-server"].GetType().Name.Should().Be("McpRemoteServerConfig");
+            servers["local-server"].GetType().Name.Should().Be("McpLocalServerConfig");
         }
-
-        [Fact]
-        public void LoadMcpServersFromConfig_WithInvalidEntry_ShouldSkipOnlyInvalidServer()
+        finally
         {
-                // Arrange
-                var warnings = new List<string>();
-                var filePath = Path.Combine(Path.GetTempPath(), $"mcp-{Guid.NewGuid():N}.json");
-                var json = """
-                {
-                    "mcpServers": {
-                        "invalid-server": {
-                            "type": "http"
-                        },
-                        "valid-server": {
-                            "type": "http",
-                            "url": "https://example.com/mcp"
-                        }
-                    }
-                }
-                """;
-
-                File.WriteAllText(filePath, json);
-
-                try
-                {
-                        // Act
-                        var servers = TroubleshootingSession.LoadMcpServersFromConfig(filePath, warnings);
-
-                        // Assert
-                        servers.Should().ContainSingle();
-                        servers.Keys.Should().Contain("valid-server");
-                        warnings.Should().ContainSingle();
-                        warnings[0].Should().Contain("invalid-server");
-                }
-                finally
-                {
-                        if (File.Exists(filePath))
-                        {
-                                File.Delete(filePath);
-                        }
-                }
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
         }
+    }
 
-        #endregion
+    [Fact]
+    public void LoadMcpServersFromConfig_WithInvalidEntry_ShouldSkipOnlyInvalidServer()
+    {
+        // Arrange
+        var warnings = new List<string>();
+        var filePath = Path.Combine(Path.GetTempPath(), $"mcp-{Guid.NewGuid():N}.json");
+        var json = """
+        {
+            "mcpServers": {
+                "invalid-server": {
+                    "type": "http"
+                },
+                "valid-server": {
+                    "type": "http",
+                    "url": "https://example.com/mcp"
+                }
+            }
+        }
+        """;
+
+        File.WriteAllText(filePath, json);
+
+        try
+        {
+            // Act
+            var servers = TroubleshootingSession.LoadMcpServersFromConfig(filePath, warnings);
+
+            // Assert
+            servers.Should().ContainSingle();
+            servers.Keys.Should().Contain("valid-server");
+            warnings.Should().ContainSingle();
+            warnings[0].Should().Contain("invalid-server");
+        }
+        finally
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+    }
+
+    #endregion
 
     #region CLI Availability Tests
 

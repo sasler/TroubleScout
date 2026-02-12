@@ -140,7 +140,7 @@ TroubleScout can load MCP servers and skills through Copilot SDK session configu
 Examples:
 
 ```bash
-# Use default Copilot CLI MCP config + repo skills
+# Use default MCP config (%USERPROFILE%\\.copilot\\mcp-config.json) and skills (%USERPROFILE%\\.copilot\\skills, if present)
 dotnet run -- --server localhost
 
 # Use a custom MCP config path

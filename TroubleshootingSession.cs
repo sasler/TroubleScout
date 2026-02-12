@@ -1315,6 +1315,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private void DiscoverConfiguredSkills()
     {
+        var discoveredSkills = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var directory in _skillDirectories)
         {
             if (!Directory.Exists(directory))
@@ -1343,11 +1345,13 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 if (!_disabledSkills.Contains(skillName, StringComparer.OrdinalIgnoreCase))
                 {
-                    _configuredSkills.Add(skillName);
+                    discoveredSkills.Add(skillName);
                 }
             }
         }
 
+        _configuredSkills.Clear();
+        _configuredSkills.AddRange(discoveredSkills);
         _configuredSkills.Sort(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -1357,7 +1361,6 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (string.IsNullOrWhiteSpace(mcpConfigPath))
         {
-            warnings.Add("MCP configuration path was not provided.");
             return result;
         }
 
@@ -1383,13 +1386,13 @@ public class TroubleshootingSession : IAsyncDisposable
             if (!root.TryGetProperty("mcpServers", out serversElement) &&
                 !root.TryGetProperty("servers", out serversElement))
             {
-                warnings.Add("MCP config does not contain 'mcpServers'.");
+                warnings.Add("MCP config does not contain 'mcpServers' or 'servers'.");
                 return result;
             }
 
             if (serversElement.ValueKind != JsonValueKind.Object)
             {
-                warnings.Add("MCP config 'mcpServers' must be a JSON object.");
+                warnings.Add("MCP config 'mcpServers' or 'servers' must be a JSON object.");
                 return result;
             }
 

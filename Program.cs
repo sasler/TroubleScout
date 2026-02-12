@@ -112,9 +112,13 @@ static string? ResolveDefaultMcpConfigPath()
         userProfile = Environment.GetEnvironmentVariable("HOME");
     }
 
-    return string.IsNullOrWhiteSpace(userProfile)
-        ? null
-        : Path.Combine(userProfile, ".copilot", "mcp-config.json");
+    if (string.IsNullOrWhiteSpace(userProfile))
+    {
+        return null;
+    }
+
+    var path = Path.Combine(userProfile, ".copilot", "mcp-config.json");
+    return File.Exists(path) ? path : null;
 }
 
 static List<string> ResolveDefaultSkillDirectories()
