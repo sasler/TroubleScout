@@ -75,6 +75,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         await act.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_ShouldNotThrow()
+    {
+        // Act
+        Func<Task> act = async () => await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+        // Assert
+        await act.Should().NotThrowAsync();
+    }
+
     #endregion
 
     #region Connection Mode Tests

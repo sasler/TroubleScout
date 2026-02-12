@@ -107,6 +107,7 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 | `--server` | `-s`  | Target server name or IP (default: localhost)    |
 | `--model`  | `-m`  | AI model to use (e.g., gpt-4o, claude-sonnet-4)  |
 | `--prompt` | `-p`  | Initial prompt for headless mode                 |
+| `--version`| `-v`  | Show app version and exit                        |
 | `--help`   | `-h`  | Show help information                            |
 
 ### Model Selection
@@ -242,6 +243,39 @@ Ensure the `@github/copilot-sdk` npm package is installed globally:
 npm install -g @github/copilot-sdk
 ```
 
+If you still see startup failures, install/update both CLI packages and re-authenticate:
+
+```bash
+npm install -g @github/copilot@latest @github/copilot-sdk@latest
+copilot auth login
+```
+
+References:
+
+- [Copilot CLI](https://github.com/github/copilot-cli)
+- [Copilot SDK](https://github.com/github/copilot-sdk)
+
+### "Protocol version mismatch" or SDK/CLI compatibility errors
+
+- Update Copilot CLI packages:
+
+   ```bash
+   npm install -g @github/copilot@latest @github/copilot-sdk@latest
+   ```
+
+- Re-authenticate:
+
+   ```bash
+   copilot auth login
+   ```
+
+- If you run TroubleScout from source, update the SDK package:
+
+   ```bash
+   dotnet add package GitHub.Copilot.SDK --version <latest>
+   dotnet build
+   ```
+
 ### "JSON-RPC connection lost"
 
 - Ensure Node.js is installed and in PATH
@@ -263,18 +297,21 @@ MIT
 Contributions are welcome! This repository has branch protection enabled on the `main` branch to maintain code quality.
 
 **Before contributing:**
+
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines
 - Follow branch naming conventions: `feature/`, `fix/`, `docs/`, etc.
 - Use emoji-prefixed or conventional commit messages
 - Ensure all tests pass locally before opening a PR
 
 **Quick Start:**
+
 1. Fork the repository
 2. Create a branch: `git checkout -b feature/your-feature`
 3. Make changes and commit: `git commit -m "✨ Add your feature"`
 4. Push and open a pull request
 
 All pull requests require:
+
 - ✅ Passing CI/CD checks (build and tests)
 - ✅ Code owner review and approval
 - ✅ Branch up-to-date with main
@@ -284,4 +321,3 @@ All pull requests require:
 Releases are automatically published via GitHub Actions when version tags are pushed. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions on creating new releases.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
-

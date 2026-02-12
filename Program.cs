@@ -1,4 +1,5 @@
-﻿using TroubleScout;
+﻿using System.Reflection;
+using TroubleScout;
 using TroubleScout.Services;
 using TroubleScout.UI;
 
@@ -6,6 +7,7 @@ using TroubleScout.UI;
 var server = "localhost";
 string? prompt = null;
 string? model = null;
+var appVersion = GetAppVersion();
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -21,21 +23,12 @@ for (int i = 0; i < args.Length; i++)
             model = args[++i];
             break;
         case "--help" or "-h":
-            ShowHelp();
+            ShowHelp(appVersion);
+            return 0;
+        case "--version" or "-v":
+            Console.WriteLine($"TroubleScout {appVersion}");
             return 0;
     }
-}
-
-// Check Copilot CLI availability
-if (!await TroubleshootingSession.CheckCopilotAvailableAsync())
-{
-    ConsoleUI.ShowError("Copilot CLI Not Found", 
-        "The GitHub Copilot CLI is required but not found.\n\n" +
-        "Please install it and authenticate:\n" +
-        "  1. Install: npm install -g @github/copilot-sdk\n" +
-        "  2. Authenticate: copilot auth login\n\n" +
-        "For more info: https://docs.github.com/copilot");
-    return 1;
 }
 
 if (string.IsNullOrWhiteSpace(model))
@@ -55,14 +48,14 @@ if (!string.IsNullOrWhiteSpace(prompt))
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model);
+    await RunInteractiveModeAsync(server, model, appVersion);
 }
 
 return Environment.ExitCode;
 
-static void ShowHelp()
+static void ShowHelp(string version)
 {
-    Console.WriteLine("TroubleScout - AI-Powered Windows Server Troubleshooting Assistant");
+    Console.WriteLine($"TroubleScout {version} - AI-Powered Windows Server Troubleshooting Assistant");
     Console.WriteLine();
     Console.WriteLine("Usage: TroubleScout [options]");
     Console.WriteLine();
@@ -70,18 +63,40 @@ static void ShowHelp()
     Console.WriteLine("  -s, --server <name>   Target Windows Server (default: localhost)");
     Console.WriteLine("  -m, --model <name>    AI model to use (e.g., gpt-4o, claude-sonnet-4)");
     Console.WriteLine("  -p, --prompt <text>   Initial prompt for headless mode");
+    Console.WriteLine("  -v, --version         Show app version and exit");
     Console.WriteLine("  -h, --help            Show help information");
     Console.WriteLine();
     Console.WriteLine("Available models depend on your GitHub Copilot subscription.");
 }
 
+static string GetAppVersion()
+{
+    var assembly = Assembly.GetEntryAssembly() ?? typeof(TroubleshootingSession).Assembly;
+    var informational = assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        ?.InformationalVersion;
+
+    if (!string.IsNullOrWhiteSpace(informational))
+    {
+        return informational.Split('+')[0];
+    }
+
+    var fileVersion = assembly
+        .GetCustomAttribute<AssemblyFileVersionAttribute>()
+        ?.Version;
+
+    return string.IsNullOrWhiteSpace(fileVersion)
+        ? "unknown"
+        : fileVersion;
+}
+
 /// <summary>
 /// Run in interactive mode with full TUI
 /// </summary>
-static async Task RunInteractiveModeAsync(string server, string? model)
+static async Task RunInteractiveModeAsync(string server, string? model, string appVersion)
 {
     // Show the full TUI
-    ConsoleUI.ShowBanner();
+    ConsoleUI.ShowBanner(appVersion);
     
     await using var session = new TroubleshootingSession(server, model);
     
