@@ -18,7 +18,7 @@ public static class ConsoleUI
     /// <summary>
     /// Display the application banner
     /// </summary>
-    public static void ShowBanner()
+    public static void ShowBanner(string? version = null)
     {
         AnsiConsole.Clear();
         
@@ -31,6 +31,11 @@ public static class ConsoleUI
         AnsiConsole.Write(new Rule("[grey]AI-Powered Windows Server Troubleshooting Assistant[/]")
             .RuleStyle("cyan")
             .Centered());
+
+        if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[grey]Version:[/] [cyan]{Markup.Escape(version)}[/]");
+        }
         
         AnsiConsole.WriteLine();
     }
