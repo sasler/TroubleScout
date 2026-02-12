@@ -174,6 +174,7 @@ public static class ConsoleUI
             new Markup("  [cyan]/exit[/] or [cyan]/quit[/]  - End the session"),
             new Markup("  [cyan]/clear[/]          - Clear the screen"),
             new Markup("  [cyan]/status[/]         - Show connection status"),
+            new Markup("  [cyan]/capabilities[/]   - Show MCP/skills availability and usage"),
             new Markup("  [cyan]/model[/]          - Change AI model"),
             new Markup("  [cyan]/connect[/] <server> - Connect to a different server"),
             new Markup("  [cyan]/history[/]        - Show PowerShell commands run this session"),

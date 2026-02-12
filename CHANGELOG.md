@@ -2,6 +2,34 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.6] - 2026-02-12
+
+### ✨ Features
+
+- ✨ Add Copilot MCP server support via `%USERPROFILE%\\.copilot\\mcp-config.json`
+- ✨ Add Copilot skills support via `%USERPROFILE%\\.copilot\\skills` (with CLI overrides)
+- ✨ Show configured and runtime-used MCP servers/skills in status output (`/status`, `/capabilities`)
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Improve Copilot startup prerequisite validation for CLI/Node.js/SDK compatibility
+- 🛡️ Add fast Node.js major-version check (`>=24`) before Copilot session startup
+- 🛡️ Improve initialization and protocol-mismatch errors with actionable remediation guidance
+
+### 📝 Documentation & UX
+
+- 📝 Add and document `--version` CLI support in help/banner workflows
+- 📝 Update troubleshooting/prerequisite documentation for current Copilot auth/runtime setup
+
+### ✅ Testing
+
+- ✅ Add test coverage for unsupported Node.js version handling and prerequisite validation paths
+
+### 🔧 Other Changes
+
+- 🔧 Add root `AGENTS.md` for repository-wide coding-agent guidance
+- 🔧 Remove legacy `.github/copilot-instructions.md` and align docs/help text
+
 ## [v1.2.5] - 2026-02-08
 
 ### ✨ Improvements

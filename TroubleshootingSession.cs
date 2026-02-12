@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using System.Text.Json;
 using System.Xml.Linq;
 using GitHub.Copilot.SDK;
 using TroubleScout.Services;
@@ -30,6 +31,14 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _selectedModel;
     private string? _copilotVersion;
     private List<ModelInfo> _availableModels = new();
+    private readonly string? _mcpConfigPath;
+    private readonly List<string> _skillDirectories;
+    private readonly List<string> _disabledSkills;
+    private readonly List<string> _configuredMcpServers = new();
+    private readonly List<string> _configuredSkills = new();
+    private readonly HashSet<string> _runtimeMcpServers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<string> _configurationWarnings = new();
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -42,6 +51,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/clear",
         "/model",
         "/connect",
+        "/capabilities",
         "/history",
         "/exit",
         "/quit"
@@ -102,10 +112,18 @@ public class TroubleshootingSession : IAsyncDisposable
         };
     }
 
-    public TroubleshootingSession(string targetServer, string? model = null)
+    public TroubleshootingSession(
+        string targetServer,
+        string? model = null,
+        string? mcpConfigPath = null,
+        IReadOnlyList<string>? skillDirectories = null,
+        IReadOnlyList<string>? disabledSkills = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _requestedModel = model;
+        _mcpConfigPath = mcpConfigPath;
+        _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+        _disabledSkills = disabledSkills?.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
@@ -117,6 +135,11 @@ public class TroubleshootingSession : IAsyncDisposable
     public string ConnectionMode => _executor.GetConnectionMode();
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string CopilotVersion => _copilotVersion ?? "unknown";
+    public IReadOnlyList<string> ConfiguredMcpServers => _configuredMcpServers;
+    public IReadOnlyList<string> RuntimeMcpServers => _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+    public IReadOnlyList<string> ConfiguredSkills => _configuredSkills;
+    public IReadOnlyList<string> RuntimeSkills => _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+    public IReadOnlyList<string> ConfigurationWarnings => _configurationWarnings;
 
     private sealed record CopilotUsageSnapshot(
         int? PromptTokens,
@@ -699,6 +722,8 @@ public class TroubleshootingSession : IAsyncDisposable
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             var subscription = _copilotSession.On(evt =>
             {
+                CaptureCapabilityUsage(evt);
+
                 switch (evt)
                 {
                     case AssistantTurnStartEvent:
@@ -883,13 +908,13 @@ public class TroubleshootingSession : IAsyncDisposable
             if (lowerInput == "/clear")
             {
                 ConsoleUI.ShowBanner();
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, GetUsageFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, GetStatusFields());
                 continue;
             }
 
             if (lowerInput == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetUsageFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
                 continue;
             }
 
@@ -902,6 +927,12 @@ public class TroubleshootingSession : IAsyncDisposable
             if (lowerInput == "/history")
             {
                 ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory());
+                continue;
+            }
+
+            if (lowerInput == "/capabilities")
+            {
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
                 continue;
             }
 
@@ -941,7 +972,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     if (success)
                     {
                         ConsoleUI.ShowSuccess($"Connected to {newServer}");
-                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetUsageFields());
+                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
                     }
                 }
                 continue;
@@ -986,6 +1017,15 @@ public class TroubleshootingSession : IAsyncDisposable
 
         updateStatus?.Invoke("Creating AI session...");
 
+        ResetCapabilities();
+        DiscoverConfiguredSkills();
+
+        var mcpServers = LoadMcpServersFromConfig(_mcpConfigPath, _configurationWarnings);
+        foreach (var serverName in mcpServers.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            _configuredMcpServers.Add(serverName);
+        }
+
         var config = new SessionConfig
         {
             Model = model,
@@ -994,8 +1034,28 @@ public class TroubleshootingSession : IAsyncDisposable
             Tools = _diagnosticTools.GetTools().ToList()
         };
 
+        if (mcpServers.Count > 0)
+        {
+            config.McpServers = mcpServers;
+        }
+
+        if (_skillDirectories.Count > 0)
+        {
+            config.SkillDirectories = _skillDirectories.ToList();
+        }
+
+        if (_disabledSkills.Count > 0)
+        {
+            config.DisabledSkills = _disabledSkills.ToList();
+        }
+
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         _lastUsage = null;
+
+        if (_configurationWarnings.Count > 0)
+        {
+            ConsoleUI.ShowWarning("Capabilities loaded with warnings. Use /status or /capabilities to review details.");
+        }
 
         // Capture model and usage info
         updateStatus?.Invoke("Verifying model...");
@@ -1090,21 +1150,31 @@ public class TroubleshootingSession : IAsyncDisposable
         return true;
     }
 
-    private IReadOnlyList<(string Label, string Value)> GetUsageFields()
+    public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
-        if (_lastUsage == null || !_lastUsage.HasAny)
-            return Array.Empty<(string, string)>();
-
         var fields = new List<(string Label, string Value)>();
 
-        AddUsageField(fields, "Prompt tokens", _lastUsage.PromptTokens);
-        AddUsageField(fields, "Completion tokens", _lastUsage.CompletionTokens);
-        AddUsageField(fields, "Total tokens", _lastUsage.TotalTokens);
-        AddUsageField(fields, "Input tokens", _lastUsage.InputTokens);
-        AddUsageField(fields, "Output tokens", _lastUsage.OutputTokens);
-        AddUsageField(fields, "Context max", _lastUsage.MaxContextTokens);
-        AddUsageField(fields, "Context used", _lastUsage.UsedContextTokens);
-        AddUsageField(fields, "Context free", _lastUsage.FreeContextTokens);
+        if (_lastUsage != null && _lastUsage.HasAny)
+        {
+            AddUsageField(fields, "Prompt tokens", _lastUsage.PromptTokens);
+            AddUsageField(fields, "Completion tokens", _lastUsage.CompletionTokens);
+            AddUsageField(fields, "Total tokens", _lastUsage.TotalTokens);
+            AddUsageField(fields, "Input tokens", _lastUsage.InputTokens);
+            AddUsageField(fields, "Output tokens", _lastUsage.OutputTokens);
+            AddUsageField(fields, "Context max", _lastUsage.MaxContextTokens);
+            AddUsageField(fields, "Context used", _lastUsage.UsedContextTokens);
+            AddUsageField(fields, "Context free", _lastUsage.FreeContextTokens);
+        }
+
+        AddCapabilityField(fields, "MCP configured", _configuredMcpServers);
+        AddCapabilityField(fields, "MCP used", _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+        AddCapabilityField(fields, "Skills configured", _configuredSkills);
+        AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+
+        if (_configurationWarnings.Count > 0)
+        {
+            fields.Add(("Capability warnings", string.Join(" | ", _configurationWarnings)));
+        }
 
         return fields;
     }
@@ -1115,6 +1185,19 @@ public class TroubleshootingSession : IAsyncDisposable
             return;
 
         fields.Add((label, value.Value.ToString("N0", CultureInfo.InvariantCulture)));
+    }
+
+    private static void AddCapabilityField(List<(string Label, string Value)> fields, string label, IEnumerable<string> values)
+    {
+        var distinct = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (distinct.Count == 0)
+            return;
+
+        fields.Add((label, string.Join(", ", distinct)));
     }
 
     private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
@@ -1155,6 +1238,350 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             _lastUsage = snapshot;
         }
+    }
+
+    private void CaptureCapabilityUsage(SessionEvent evt)
+    {
+        if (evt is ToolExecutionStartEvent toolStart)
+        {
+            var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
+            if (!string.IsNullOrWhiteSpace(mcpServerName))
+            {
+                _runtimeMcpServers.Add(mcpServerName);
+            }
+        }
+
+        if (string.Equals(evt.Type, "skill.invoked", StringComparison.OrdinalIgnoreCase))
+        {
+            var eventData = GetPropertyValue(evt, "Data");
+            var skillName = ReadStringProperty(eventData, "Name", "SkillName", "Id");
+            if (!string.IsNullOrWhiteSpace(skillName))
+            {
+                _runtimeSkills.Add(skillName);
+            }
+        }
+    }
+
+    private static string? ReadStringProperty(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+            return null;
+
+        foreach (var propertyName in propertyNames)
+        {
+            var prop = instance.GetType().GetProperty(propertyName,
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            var value = prop?.GetValue(instance);
+            if (value is string stringValue && !string.IsNullOrWhiteSpace(stringValue))
+            {
+                return stringValue.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private void ResetCapabilities()
+    {
+        _configuredMcpServers.Clear();
+        _configuredSkills.Clear();
+        _runtimeMcpServers.Clear();
+        _runtimeSkills.Clear();
+        _configurationWarnings.Clear();
+    }
+
+    private static string ReadSkillNameFromManifest(string manifestPath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(manifestPath);
+            using var doc = JsonDocument.Parse(stream);
+            if (doc.RootElement.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+            {
+                var name = nameElement.GetString();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    return name.Trim();
+                }
+            }
+        }
+        catch
+        {
+            // Ignore malformed manifest; caller falls back to folder name.
+        }
+
+        return string.Empty;
+    }
+
+    private void DiscoverConfiguredSkills()
+    {
+        foreach (var directory in _skillDirectories)
+        {
+            if (!Directory.Exists(directory))
+            {
+                _configurationWarnings.Add($"Skills directory not found: {directory}");
+                continue;
+            }
+
+            foreach (var skillDir in Directory.GetDirectories(directory))
+            {
+                var skillMarkdown = Path.Combine(skillDir, "SKILL.md");
+                var skillManifest = Path.Combine(skillDir, "skill.json");
+                if (!File.Exists(skillMarkdown) && !File.Exists(skillManifest))
+                {
+                    continue;
+                }
+
+                var skillName = File.Exists(skillManifest)
+                    ? ReadSkillNameFromManifest(skillManifest)
+                    : string.Empty;
+
+                if (string.IsNullOrWhiteSpace(skillName))
+                {
+                    skillName = Path.GetFileName(skillDir);
+                }
+
+                if (!_disabledSkills.Contains(skillName, StringComparer.OrdinalIgnoreCase))
+                {
+                    _configuredSkills.Add(skillName);
+                }
+            }
+        }
+
+        _configuredSkills.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+
+    internal static Dictionary<string, object> LoadMcpServersFromConfig(string? mcpConfigPath, List<string> warnings)
+    {
+        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(mcpConfigPath))
+        {
+            warnings.Add("MCP configuration path was not provided.");
+            return result;
+        }
+
+        if (!File.Exists(mcpConfigPath))
+        {
+            warnings.Add($"MCP config file not found: {mcpConfigPath}");
+            return result;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(mcpConfigPath);
+            using var document = JsonDocument.Parse(stream);
+
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                warnings.Add("MCP config root must be a JSON object.");
+                return result;
+            }
+
+            JsonElement serversElement;
+            if (!root.TryGetProperty("mcpServers", out serversElement) &&
+                !root.TryGetProperty("servers", out serversElement))
+            {
+                warnings.Add("MCP config does not contain 'mcpServers'.");
+                return result;
+            }
+
+            if (serversElement.ValueKind != JsonValueKind.Object)
+            {
+                warnings.Add("MCP config 'mcpServers' must be a JSON object.");
+                return result;
+            }
+
+            foreach (var property in serversElement.EnumerateObject())
+            {
+                var mapped = TryMapMcpServer(property.Name, property.Value, out var warning);
+                if (mapped == null)
+                {
+                    if (!string.IsNullOrWhiteSpace(warning))
+                    {
+                        warnings.Add(warning);
+                    }
+
+                    continue;
+                }
+
+                result[property.Name] = mapped;
+            }
+        }
+        catch (JsonException ex)
+        {
+            warnings.Add($"MCP config JSON parse error: {TrimSingleLine(ex.Message)}");
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"MCP config load failed: {TrimSingleLine(ex.Message)}");
+        }
+
+        return result;
+    }
+
+    private static object? TryMapMcpServer(string serverName, JsonElement serverElement, out string? warning)
+    {
+        warning = null;
+
+        if (serverElement.ValueKind != JsonValueKind.Object)
+        {
+            warning = $"Skipping MCP server '{serverName}': entry must be an object.";
+            return null;
+        }
+
+        var type = GetOptionalString(serverElement, "type")?.Trim().ToLowerInvariant();
+        if (type is "http" or "sse")
+        {
+            var url = GetOptionalString(serverElement, "url");
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                warning = $"Skipping MCP server '{serverName}': remote server requires 'url'.";
+                return null;
+            }
+
+            var remote = new McpRemoteServerConfig
+            {
+                Type = type!,
+                Url = url!
+            };
+
+            var headers = GetStringDictionary(serverElement, "headers");
+            if (headers != null)
+            {
+                remote.Headers = headers;
+            }
+
+            var remoteTools = GetStringList(serverElement, "tools");
+            if (remoteTools != null)
+            {
+                remote.Tools = remoteTools;
+            }
+
+            var remoteTimeout = GetOptionalInt(serverElement, "timeout");
+            if (remoteTimeout.HasValue)
+            {
+                remote.Timeout = remoteTimeout.Value;
+            }
+
+            return remote;
+        }
+
+        var command = GetOptionalString(serverElement, "command");
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            warning = $"Skipping MCP server '{serverName}': local/stdio server requires 'command'.";
+            return null;
+        }
+
+        var local = new McpLocalServerConfig
+        {
+            Type = string.IsNullOrWhiteSpace(type) ? "local" : type!,
+            Command = command!
+        };
+
+        var args = GetStringList(serverElement, "args");
+        if (args != null)
+        {
+            local.Args = args;
+        }
+
+        var env = GetStringDictionary(serverElement, "env");
+        if (env != null)
+        {
+            local.Env = env;
+        }
+
+        var cwd = GetOptionalString(serverElement, "cwd");
+        if (!string.IsNullOrWhiteSpace(cwd))
+        {
+            local.Cwd = cwd;
+        }
+
+        var localTools = GetStringList(serverElement, "tools");
+        if (localTools != null)
+        {
+            local.Tools = localTools;
+        }
+
+        var localTimeout = GetOptionalInt(serverElement, "timeout");
+        if (localTimeout.HasValue)
+        {
+            local.Timeout = localTimeout.Value;
+        }
+
+        return local;
+    }
+
+    private static string? GetOptionalString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return property.GetString();
+    }
+
+    private static int? GetOptionalInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        return property.TryGetInt32(out var value) ? value : null;
+    }
+
+    private static List<string>? GetStringList(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var list = new List<string>();
+        foreach (var item in property.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var value = item.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                list.Add(value);
+            }
+        }
+
+        return list.Count == 0 ? null : list;
+    }
+
+    private static Dictionary<string, string>? GetStringDictionary(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in property.EnumerateObject())
+        {
+            if (item.Value.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var value = item.Value.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                dict[item.Name] = value!;
+            }
+        }
+
+        return dict.Count == 0 ? null : dict;
     }
 
     private static object? GetPropertyValue(object instance, string propertyName)
