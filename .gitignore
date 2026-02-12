@@ -72,5 +72,8 @@ artifacts/
 .idea/
 *.sln.iml
 
+# VS Code/.NET local solution generated on open
+TroubleScout.sln
+
 # Release packages
 *.zip

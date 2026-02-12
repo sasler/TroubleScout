@@ -119,6 +119,41 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenNodeVersionTooOld_ShouldReturnBlockingIssue()
+    {
+        // Arrange
+        TroubleshootingSession.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, _) =>
+        {
+            if (fileName == "node")
+            {
+                return Task.FromResult((0, "v22.22.0", string.Empty));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            // Act
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            // Assert
+            report.IsReady.Should().BeFalse();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Title.Should().Be("Node.js version is unsupported");
+            report.Issues[0].IsBlocking.Should().BeTrue();
+            report.Issues[0].Details.Should().Contain("requires Node.js 24+");
+            report.Issues[0].Details.Should().Contain("Detected: v22.22.0");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
     public async Task ValidateCopilotPrerequisites_WhenValidationThrows_ShouldReturnBlockingIssueWithDetails()
     {
         // Arrange

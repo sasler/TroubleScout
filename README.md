@@ -23,7 +23,7 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 **For pre-built release:**
 
 1. **Windows x64** operating system
-2. **Node.js** - Required for the Copilot CLI runtime - [Download](https://nodejs.org/)
+2. **Node.js 24+ (LTS recommended)** - Required for the Copilot CLI runtime - [Download](https://nodejs.org/)
 3. **GitHub Copilot SDK CLI** - Install via npm:
 
    ```bash
@@ -247,7 +247,7 @@ If you still see startup failures, install/update both CLI packages and re-authe
 
 ```bash
 npm install -g @github/copilot@latest @github/copilot-sdk@latest
-copilot auth login
+copilot login
 ```
 
 References:
@@ -256,6 +256,20 @@ References:
 - [Copilot SDK](https://github.com/github/copilot-sdk)
 
 ### "Protocol version mismatch" or SDK/CLI compatibility errors
+
+TroubleScout requires Node.js 24+ for current Copilot SDK/CLI builds.
+
+- On Windows, install/update Node LTS:
+
+   ```powershell
+   winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
+   ```
+
+- Restart the terminal, then update Copilot SDK package:
+
+   ```bash
+   npm install -g @github/copilot-sdk@0.1.23
+   ```
 
 - Update Copilot CLI packages:
 
@@ -266,7 +280,7 @@ References:
 - Re-authenticate:
 
    ```bash
-   copilot auth login
+   copilot login
    ```
 
 - If you run TroubleScout from source, update the SDK package:
@@ -278,7 +292,7 @@ References:
 
 ### "JSON-RPC connection lost"
 
-- Ensure Node.js is installed and in PATH
+- Ensure Node.js 24+ is installed and in PATH
 - Check that you have an active GitHub Copilot subscription
 - Verify authentication with `copilot` interactive mode
 
