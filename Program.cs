@@ -7,6 +7,9 @@ using TroubleScout.UI;
 var server = "localhost";
 string? prompt = null;
 string? model = null;
+string? mcpConfigPath = null;
+var skillDirectories = new List<string>();
+var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
 
 for (int i = 0; i < args.Length; i++)
@@ -21,6 +24,15 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
+            break;
+        case "--mcp-config" when i + 1 < args.Length:
+            mcpConfigPath = args[++i];
+            break;
+        case "--skills-dir" when i + 1 < args.Length:
+            skillDirectories.Add(args[++i]);
+            break;
+        case "--disable-skill" when i + 1 < args.Length:
+            disabledSkills.Add(args[++i]);
             break;
         case "--help" or "-h":
             ShowHelp(appVersion);
@@ -40,15 +52,35 @@ if (string.IsNullOrWhiteSpace(model))
     }
 }
 
+if (string.IsNullOrWhiteSpace(mcpConfigPath))
+{
+    mcpConfigPath = ResolveDefaultMcpConfigPath();
+}
+
+if (skillDirectories.Count == 0)
+{
+    skillDirectories.AddRange(ResolveDefaultSkillDirectories());
+}
+
+skillDirectories = skillDirectories
+    .Where(dir => !string.IsNullOrWhiteSpace(dir))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToList();
+
+disabledSkills = disabledSkills
+    .Where(skill => !string.IsNullOrWhiteSpace(skill))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToList();
+
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model);
+    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, appVersion);
+    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion);
 }
 
 return Environment.ExitCode;
@@ -63,10 +95,49 @@ static void ShowHelp(string version)
     Console.WriteLine("  -s, --server <name>   Target Windows Server (default: localhost)");
     Console.WriteLine("  -m, --model <name>    AI model to use (e.g., gpt-4o, claude-sonnet-4)");
     Console.WriteLine("  -p, --prompt <text>   Initial prompt for headless mode");
+    Console.WriteLine("      --mcp-config <path>  MCP config JSON path (default: %USERPROFILE%\\.copilot\\mcp-config.json)");
+    Console.WriteLine("      --skills-dir <path>  Skill root directory (repeatable, default: %USERPROFILE%\\.copilot\\skills if present)");
+    Console.WriteLine("      --disable-skill <name>  Disable a loaded skill by name (repeatable)");
     Console.WriteLine("  -v, --version         Show app version and exit");
     Console.WriteLine("  -h, --help            Show help information");
     Console.WriteLine();
     Console.WriteLine("Available models depend on your GitHub Copilot subscription.");
+}
+
+static string? ResolveDefaultMcpConfigPath()
+{
+    var userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+    if (string.IsNullOrWhiteSpace(userProfile))
+    {
+        userProfile = Environment.GetEnvironmentVariable("HOME");
+    }
+
+    if (string.IsNullOrWhiteSpace(userProfile))
+    {
+        return null;
+    }
+
+    var path = Path.Combine(userProfile, ".copilot", "mcp-config.json");
+    return File.Exists(path) ? path : null;
+}
+
+static List<string> ResolveDefaultSkillDirectories()
+{
+    var userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+    if (string.IsNullOrWhiteSpace(userProfile))
+    {
+        userProfile = Environment.GetEnvironmentVariable("HOME");
+    }
+
+    if (string.IsNullOrWhiteSpace(userProfile))
+    {
+        return [];
+    }
+
+    var skillsPath = Path.Combine(userProfile, ".copilot", "skills");
+    return Directory.Exists(skillsPath)
+        ? [skillsPath]
+        : [];
 }
 
 static string GetAppVersion()
@@ -93,12 +164,18 @@ static string GetAppVersion()
 /// <summary>
 /// Run in interactive mode with full TUI
 /// </summary>
-static async Task RunInteractiveModeAsync(string server, string? model, string appVersion)
+static async Task RunInteractiveModeAsync(
+    string server,
+    string? model,
+    string? mcpConfigPath,
+    IReadOnlyList<string> skillDirectories,
+    IReadOnlyList<string> disabledSkills,
+    string appVersion)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
-    await using var session = new TroubleshootingSession(server, model);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -113,7 +190,7 @@ static async Task RunInteractiveModeAsync(string server, string? model, string a
     }
 
     // Show status panel once with full info
-    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel);
+    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel, session.GetStatusFields());
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -127,9 +204,15 @@ static async Task RunInteractiveModeAsync(string server, string? model, string a
 /// <summary>
 /// Run in headless mode for scripting/automation
 /// </summary>
-static async Task RunHeadlessModeAsync(string server, string prompt, string? model)
+static async Task RunHeadlessModeAsync(
+    string server,
+    string prompt,
+    string? model,
+    string? mcpConfigPath,
+    IReadOnlyList<string> skillDirectories,
+    IReadOnlyList<string> disabledSkills)
 {
-    await using var session = new TroubleshootingSession(server, model);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>

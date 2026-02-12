@@ -107,6 +107,9 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 | `--server` | `-s`  | Target server name or IP (default: localhost)    |
 | `--model`  | `-m`  | AI model to use (e.g., gpt-4o, claude-sonnet-4)  |
 | `--prompt` | `-p`  | Initial prompt for headless mode                 |
+| `--mcp-config` | -  | MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`) |
+| `--skills-dir` | -  | Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present) |
+| `--disable-skill` | - | Disable a loaded skill by name (repeatable) |
 | `--version`| `-v`  | Show app version and exit                        |
 | `--help`   | `-h`  | Show help information                            |
 
@@ -123,6 +126,29 @@ dotnet run -- --model claude-sonnet-4
 ```
 
 Available models depend on your GitHub Copilot subscription. If not specified, the default model for your account is used.
+
+### MCP Servers and Skills
+
+TroubleScout can load MCP servers and skills through Copilot SDK session configuration.
+
+- By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
+- By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
+- Use `/status` or `/capabilities` to see:
+   - configured MCP servers and skills
+   - MCP servers and skills used at runtime in the current session
+
+Examples:
+
+```bash
+# Use default MCP config (%USERPROFILE%\\.copilot\\mcp-config.json) and skills (%USERPROFILE%\\.copilot\\skills, if present)
+dotnet run -- --server localhost
+
+# Use a custom MCP config path
+dotnet run -- --mcp-config C:\\path\\to\\mcp-config.json
+
+# Add additional skill directory and disable a skill
+dotnet run -- --skills-dir C:\\skills --disable-skill experimental-feature
+```
 
 ## Example Prompts
 
