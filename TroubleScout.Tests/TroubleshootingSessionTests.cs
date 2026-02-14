@@ -268,6 +268,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             report.Issues[0].IsBlocking.Should().BeTrue();
             report.Issues[0].Details.Should().Contain("requires Node.js 24+");
             report.Issues[0].Details.Should().Contain("Detected: v22.22.0");
+            report.Issues[0].Details.Should().NotContain("@github/copilot-sdk");
         }
         finally
         {
@@ -292,6 +293,222 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             report.Issues[0].Title.Should().Be("Could not fully validate Copilot prerequisites");
             report.Issues[0].IsBlocking.Should().BeTrue();
             report.Issues[0].Details.Should().Contain("boom");
+            report.Issues[0].Details.Should().NotContain("@github/copilot-sdk");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenCopilotExeAndNodeMissing_ShouldRemainReady()
+    {
+        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        {
+            if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, @"C:\Program Files\GitHub\Copilot\copilot.exe", string.Empty));
+            }
+
+            if (fileName == "cmd.exe" && arguments.Contains("copilot --version", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, "copilot 1.0.0", string.Empty));
+            }
+
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node not found"));
+            }
+
+            if (fileName == "pwsh")
+            {
+                return Task.FromResult((0, "7.4.1", string.Empty));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            report.IsReady.Should().BeTrue();
+            report.Issues.Should().BeEmpty();
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenCopilotCmdAndNodeMissing_ShouldReturnBlockingIssue()
+    {
+        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        {
+            if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, @"C:\Users\test\AppData\Roaming\npm\copilot.cmd", string.Empty));
+            }
+
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node not found"));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            report.IsReady.Should().BeFalse();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Title.Should().Be("Node.js runtime is missing");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenPowerShellIsSix_ShouldAddNonBlockingWarning()
+    {
+        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        {
+            if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, @"C:\Program Files\GitHub\Copilot\copilot.exe", string.Empty));
+            }
+
+            if (fileName == "cmd.exe" && arguments.Contains("copilot --version", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, "copilot 1.0.0", string.Empty));
+            }
+
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node not found"));
+            }
+
+            if (fileName == "pwsh")
+            {
+                return Task.FromResult((0, "6.2.7", string.Empty));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            report.IsReady.Should().BeTrue();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Title.Should().Be("PowerShell version is below recommended");
+            report.Issues[0].IsBlocking.Should().BeFalse();
+            report.Issues[0].Details.Should().Contain("recommends PowerShell 7+");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenPwshUnavailable_ShouldFallbackToWindowsPowerShell()
+    {
+        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        {
+            if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, @"C:\Program Files\GitHub\Copilot\copilot.exe", string.Empty));
+            }
+
+            if (fileName == "cmd.exe" && arguments.Contains("copilot --version", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, "copilot 1.0.0", string.Empty));
+            }
+
+            if (fileName == "pwsh")
+            {
+                return Task.FromResult((1, string.Empty, "pwsh not found"));
+            }
+
+            if (fileName == "powershell")
+            {
+                return Task.FromResult((0, "5.1.19041.4522", string.Empty));
+            }
+
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node not found"));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            report.IsReady.Should().BeTrue();
+            report.Issues.Should().ContainSingle();
+            report.Issues[0].Details.Should().Contain("Detected powershell 5.1.19041.4522");
+        }
+        finally
+        {
+            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+        }
+    }
+
+    [Fact]
+    public async Task ValidateCopilotPrerequisites_WhenPowerShellVersionIsUnparseable_ShouldNotWarn()
+    {
+        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
+        TroubleshootingSession.FileExistsResolver = _ => true;
+        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        {
+            if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, @"C:\Program Files\GitHub\Copilot\copilot.exe", string.Empty));
+            }
+
+            if (fileName == "cmd.exe" && arguments.Contains("copilot --version", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult((0, "copilot 1.0.0", string.Empty));
+            }
+
+            if (fileName == "pwsh")
+            {
+                return Task.FromResult((0, "preview", string.Empty));
+            }
+
+            if (fileName == "node")
+            {
+                return Task.FromResult((1, string.Empty, "node not found"));
+            }
+
+            return Task.FromResult((0, "ok", string.Empty));
+        };
+
+        try
+        {
+            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+
+            report.IsReady.Should().BeTrue();
+            report.Issues.Should().BeEmpty();
         }
         finally
         {

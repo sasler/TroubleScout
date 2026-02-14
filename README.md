@@ -23,14 +23,14 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 **For pre-built release:**
 
 1. **Windows x64** operating system
-2. **Node.js 24+ (LTS recommended)** - Required for the Copilot CLI runtime - [Download](https://nodejs.org/)
-3. **GitHub Copilot SDK CLI** - Install via npm:
+2. **GitHub Copilot Access** - Active GitHub Copilot subscription
+3. **GitHub Copilot CLI** - Install or update using the official guide:
 
-   ```bash
-   npm install -g @github/copilot-sdk
-   ```
+   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
-4. **GitHub Copilot Access** - Active GitHub Copilot subscription
+4. **On Windows:** PowerShell 6+ is required by Copilot CLI docs (PowerShell 7+ recommended)
+
+5. **Node.js 24+ (LTS recommended)** is only needed when using npm-based Copilot CLI installs - [Download](https://nodejs.org/)
 
 **For building from source:**
 
@@ -44,10 +44,11 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 ### Option 1: Download Pre-built Release (Recommended)
 
 1. **Download the latest release** from [Releases](https://github.com/sasler/TroubleScout/releases)
-2. **Extract** `TroubleScout.exe` and the `runtimes/` folder to a directory
+2. **Extract** `TroubleScout.exe` (and `runtimes/` if present) to a directory
 3. **Install prerequisites**:
-   - [Node.js](https://nodejs.org/) (for Copilot CLI runtime)
-   - Install GitHub Copilot CLI: `npm install -g @github/copilot-sdk`
+   - Ensure PowerShell 6+ (PowerShell 7+ recommended)
+   - Install/update GitHub Copilot CLI: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+   - Install [Node.js](https://nodejs.org/) only if you choose npm-based Copilot CLI install
 4. **Run** `TroubleScout.exe` from the command line
 
 > **Note**: The release includes a self-contained .NET runtime - no .NET SDK installation required!
@@ -102,16 +103,15 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 
 ### Command Line Options
 
-| Option     | Short | Description                                      |
-| ---------- | ----- | ------------------------------------------------ |
-| `--server` | `-s`  | Target server name or IP (default: localhost)    |
-| `--model`  | `-m`  | AI model to use (e.g., gpt-4o, claude-sonnet-4)  |
-| `--prompt` | `-p`  | Initial prompt for headless mode                 |
-| `--mcp-config` | -  | MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`) |
-| `--skills-dir` | -  | Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present) |
-| `--disable-skill` | - | Disable a loaded skill by name (repeatable) |
-| `--version`| `-v`  | Show app version and exit                        |
-| `--help`   | `-h`  | Show help information                            |
+- `--server` (`-s`): Target server name or IP (default: localhost)
+- `--model` (`-m`): AI model to use (e.g., gpt-4o, claude-sonnet-4)
+- `--prompt` (`-p`): Initial prompt for headless mode
+- `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
+- `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)
+- `--disable-skill`: Disable a loaded skill by name (repeatable)
+- `--debug` (`-d` or `-debug`): Show technical diagnostics and exception details
+- `--version` (`-v`): Show app version and exit
+- `--help` (`-h`): Show help information
 
 ### Model Selection
 
@@ -133,9 +133,7 @@ TroubleScout can load MCP servers and skills through Copilot SDK session configu
 
 - By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
 - By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
-- Use `/status` or `/capabilities` to see:
-   - configured MCP servers and skills
-   - MCP servers and skills used at runtime in the current session
+- Use `/status` or `/capabilities` to see configured MCP servers/skills and runtime-used MCP servers/skills.
 
 Examples:
 
@@ -263,23 +261,21 @@ When troubleshooting remote servers:
 
 ### "Copilot CLI Not Found"
 
-Ensure the `@github/copilot-sdk` npm package is installed globally:
+Install or update GitHub Copilot CLI using the official setup guide:
+
+[Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+
+If you still see startup failures, verify the CLI and re-authenticate:
 
 ```bash
-npm install -g @github/copilot-sdk
-```
-
-If you still see startup failures, install/update both CLI packages and re-authenticate:
-
-```bash
-npm install -g @github/copilot@latest @github/copilot-sdk@latest
+copilot --version
 copilot login
 ```
 
 References:
 
 - [Copilot CLI](https://github.com/github/copilot-cli)
-- [Copilot SDK](https://github.com/github/copilot-sdk)
+- [Copilot CLI install guide](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 ### "Protocol version mismatch" or SDK/CLI compatibility errors
 
@@ -291,17 +287,11 @@ TroubleScout requires Node.js 24+ for current Copilot SDK/CLI builds.
    winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
    ```
 
-- Restart the terminal, then update Copilot SDK package:
+- Restart the terminal.
 
-   ```bash
-   npm install -g @github/copilot-sdk@0.1.23
-   ```
+- Install or update Copilot CLI:
 
-- Update Copilot CLI packages:
-
-   ```bash
-   npm install -g @github/copilot@latest @github/copilot-sdk@latest
-   ```
+   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 - Re-authenticate:
 

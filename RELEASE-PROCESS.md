@@ -111,9 +111,9 @@ You can monitor workflow runs at: `https://github.com/sasler/TroubleScout/action
 Each release includes a single zip file named `TroubleScout-v{version}-win-x64.zip` containing:
 
 - `TroubleScout.exe` - Self-contained executable (~54 MB)
-- `runtimes/` - PowerShell SDK native dependencies
+- `runtimes/` (when present) - PowerShell SDK native dependencies
 
-**Important**: Both files must be extracted together. The executable requires the `runtimes/` folder to function.
+**Important**: Extract the full zip contents together. Some releases include `runtimes/` files and some do not, depending on publish output.
 
 ### Version Numbering
 

@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
-using System.Xml.Linq;
 using GitHub.Copilot.SDK;
 using TroubleScout.Services;
 using TroubleScout.Tools;
@@ -15,7 +14,7 @@ namespace TroubleScout;
 public class TroubleshootingSession : IAsyncDisposable
 {
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
-    private const string CopilotSdkRepoUrl = "https://github.com/github/copilot-sdk";
+    private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
     private const int MinSupportedNodeMajorVersion = 24;
 
     internal static Func<string> CopilotCliPathResolver { get; set; } = GetCopilotCliPath;
@@ -39,6 +38,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _runtimeMcpServers = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _configurationWarnings = new();
+    private readonly bool _debugMode;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -117,13 +117,15 @@ public class TroubleshootingSession : IAsyncDisposable
         string? model = null,
         string? mcpConfigPath = null,
         IReadOnlyList<string>? skillDirectories = null,
-        IReadOnlyList<string>? disabledSkills = null)
+        IReadOnlyList<string>? disabledSkills = null,
+        bool debugMode = false)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _requestedModel = model;
         _mcpConfigPath = mcpConfigPath;
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
         _disabledSkills = disabledSkills?.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+        _debugMode = debugMode;
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
@@ -190,6 +192,8 @@ public class TroubleshootingSession : IAsyncDisposable
         if (_isInitialized)
             return true;
 
+        var copilotInitializationStarted = false;
+
         try
         {
             // Test PowerShell connection and verify target
@@ -205,10 +209,13 @@ public class TroubleshootingSession : IAsyncDisposable
             // Show verified connection
             updateStatus?.Invoke($"Connected to {_executor.ActualComputerName}...");
 
+            await WarnIfPowerShellVersionIsOldAsync();
+
             // Initialize Copilot client
             updateStatus?.Invoke("Starting Copilot SDK...");
+            copilotInitializationStarted = true;
             
-            // Find the SDK CLI path (bundled with @github/copilot-sdk npm package)
+            // Resolve Copilot CLI path (env override, known locations, then PATH)
             var cliPath = GetCopilotCliPath();
             
             _copilotClient = new CopilotClient(new CopilotClientOptions
@@ -224,8 +231,10 @@ public class TroubleshootingSession : IAsyncDisposable
             catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
             {
                 var report = await ValidateCopilotPrerequisitesAsync();
-                ConsoleUI.ShowError("Initialization Failed",
-                    BuildProtocolMismatchMessage(report));
+                await ShowCopilotInitializationFailureAsync(
+                    BuildProtocolMismatchMessage(report, _debugMode),
+                    ex,
+                    includeDiagnostics: true);
                 _copilotClient = null;
                 return false;
             }
@@ -233,9 +242,9 @@ public class TroubleshootingSession : IAsyncDisposable
             var authStatus = await _copilotClient.GetAuthStatusAsync();
             if (!authStatus.IsAuthenticated)
             {
-                ConsoleUI.ShowError("Not Authenticated",
-                    "Copilot CLI is not authenticated.\n\n" +
-                    "Run: copilot auth login");
+                await ShowCopilotInitializationFailureAsync(
+                    "Copilot CLI is not authenticated.\n\nRun: copilot login",
+                    includeDiagnostics: true);
                 return false;
             }
 
@@ -244,7 +253,9 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (_availableModels.Count == 0)
             {
-                ConsoleUI.ShowError("No Models Available", "No models were returned by the Copilot SDK. Ensure you are authenticated and your subscription has access to models.");
+                await ShowCopilotInitializationFailureAsync(
+                    "No models were returned by Copilot CLI. Ensure you are authenticated and your subscription has model access.",
+                    includeDiagnostics: true);
                 return false;
             }
 
@@ -264,8 +275,21 @@ public class TroubleshootingSession : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            var report = await ValidateCopilotPrerequisitesAsync();
-            ConsoleUI.ShowError("Initialization Failed", BuildActionableInitializationMessage(ex, report));
+            if (copilotInitializationStarted)
+            {
+                var report = await ValidateCopilotPrerequisitesAsync();
+                await ShowCopilotInitializationFailureAsync(
+                    BuildActionableInitializationMessage(ex, report, _debugMode),
+                    ex,
+                    includeDiagnostics: true);
+                return false;
+            }
+
+            ConsoleUI.ShowError("Initialization Failed", "TroubleScout could not complete startup.");
+            if (_debugMode)
+            {
+                ConsoleUI.ShowWarning($"Technical details: {TrimSingleLine(ex.Message)}");
+            }
             return false;
         }
     }
@@ -380,15 +404,15 @@ public class TroubleshootingSession : IAsyncDisposable
                     "Copilot CLI is not installed",
                     "Install the prerequisites, then authenticate:\n" +
                     "  1. Install Node.js: https://nodejs.org/\n" +
-                    "  2. Install Copilot CLI packages: npm install -g @github/copilot @github/copilot-sdk\n" +
-                    "  3. Authenticate: copilot auth login\n" +
-                    $"\nReferences:\n- {CopilotCliRepoUrl}\n- {CopilotSdkRepoUrl}",
+                    $"  2. Install or update Copilot CLI: {CopilotCliInstallUrl}\n" +
+                    "  3. Authenticate: copilot login\n" +
+                    $"\nReferences:\n- {CopilotCliRepoUrl}\n- {CopilotCliInstallUrl}",
                     true));
 
                 return new CopilotPrerequisiteReport(issues);
             }
 
-            if (CliPathRequiresNodeRuntime(cliPath))
+            if (await CliPathRequiresNodeRuntimeAsync(cliPath))
             {
                 var nodeVersion = await ProcessRunnerResolver("node", "--version");
                 if (nodeVersion.ExitCode != 0)
@@ -407,18 +431,16 @@ public class TroubleshootingSession : IAsyncDisposable
                 var nodeMajorVersion = ParseNodeMajorVersion(detectedVersion);
                 if (!nodeMajorVersion.HasValue || nodeMajorVersion.Value < MinSupportedNodeMajorVersion)
                 {
-                    var sdkInstallCommand = BuildCopilotSdkInstallCommand();
-
                     issues.Add(new CopilotPrerequisiteIssue(
                         "Node.js version is unsupported",
-                        $"Copilot SDK on this machine requires Node.js {MinSupportedNodeMajorVersion}+ (LTS recommended).\n" +
+                        $"Your Copilot CLI path appears to use the Node.js runtime and requires Node.js {MinSupportedNodeMajorVersion}+ (LTS recommended).\n" +
                         $"Detected: {detectedVersion}\n\n" +
                         "Fix on Windows:\n" +
                         "  1. winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
                         "  2. Restart your terminal\n" +
-                        $"  3. {sdkInstallCommand}\n" +
+                        $"  3. Install or update Copilot CLI: {CopilotCliInstallUrl}\n" +
                         "  4. Re-run TroubleScout\n\n" +
-                        $"References:\n- {CopilotCliRepoUrl}\n- {CopilotSdkRepoUrl}",
+                        $"References:\n- {CopilotCliRepoUrl}\n- {CopilotCliInstallUrl}",
                         true));
 
                     return new CopilotPrerequisiteReport(issues);
@@ -434,15 +456,24 @@ public class TroubleshootingSession : IAsyncDisposable
                     "Copilot CLI command failed",
                     "TroubleScout could not run the Copilot CLI version check.\n" +
                     "Try these commands:\n" +
-                    "  - npm install -g @github/copilot @github/copilot-sdk\n" +
+                    $"  - Install/update Copilot CLI: {CopilotCliInstallUrl}\n" +
                     "  - copilot --version\n" +
-                    "  - copilot auth login\n" +
+                    "  - copilot login\n" +
                     $"\nCLI path used: {cliPath}\n" +
                     $"Error: {TrimSingleLine(string.IsNullOrWhiteSpace(versionResult.StdErr) ? versionResult.StdOut : versionResult.StdErr)}\n" +
-                    $"\nReferences:\n- {CopilotCliRepoUrl}\n- {CopilotSdkRepoUrl}",
+                    $"\nReferences:\n- {CopilotCliRepoUrl}\n- {CopilotCliInstallUrl}",
                     true));
 
                 return new CopilotPrerequisiteReport(issues);
+            }
+
+            var powerShellWarning = await DetectPowerShellVersionWarningAsync();
+            if (!string.IsNullOrWhiteSpace(powerShellWarning))
+            {
+                issues.Add(new CopilotPrerequisiteIssue(
+                    "PowerShell version is below recommended",
+                    powerShellWarning,
+                    false));
             }
 
             return new CopilotPrerequisiteReport(issues);
@@ -453,7 +484,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 "Could not fully validate Copilot prerequisites",
                 "TroubleScout could not complete the prerequisite check. Verify manually:\n" +
                 "  - copilot --version\n" +
-                "  - npm install -g @github/copilot @github/copilot-sdk\n" +
+                $"  - Install/update Copilot CLI: {CopilotCliInstallUrl}\n" +
                 $"Error: {TrimSingleLine(ex.Message)}",
                 true));
             return new CopilotPrerequisiteReport(issues);
@@ -498,7 +529,32 @@ public class TroubleshootingSession : IAsyncDisposable
             var stdOutTask = process.StandardOutput.ReadToEndAsync();
             var stdErrTask = process.StandardError.ReadToEndAsync();
 
-            await process.WaitForExitAsync();
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // Ignore kill failures during timeout handling.
+                }
+
+                var timedOutStdOut = await stdOutTask;
+                var timedOutStdErr = await stdErrTask;
+                return (-1, timedOutStdOut,
+                    string.IsNullOrWhiteSpace(timedOutStdErr)
+                        ? "Process timed out after 10 seconds."
+                        : TrimSingleLine(timedOutStdErr));
+            }
 
             return (process.ExitCode, await stdOutTask, await stdErrTask);
         }
@@ -515,92 +571,110 @@ public class TroubleshootingSession : IAsyncDisposable
         ProcessRunnerResolver = RunProcessAsync;
     }
 
-    private static string? GetInstalledCopilotSdkVersion()
-    {
-        var informational = typeof(CopilotClient)
-            .Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion;
-
-        if (string.IsNullOrWhiteSpace(informational))
-            return null;
-
-        return informational.Split('+')[0];
-    }
-
-    private static string BuildCopilotSdkInstallCommand()
-    {
-        var version = GetRecommendedCopilotSdkNpmVersion();
-        return $"npm install -g @github/copilot-sdk@{version}";
-    }
-
     private static bool CliPathRequiresNodeRuntime(string cliPath)
     {
         if (string.IsNullOrWhiteSpace(cliPath))
             return true;
 
         if (cliPath.Equals("copilot", StringComparison.OrdinalIgnoreCase))
-            return true;
+            return false;
 
         return cliPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
                cliPath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
                cliPath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string GetRecommendedCopilotSdkNpmVersion()
+    private static async Task<bool> CliPathRequiresNodeRuntimeAsync(string cliPath)
     {
-        var fromProject = TryGetCopilotSdkVersionFromProjectFile();
-        if (!string.IsNullOrWhiteSpace(fromProject))
+        if (CliPathRequiresNodeRuntime(cliPath))
         {
-            return fromProject;
+            return true;
         }
 
-        var fromAssembly = GetInstalledCopilotSdkVersion();
-        return string.IsNullOrWhiteSpace(fromAssembly) ? "latest" : fromAssembly;
+        if (!cliPath.Equals("copilot", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var whereResult = await ProcessRunnerResolver("cmd.exe", "/c where copilot");
+        if (whereResult.ExitCode != 0)
+        {
+            return true;
+        }
+
+        var firstPath = whereResult.StdOut
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim().Trim('"'))
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(firstPath))
+        {
+            return true;
+        }
+
+        var extension = Path.GetExtension(firstPath);
+        if (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".js", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(extension);
     }
 
-    private static string? TryGetCopilotSdkVersionFromProjectFile()
+    private async Task WarnIfPowerShellVersionIsOldAsync()
     {
-        var projectFilePath = FindTroubleScoutProjectFile();
-        if (string.IsNullOrWhiteSpace(projectFilePath) || !File.Exists(projectFilePath))
+        var warning = await DetectPowerShellVersionWarningAsync();
+        if (!string.IsNullOrWhiteSpace(warning))
         {
-            return null;
-        }
-
-        try
-        {
-            var document = XDocument.Load(projectFilePath);
-            var packageReference = document
-                .Descendants()
-                .FirstOrDefault(node =>
-                    node.Name.LocalName.Equals("PackageReference", StringComparison.OrdinalIgnoreCase) &&
-                    node.Attribute("Include")?.Value.Equals("GitHub.Copilot.SDK", StringComparison.OrdinalIgnoreCase) == true);
-
-            var version = packageReference?.Attribute("Version")?.Value;
-            return string.IsNullOrWhiteSpace(version) ? null : version.Trim();
-        }
-        catch
-        {
-            return null;
+            ConsoleUI.ShowWarning(warning);
         }
     }
 
-    private static string? FindTroubleScoutProjectFile()
+    private static async Task<string?> DetectPowerShellVersionWarningAsync()
     {
-        var current = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && current != null; i++)
-        {
-            var candidate = Path.Combine(current.FullName, "TroubleScout.csproj");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+        var (shell, versionText) = await GetPowerShellVersionTextAsync();
+        if (string.IsNullOrWhiteSpace(versionText))
+            return null;
 
-            current = current.Parent;
+        var majorVersion = ParsePowerShellMajorVersion(versionText);
+        if (!majorVersion.HasValue || majorVersion.Value >= 7)
+            return null;
+
+        return $"Detected {shell} {versionText}. Copilot CLI on Windows requires PowerShell 6+, and TroubleScout recommends PowerShell 7+.";
+    }
+
+    private static async Task<(string Shell, string? VersionText)> GetPowerShellVersionTextAsync()
+    {
+        var pwshVersion = await ProcessRunnerResolver("pwsh", "--version");
+        if (pwshVersion.ExitCode == 0)
+        {
+            return ("pwsh", TrimSingleLine(pwshVersion.StdOut));
         }
 
-        var cwdCandidate = Path.Combine(Environment.CurrentDirectory, "TroubleScout.csproj");
-        return File.Exists(cwdCandidate) ? cwdCandidate : null;
+        var windowsPowerShellVersion = await ProcessRunnerResolver(
+            "powershell",
+            "-NoLogo -NoProfile -Command \"$PSVersionTable.PSVersion.ToString()\"");
+
+        if (windowsPowerShellVersion.ExitCode == 0)
+        {
+            return ("powershell", TrimSingleLine(windowsPowerShellVersion.StdOut));
+        }
+
+        return (string.Empty, null);
+    }
+
+    private static int? ParsePowerShellMajorVersion(string? versionText)
+    {
+        if (string.IsNullOrWhiteSpace(versionText))
+            return null;
+
+        var trimmed = versionText.Trim();
+        var dotIndex = trimmed.IndexOf('.');
+        var majorPart = dotIndex >= 0 ? trimmed[..dotIndex] : trimmed;
+        return int.TryParse(majorPart, out var major) ? major : null;
     }
 
     private static int? ParseNodeMajorVersion(string? versionText)
@@ -630,71 +704,127 @@ public class TroubleshootingSession : IAsyncDisposable
         return newlineIndex < 0 ? trimmed : trimmed[..newlineIndex].Trim();
     }
 
-    private static string BuildProtocolMismatchMessage(CopilotPrerequisiteReport report)
+    private static async Task<IReadOnlyList<string>> RunSimpleStartupDiagnosticsAsync()
     {
-        var sdkVersion = GetInstalledCopilotSdkVersion() ?? "unknown";
-         var sdkInstallCommand = BuildCopilotSdkInstallCommand();
+        var diagnostics = new List<string>();
+        var cliPath = CopilotCliPathResolver();
+        var nodeRuntimeRequired = await CliPathRequiresNodeRuntimeAsync(cliPath);
+
+        var copilotVersion = await ProcessRunnerResolver("cmd.exe", "/c copilot --version");
+        diagnostics.Add(FormatDiagnosticLine("copilot --version", copilotVersion));
+
+        var nodeVersion = await ProcessRunnerResolver("node", "--version");
+        diagnostics.Add(FormatDiagnosticLine("node --version", nodeVersion));
+        if (!nodeRuntimeRequired && nodeVersion.ExitCode != 0)
+        {
+            diagnostics.Add("- Note: Node.js is only required for some Copilot CLI installations.");
+        }
+
+        return diagnostics;
+    }
+
+    private static string FormatDiagnosticLine(string command, (int ExitCode, string StdOut, string StdErr) result)
+    {
+        var output = TrimSingleLine(string.IsNullOrWhiteSpace(result.StdOut) ? result.StdErr : result.StdOut);
+        return result.ExitCode == 0
+            ? $"- {command}: {output}"
+            : $"- {command}: failed ({output})";
+    }
+
+    private async Task ShowCopilotInitializationFailureAsync(
+        string baseMessage,
+        Exception? exception = null,
+        bool includeDiagnostics = false)
+    {
+        var message = baseMessage;
+
+        if (includeDiagnostics)
+        {
+            var diagnostics = await RunSimpleStartupDiagnosticsAsync();
+            message += "\n\nStartup diagnostics:\n" + string.Join("\n", diagnostics);
+        }
+
+        if (_debugMode && exception != null)
+        {
+            message += "\n\nTechnical details:\n" + exception;
+        }
+
+        ConsoleUI.ShowError("Initialization Failed", message);
+    }
+
+    private static string BuildProtocolMismatchMessage(CopilotPrerequisiteReport report, bool includeTechnicalDetails)
+    {
         var message = "Copilot SDK protocol version mismatch detected.\n\n" +
-               $"This TroubleScout build uses GitHub.Copilot.SDK {sdkVersion}.\n" +
                "Ensure Copilot CLI prerequisites are installed and compatible:\n" +
                $"  1. Install Node.js {MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
                "  2. Restart your terminal\n" +
-             $"  3. {sdkInstallCommand}\n" +
+                             $"  3. Install or update Copilot CLI: {CopilotCliInstallUrl}\n" +
                "  4. copilot login\n\n" +
                "References:\n" +
                $"- {CopilotCliRepoUrl}\n" +
-               $"- {CopilotSdkRepoUrl}";
+                             $"- {CopilotCliInstallUrl}";
 
         if (!report.IsReady)
         {
-            message += "\n\nPrerequisite diagnostics:\n" + report.ToDisplayText(includeWarnings: true);
+            var diagnosticsText = includeTechnicalDetails
+                ? report.ToDisplayText(includeWarnings: true)
+                : string.Join(Environment.NewLine, report.Issues.Select(issue => $"- {issue.Title}"));
+            message += "\n\nPrerequisite diagnostics:\n" + diagnosticsText;
         }
 
         return message;
     }
 
-    private static string BuildActionableInitializationMessage(Exception ex, CopilotPrerequisiteReport report)
+    private static string BuildActionableInitializationMessage(Exception ex, CopilotPrerequisiteReport report, bool includeTechnicalDetails)
     {
         if (ex is InvalidOperationException invalidOp &&
             invalidOp.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
         {
-            return BuildProtocolMismatchMessage(report);
+            return BuildProtocolMismatchMessage(report, includeTechnicalDetails);
         }
 
         if (!report.IsReady)
         {
+            var diagnosticsText = includeTechnicalDetails
+                ? report.ToDisplayText(includeWarnings: true)
+                : string.Join(Environment.NewLine, report.Issues.Select(issue => $"- {issue.Title}"));
+
             return "TroubleScout could not initialize the Copilot session.\n\n" +
                    "Prerequisite diagnostics:\n" +
-                   report.ToDisplayText(includeWarnings: true);
+                   diagnosticsText;
         }
 
         var message = ex.Message;
         if (message.Contains("not authenticated", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("auth", StringComparison.OrdinalIgnoreCase))
         {
-            return "Copilot CLI is not authenticated.\n\nRun: copilot auth login";
+            return "Copilot CLI is not authenticated.\n\nRun: copilot login";
         }
 
         if (message.Contains("node", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("ENOENT", StringComparison.OrdinalIgnoreCase))
         {
-             var sdkInstallCommand = BuildCopilotSdkInstallCommand();
             return "The Copilot CLI runtime is unavailable.\n\n" +
                    "Install/update prerequisites:\n" +
-                                     $"  1. Install Node.js {MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
-                                     "  2. Restart your terminal\n" +
-                 $"  3. {sdkInstallCommand}\n" +
-                                     "  4. copilot login";
+                   $"  1. Install Node.js {MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+                   "  2. Restart your terminal\n" +
+                   $"  3. Install/update Copilot CLI: {CopilotCliInstallUrl}\n" +
+                   "  4. copilot login";
         }
 
-         var genericSdkInstallCommand = BuildCopilotSdkInstallCommand();
-        return "TroubleScout could not initialize the Copilot session.\n\n" +
-               "Try:\n" +
-               "  - copilot --version\n" +
-                         "  - copilot login\n" +
-                             $"  - winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
-             $"  - {genericSdkInstallCommand}\n\n" +
-               $"Technical details: {message}";
+        var result = "TroubleScout could not initialize the Copilot session.\n\n" +
+                     "Try:\n" +
+                     "  - copilot --version\n" +
+                     "  - copilot login\n" +
+                     $"  - winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
+                     $"  - Install/update Copilot CLI: {CopilotCliInstallUrl}";
+
+        if (includeTechnicalDetails)
+        {
+            result += $"\n\nTechnical details: {message}";
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -987,7 +1117,17 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         if (_copilotSession != null)
         {
-            await _copilotSession.DisposeAsync();
+            try
+            {
+                await _copilotSession.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                if (_debugMode)
+                {
+                    ConsoleUI.ShowWarning($"Session cleanup warning: {TrimSingleLine(ex.Message)}");
+                }
+            }
         }
 
         if (_copilotClient != null)
@@ -996,9 +1136,12 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 await _copilotClient.DisposeAsync();
             }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex)
             {
-                // Ignore protocol mismatch during cleanup when startup failed
+                if (_debugMode)
+                {
+                    ConsoleUI.ShowWarning($"Copilot cleanup warning: {TrimSingleLine(ex.Message)}");
+                }
             }
         }
 

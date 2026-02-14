@@ -107,9 +107,9 @@ Also ensure analyzer/compiler issues remain clean.
 
 ## Release Packaging Rules
 
-Release as a single zip containing both:
+Release as a single zip containing:
 
 - `TroubleScout.exe`
-- `runtimes/` folder
+- `runtimes/` folder when runtime files are present in publish output
 
 Do not split runtime artifacts into separate downloadable files.
