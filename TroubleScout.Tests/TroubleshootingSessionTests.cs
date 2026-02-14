@@ -268,6 +268,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             report.Issues[0].IsBlocking.Should().BeTrue();
             report.Issues[0].Details.Should().Contain("requires Node.js 24+");
             report.Issues[0].Details.Should().Contain("Detected: v22.22.0");
+            report.Issues[0].Details.Should().NotContain("@github/copilot-sdk");
         }
         finally
         {
@@ -292,6 +293,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             report.Issues[0].Title.Should().Be("Could not fully validate Copilot prerequisites");
             report.Issues[0].IsBlocking.Should().BeTrue();
             report.Issues[0].Details.Should().Contain("boom");
+            report.Issues[0].Details.Should().NotContain("@github/copilot-sdk");
         }
         finally
         {

@@ -65,7 +65,7 @@ jobs:
 
           # Create zip file with exact contents at archive root:
           # - TroubleScout.exe
-          # - runtimes/  (may be empty)
+          # - runtimes/  (only when publish output contains runtime files)
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           if (Test-Path $zipName) { Remove-Item $zipName -Force }
 
@@ -76,18 +76,18 @@ jobs:
             $runtimesSource = Join-Path $publishPath "runtimes"
             if (Test-Path $runtimesSource) {
               $runtimeFiles = Get-ChildItem $runtimesSource -Recurse -File -ErrorAction SilentlyContinue
-              if ($null -eq $runtimeFiles -or $runtimeFiles.Count -eq 0) {
-                $zip.CreateEntry("runtimes/") | Out-Null
-              } else {
+              if ($null -ne $runtimeFiles -and $runtimeFiles.Count -gt 0) {
                 foreach ($file in $runtimeFiles) {
                   $relative = $file.FullName.Substring($runtimesSource.Length).TrimStart('\\','/')
                   $entryName = ("runtimes/" + ($relative -replace '\\','/'))
                   [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName) | Out-Null
                 }
+                Write-Output "Included runtimes/ files in release package."
+              } else {
+                Write-Output "No runtime files found in publish output; skipping runtimes/ in release package."
               }
             } else {
-              $zip.CreateEntry("runtimes/") | Out-Null
-              Write-Output "No runtimes folder found in publish output; added an empty runtimes/ directory to the release package."
+              Write-Output "No runtimes folder found in publish output; skipping runtimes/ in release package."
             }
           }
           finally {

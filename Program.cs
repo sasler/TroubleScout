@@ -11,6 +11,7 @@ string? mcpConfigPath = null;
 var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
+var debugMode = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -40,6 +41,9 @@ for (int i = 0; i < args.Length; i++)
         case "--version" or "-v":
             Console.WriteLine($"TroubleScout {appVersion}");
             return 0;
+        case "--debug" or "-debug" or "-d":
+            debugMode = true;
+            break;
     }
 }
 
@@ -75,12 +79,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills);
+    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion);
+    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode);
 }
 
 return Environment.ExitCode;
@@ -98,6 +102,7 @@ static void ShowHelp(string version)
     Console.WriteLine("      --mcp-config <path>  MCP config JSON path (default: %USERPROFILE%\\.copilot\\mcp-config.json)");
     Console.WriteLine("      --skills-dir <path>  Skill root directory (repeatable, default: %USERPROFILE%\\.copilot\\skills if present)");
     Console.WriteLine("      --disable-skill <name>  Disable a loaded skill by name (repeatable)");
+    Console.WriteLine("  --debug, -debug, -d  Show technical diagnostics and exception details");
     Console.WriteLine("  -v, --version         Show app version and exit");
     Console.WriteLine("  -h, --help            Show help information");
     Console.WriteLine();
@@ -170,12 +175,13 @@ static async Task RunInteractiveModeAsync(
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
-    string appVersion)
+    string appVersion,
+    bool debugMode)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -210,9 +216,10 @@ static async Task RunHeadlessModeAsync(
     string? model,
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
-    IReadOnlyList<string> disabledSkills)
+    IReadOnlyList<string> disabledSkills,
+    bool debugMode)
 {
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -223,6 +230,10 @@ static async Task RunHeadlessModeAsync(
     if (!success)
     {
         ConsoleUI.ShowError("Initialization Failed", "Could not initialize session");
+        if (debugMode)
+        {
+            ConsoleUI.ShowInfo("Debug mode enabled. See diagnostic details above.");
+        }
         Environment.ExitCode = 1;
         return;
     }
