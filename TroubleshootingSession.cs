@@ -412,7 +412,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 return new CopilotPrerequisiteReport(issues);
             }
 
-            if (CliPathRequiresNodeRuntime(cliPath))
+            if (await CliPathRequiresNodeRuntimeAsync(cliPath))
             {
                 var nodeVersion = await ProcessRunnerResolver("node", "--version");
                 if (nodeVersion.ExitCode != 0)
@@ -548,7 +548,12 @@ public class TroubleshootingSession : IAsyncDisposable
                     // Ignore kill failures during timeout handling.
                 }
 
-                return (-1, await stdOutTask, "Process timed out after 10 seconds.");
+                var timedOutStdOut = await stdOutTask;
+                var timedOutStdErr = await stdErrTask;
+                return (-1, timedOutStdOut,
+                    string.IsNullOrWhiteSpace(timedOutStdErr)
+                        ? "Process timed out after 10 seconds."
+                        : TrimSingleLine(timedOutStdErr));
             }
 
             return (process.ExitCode, await stdOutTask, await stdErrTask);
@@ -579,6 +584,46 @@ public class TroubleshootingSession : IAsyncDisposable
                cliPath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static async Task<bool> CliPathRequiresNodeRuntimeAsync(string cliPath)
+    {
+        if (CliPathRequiresNodeRuntime(cliPath))
+        {
+            return true;
+        }
+
+        if (!cliPath.Equals("copilot", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var whereResult = await ProcessRunnerResolver("cmd.exe", "/c where copilot");
+        if (whereResult.ExitCode != 0)
+        {
+            return true;
+        }
+
+        var firstPath = whereResult.StdOut
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim().Trim('"'))
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(firstPath))
+        {
+            return true;
+        }
+
+        var extension = Path.GetExtension(firstPath);
+        if (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".js", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(extension);
+    }
+
     private async Task WarnIfPowerShellVersionIsOldAsync()
     {
         var warning = await DetectPowerShellVersionWarningAsync();
@@ -598,7 +643,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (!majorVersion.HasValue || majorVersion.Value >= 7)
             return null;
 
-        return $"Detected {shell} {versionText}. Copilot CLI on Windows recommends PowerShell 6+ (PowerShell 7+ preferred).";
+        return $"Detected {shell} {versionText}. Copilot CLI on Windows requires PowerShell 6+, and TroubleScout recommends PowerShell 7+.";
     }
 
     private static async Task<(string Shell, string? VersionText)> GetPowerShellVersionTextAsync()
@@ -662,12 +707,18 @@ public class TroubleshootingSession : IAsyncDisposable
     private static async Task<IReadOnlyList<string>> RunSimpleStartupDiagnosticsAsync()
     {
         var diagnostics = new List<string>();
+        var cliPath = CopilotCliPathResolver();
+        var nodeRuntimeRequired = await CliPathRequiresNodeRuntimeAsync(cliPath);
 
         var copilotVersion = await ProcessRunnerResolver("cmd.exe", "/c copilot --version");
         diagnostics.Add(FormatDiagnosticLine("copilot --version", copilotVersion));
 
         var nodeVersion = await ProcessRunnerResolver("node", "--version");
         diagnostics.Add(FormatDiagnosticLine("node --version", nodeVersion));
+        if (!nodeRuntimeRequired && nodeVersion.ExitCode != 0)
+        {
+            diagnostics.Add("- Note: Node.js is only required for some Copilot CLI installations.");
+        }
 
         return diagnostics;
     }

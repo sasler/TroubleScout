@@ -26,7 +26,7 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 2. **GitHub Copilot Access** - Active GitHub Copilot subscription
 3. **GitHub Copilot CLI** - Install or update using the official guide:
 
-   https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 4. **On Windows:** PowerShell 6+ is required by Copilot CLI docs (PowerShell 7+ recommended)
 
@@ -47,7 +47,7 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 2. **Extract** `TroubleScout.exe` (and `runtimes/` if present) to a directory
 3. **Install prerequisites**:
    - Ensure PowerShell 6+ (PowerShell 7+ recommended)
-   - Install/update GitHub Copilot CLI: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+   - Install/update GitHub Copilot CLI: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
    - Install [Node.js](https://nodejs.org/) only if you choose npm-based Copilot CLI install
 4. **Run** `TroubleScout.exe` from the command line
 
@@ -103,17 +103,15 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 
 ### Command Line Options
 
-| Option     | Short | Description                                      |
-| ---------- | ----- | ------------------------------------------------ |
-| `--server` | `-s`  | Target server name or IP (default: localhost)    |
-| `--model`  | `-m`  | AI model to use (e.g., gpt-4o, claude-sonnet-4)  |
-| `--prompt` | `-p`  | Initial prompt for headless mode                 |
-| `--mcp-config` | -  | MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`) |
-| `--skills-dir` | -  | Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present) |
-| `--disable-skill` | - | Disable a loaded skill by name (repeatable) |
-| `--debug` | `-d` or `-debug` | Show technical diagnostics and exception details |
-| `--version`| `-v`  | Show app version and exit                        |
-| `--help`   | `-h`  | Show help information                            |
+- `--server` (`-s`): Target server name or IP (default: localhost)
+- `--model` (`-m`): AI model to use (e.g., gpt-4o, claude-sonnet-4)
+- `--prompt` (`-p`): Initial prompt for headless mode
+- `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
+- `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)
+- `--disable-skill`: Disable a loaded skill by name (repeatable)
+- `--debug` (`-d` or `-debug`): Show technical diagnostics and exception details
+- `--version` (`-v`): Show app version and exit
+- `--help` (`-h`): Show help information
 
 ### Model Selection
 
@@ -135,9 +133,7 @@ TroubleScout can load MCP servers and skills through Copilot SDK session configu
 
 - By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
 - By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
-- Use `/status` or `/capabilities` to see:
-   - configured MCP servers and skills
-   - MCP servers and skills used at runtime in the current session
+- Use `/status` or `/capabilities` to see configured MCP servers/skills and runtime-used MCP servers/skills.
 
 Examples:
 
@@ -267,7 +263,7 @@ When troubleshooting remote servers:
 
 Install or update GitHub Copilot CLI using the official setup guide:
 
-https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+[Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 If you still see startup failures, verify the CLI and re-authenticate:
 
@@ -295,7 +291,7 @@ TroubleScout requires Node.js 24+ for current Copilot SDK/CLI builds.
 
 - Install or update Copilot CLI:
 
-   https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 - Re-authenticate:
 

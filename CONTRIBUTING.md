@@ -186,7 +186,7 @@ dotnet test TroubleScout.Tests/TroubleScout.Tests.csproj
 1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
 2. **GitHub Copilot CLI** - Install/update via:
 
-   https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 3. **On Windows:** PowerShell 6+ (PowerShell 7+ recommended)
 
