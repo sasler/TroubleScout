@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using Spectre.Console.Rendering;
+using TroubleScout.Services;
 
 namespace TroubleScout.UI;
 
@@ -11,9 +12,27 @@ namespace TroubleScout.UI;
 /// </summary>
 public static class ConsoleUI
 {
-    private const string PromptMarkup = "[bold cyan]You[/] [grey]>[/] ";
-    private const string PromptText = "You > ";
+    private static ExecutionMode _currentExecutionMode = ExecutionMode.Safe;
     private static int _lastInputRowCount = 1;
+
+    public static void SetExecutionMode(ExecutionMode mode)
+    {
+        _currentExecutionMode = mode;
+    }
+
+    private static string GetPromptMarkup()
+    {
+        return _currentExecutionMode == ExecutionMode.Yolo
+            ? "[bold cyan]You[/] [bold OrangeRed1](YOLO)[/][grey] >[/] "
+            : "[bold cyan]You[/] [grey]>[/] ";
+    }
+
+    private static string GetPromptText()
+    {
+        return _currentExecutionMode == ExecutionMode.Yolo
+            ? "You (YOLO) > "
+            : "You > ";
+    }
 
     /// <summary>
     /// Display the application banner
@@ -48,6 +67,7 @@ public static class ConsoleUI
         string connectionMode,
         bool copilotReady,
         string? model = null,
+        ExecutionMode executionMode = ExecutionMode.Safe,
         IReadOnlyList<(string Label, string Value)>? usageFields = null)
     {
         var grid = new Grid();
@@ -65,6 +85,7 @@ public static class ConsoleUI
         grid.AddRow("[grey]Target Server:[/]", serverStatus);
         grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{connectionMode}[/]");
         grid.AddRow("[grey]Copilot Status:[/]", copilotStatus);
+        grid.AddRow("[grey]Execution Mode:[/]", GetExecutionModeMarkup(executionMode));
         
         if (copilotReady)
         {
@@ -176,6 +197,7 @@ public static class ConsoleUI
             new Markup("  [cyan]/status[/]         - Show connection status"),
             new Markup("  [cyan]/capabilities[/]   - Show MCP/skills availability and usage"),
             new Markup("  [cyan]/model[/]          - Change AI model"),
+            new Markup("  [cyan]/mode[/] <safe|yolo> - Switch execution mode"),
             new Markup("  [cyan]/connect[/] <server> - Connect to a different server"),
             new Markup("  [cyan]/history[/]        - Show PowerShell commands run this session"),
             new Markup("  [cyan]/help[/]           - Show help, examples, and categories"),
@@ -206,7 +228,7 @@ public static class ConsoleUI
     /// </summary>
     public static string GetUserInput(IReadOnlyList<string>? slashCommands = null)
     {
-        AnsiConsole.Markup(PromptMarkup);
+        AnsiConsole.Markup(GetPromptMarkup());
         if (slashCommands == null || slashCommands.Count == 0)
         {
             return Console.ReadLine() ?? string.Empty;
@@ -293,7 +315,7 @@ public static class ConsoleUI
         var rowsToClear = Math.Max(_lastInputRowCount, currentRows);
 
         ClearInputRows(rowsToClear, width);
-        AnsiConsole.Markup(PromptMarkup);
+        AnsiConsole.Markup(GetPromptMarkup());
         Console.Write(text);
         _lastInputRowCount = currentRows;
     }
@@ -306,7 +328,7 @@ public static class ConsoleUI
 
     private static int GetInputRowCount(int width, int textLength)
     {
-        var totalLength = PromptText.Length + textLength;
+        var totalLength = GetPromptText().Length + textLength;
         if (totalLength <= 0)
         {
             return 1;
@@ -856,6 +878,16 @@ public static class ConsoleUI
             : $"[yellow]{Markup.Escape(targetServer)}[/]";
         
         AnsiConsole.MarkupLine($"[grey]>[/] [dim]Running on {serverDisplay}:[/] [cyan]{Markup.Escape(command)}[/]");
+    }
+
+    private static string GetExecutionModeMarkup(ExecutionMode mode)
+    {
+        return mode switch
+        {
+            ExecutionMode.Safe => "[green]SAFE[/]",
+            ExecutionMode.Yolo => "[red]YOLO[/]",
+            _ => "[grey]UNKNOWN[/]"
+        };
     }
 
     /// <summary>

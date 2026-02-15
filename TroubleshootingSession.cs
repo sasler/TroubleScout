@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
 using TroubleScout.Services;
 using TroubleScout.Tools;
@@ -39,6 +40,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _configurationWarnings = new();
     private readonly bool _debugMode;
+    private ExecutionMode _executionMode;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -50,6 +52,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/status",
         "/clear",
         "/model",
+        "/mode",
         "/connect",
         "/capabilities",
         "/history",
@@ -101,7 +104,11 @@ public class TroubleshootingSession : IAsyncDisposable
 
             ## Safety
             - Only read-only Get-* commands execute automatically
-            - Any remediation commands (Start-, Stop-, Set-, Restart-, etc.) require user approval
+            - In Safe mode, remediation commands require explicit user approval
+            - In YOLO mode, remediation commands can execute without confirmation
+            - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+            - Never claim a command was executed unless run_powershell returned execution output
+            - If no tool was executed, clearly state that no command has been run yet
             - Never suggest commands that could cause data loss without clear warnings
             - Always consider the impact of recommended actions
 
@@ -118,7 +125,8 @@ public class TroubleshootingSession : IAsyncDisposable
         string? mcpConfigPath = null,
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
-        bool debugMode = false)
+        bool debugMode = false,
+        ExecutionMode executionMode = ExecutionMode.Safe)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _requestedModel = model;
@@ -126,12 +134,17 @@ public class TroubleshootingSession : IAsyncDisposable
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
         _disabledSkills = disabledSkills?.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
         _debugMode = debugMode;
+        _executionMode = executionMode;
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
+        _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
     }
 
     private readonly string? _requestedModel;
+    private static readonly Regex MutatingIntentRegex = new(
+        "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
@@ -142,6 +155,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<string> ConfiguredSkills => _configuredSkills;
     public IReadOnlyList<string> RuntimeSkills => _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
     public IReadOnlyList<string> ConfigurationWarnings => _configurationWarnings;
+    public ExecutionMode CurrentExecutionMode => _executionMode;
 
     private sealed record CopilotUsageSnapshot(
         int? PromptTokens,
@@ -916,8 +930,10 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
             });
 
+            var prompt = BuildPromptForExecutionSafety(userMessage);
+
             // Send the message
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = userMessage });
+            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt });
             
             // Wait for completion
             await done.Task;
@@ -948,6 +964,18 @@ public class TroubleshootingSession : IAsyncDisposable
             ConsoleUI.ShowError("Error", ex.Message);
             return false;
         }
+    }
+
+    private static string BuildPromptForExecutionSafety(string userMessage)
+    {
+        if (!MutatingIntentRegex.IsMatch(userMessage))
+        {
+            return userMessage;
+        }
+
+        return userMessage +
+               "\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. " +
+               "Do not claim any action was executed unless tool output confirms execution.";
     }
 
     /// <summary>
@@ -1019,6 +1047,8 @@ public class TroubleshootingSession : IAsyncDisposable
     /// </summary>
     public async Task RunInteractiveLoopAsync()
     {
+        ConsoleUI.SetExecutionMode(_executionMode);
+
         while (true)
         {
             var input = ConsoleUI.GetUserInput(SlashCommands).Trim();
@@ -1038,13 +1068,13 @@ public class TroubleshootingSession : IAsyncDisposable
             if (lowerInput == "/clear")
             {
                 ConsoleUI.ShowBanner();
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, _executionMode, GetStatusFields());
                 continue;
             }
 
             if (lowerInput == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                 continue;
             }
 
@@ -1062,7 +1092,30 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (lowerInput == "/capabilities")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                continue;
+            }
+
+            if (lowerInput.StartsWith("/mode", StringComparison.Ordinal))
+            {
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                {
+                    ConsoleUI.ShowInfo($"Current mode: {_executionMode.ToCliValue()}");
+                    ConsoleUI.ShowInfo("Usage: /mode <safe|yolo>");
+                }
+                else if (!ExecutionModeParser.TryParse(parts[1], out var requestedMode))
+                {
+                    ConsoleUI.ShowWarning("Invalid mode. Use: safe or yolo.");
+                }
+                else
+                {
+                    SetExecutionMode(requestedMode);
+                    ConsoleUI.SetExecutionMode(_executionMode);
+                    ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                }
+
                 continue;
             }
 
@@ -1102,7 +1155,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     if (success)
                     {
                         ConsoleUI.ShowSuccess($"Connected to {newServer}");
-                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, GetStatusFields());
+                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                     }
                 }
                 continue;
@@ -1261,6 +1314,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _targetServer = newServer;
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
+        _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
@@ -1291,6 +1345,12 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return true;
+    }
+
+    private void SetExecutionMode(ExecutionMode mode)
+    {
+        _executionMode = mode;
+        _executor.ExecutionMode = mode;
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()

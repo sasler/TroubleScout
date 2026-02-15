@@ -79,8 +79,8 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
-            .Callback<string>(cmd => capturedCommand = cmd)
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .Callback<string, bool>((cmd, _) => capturedCommand = cmd)
             .ReturnsAsync(new PowerShellResult(true, "Output"));
 
         // Act
@@ -104,8 +104,8 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
-            .Callback<string>(cmd => capturedCommand = cmd)
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .Callback<string, bool>((cmd, _) => capturedCommand = cmd)
             .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
 
         // Act
@@ -135,7 +135,7 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
             .ReturnsAsync(new PowerShellResult(true, "Service output"));
 
         // Act
@@ -146,7 +146,7 @@ public class DiagnosticToolsTests : IDisposable
         // Assert
         result.Should().NotBeNull();
         _diagnosticTools.PendingCommands.Should().BeEmpty();
-        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>()), Times.Once);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class DiagnosticToolsTests : IDisposable
         resultString.Should().Contain("PENDING APPROVAL");
         _diagnosticTools.PendingCommands.Should().HaveCount(1);
         _diagnosticTools.PendingCommands[0].Command.Should().Be(command);
-        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>()), Times.Never);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public class DiagnosticToolsTests : IDisposable
         var resultString = result?.ToString();
         resultString.Should().Contain("BLOCKED");
         _diagnosticTools.PendingCommands.Should().BeEmpty();
-        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>()), Times.Never);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
     }
 
     #endregion
@@ -229,7 +229,7 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
             .ReturnsAsync(new PowerShellResult(true, "Service stopped"));
 
         // Add pending command first
@@ -245,7 +245,7 @@ public class DiagnosticToolsTests : IDisposable
         // Assert
         result.Should().Contain("Service stopped");
         _diagnosticTools.PendingCommands.Should().BeEmpty();
-        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>()), Times.Once);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
     }
 
     #endregion
@@ -264,7 +264,7 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
             .ReturnsAsync(new PowerShellResult(false, "", "Command failed"));
 
         // Act
@@ -285,7 +285,7 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
-        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>()))
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
             .ReturnsAsync(new PowerShellResult(false, "", "Access denied"));
 
         // Act

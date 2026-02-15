@@ -36,6 +36,7 @@ public class PowerShellExecutor : IDisposable
     private readonly object _historyLock = new();
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private readonly SemaphoreSlim _initLock = new(1, 1);
+    private ExecutionMode _executionMode = ExecutionMode.Safe;
 
     /// <summary>
     /// The target server name that was requested
@@ -46,6 +47,12 @@ public class PowerShellExecutor : IDisposable
     /// The actual computer name where commands are executing (verified during connection)
     /// </summary>
     public virtual string? ActualComputerName => _actualComputerName;
+
+    public ExecutionMode ExecutionMode
+    {
+        get => _executionMode;
+        set => _executionMode = value;
+    }
 
     /// <summary>
     /// Gets a snapshot of PowerShell commands executed in this session
@@ -58,12 +65,45 @@ public class PowerShellExecutor : IDisposable
         }
     }
 
+    public void AddHistoryEntry(string entry)
+    {
+        TrackCommand(entry);
+    }
+
     /// <summary>
     /// Commands that are allowed to run automatically (read-only Get-* commands)
     /// </summary>
     private static readonly HashSet<string> SafeCommandPrefixes =
     [
-        "Get-"
+        "Get-",
+        "Select-",
+        "Sort-",
+        "Group-",
+        "Where-",
+        "ForEach-",
+        "Measure-",
+        "Test-",
+        "ConvertTo-",
+        "ConvertFrom-",
+        "Compare-",
+        "Find-",
+        "Search-",
+        "Resolve-"
+    ];
+
+    private static readonly HashSet<string> SafeOutCmdlets =
+    [
+        "Out-String",
+        "Out-Null"
+    ];
+
+    private static readonly HashSet<string> SafeFormatCmdlets =
+    [
+        "Format-Custom",
+        "Format-Hex",
+        "Format-List",
+        "Format-Table",
+        "Format-Wide"
     ];
 
     /// <summary>
@@ -110,10 +150,8 @@ public class PowerShellExecutor : IDisposable
             {
                 return new CommandValidation(true, false);
             }
-            else
-            {
-                return new CommandValidation(true, true, "Script contains commands that can modify system state and requires approval");
-            }
+
+            return GetMutatingCommandValidation("Script contains commands that can modify system state");
         }
 
         // Check if it's a pipeline - if so, validate ALL cmdlets in the pipeline
@@ -122,11 +160,16 @@ public class PowerShellExecutor : IDisposable
             // Use IsReadOnlyScript to validate the entire pipeline
             return IsReadOnlyScript(command)
                 ? new CommandValidation(true, false)
-                : new CommandValidation(true, true, "Pipeline contains commands that can modify system state and requires approval");
+                : GetMutatingCommandValidation("Pipeline contains commands that can modify system state");
         }
 
         // Parse the command to get the cmdlet name
         var cmdletName = ExtractCmdletName(command);
+
+        if (IsSimpleReadOnlyExpression(command))
+        {
+            return new CommandValidation(true, false);
+        }
 
         if (string.IsNullOrEmpty(cmdletName))
         {
@@ -139,14 +182,76 @@ public class PowerShellExecutor : IDisposable
             return new CommandValidation(false, false, $"Command '{cmdletName}' is blocked for security reasons");
         }
 
-        // Check if it's a safe Get-* command
-        if (SafeCommandPrefixes.Any(prefix => cmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        if (IsReadOnlySingleCommand(cmdletName))
         {
             return new CommandValidation(true, false);
         }
 
-        // All other commands require user approval
-        return new CommandValidation(true, true, $"Command '{cmdletName}' is not a read-only command and requires user approval");
+        return GetMutatingCommandValidation($"Command '{cmdletName}' is not a read-only command");
+    }
+
+    private static bool IsSimpleReadOnlyExpression(string command)
+    {
+        var trimmed = command.Trim();
+        if (!trimmed.StartsWith("$", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (trimmed.Contains(';') || trimmed.Contains('\n') || trimmed.Contains('\r') || trimmed.Contains('|'))
+        {
+            return false;
+        }
+
+        if (trimmed.Contains("=", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (trimmed.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Set-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Start-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Clear-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("Format-Volume", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsReadOnlySingleCommand(string cmdletName)
+    {
+        if (SafeCommandPrefixes.Any(prefix => cmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (cmdletName.StartsWith("Format-", StringComparison.OrdinalIgnoreCase))
+        {
+            return SafeFormatCmdlets.Contains(cmdletName);
+        }
+
+        if (cmdletName.StartsWith("Out-", StringComparison.OrdinalIgnoreCase))
+        {
+            return SafeOutCmdlets.Contains(cmdletName);
+        }
+
+        return false;
+    }
+
+    private CommandValidation GetMutatingCommandValidation(string baseReason)
+    {
+        return _executionMode switch
+        {
+            ExecutionMode.Safe => new CommandValidation(true, true, $"{baseReason}. Safe mode requires explicit user approval."),
+            ExecutionMode.Yolo => new CommandValidation(true, false, $"{baseReason}. YOLO mode allows execution without confirmation."),
+            _ => new CommandValidation(true, true, $"{baseReason}. Requires user approval.")
+        };
     }
 
     /// <summary>
@@ -172,18 +277,8 @@ public class PowerShellExecutor : IDisposable
     private bool IsReadOnlyScript(string command)
     {
         // Safe cmdlet prefixes (read-only operations)
-        var safePrefixes = new[]
-        {
-            "Get-", "Select-", "Sort-", "Group-", "Where-", "ForEach-",
-            "Measure-", "Test-", "ConvertTo-", "ConvertFrom-", "Compare-",
-            "Find-", "Search-", "Resolve-", "Out-String", "Out-Null"
-        };
-        
-        // Specific safe Format-* cmdlets (Format-Volume is NOT safe)
-        var safeFormatCmdlets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide"
-        };
+        var safePrefixes = SafeCommandPrefixes;
+        var safeFormatCmdlets = SafeFormatCmdlets;
 
         // Split by common statement separators
         var statements = command
@@ -309,7 +404,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Executes a PowerShell command and returns the result
     /// </summary>
-    public virtual async Task<PowerShellResult> ExecuteAsync(string command)
+    public virtual async Task<PowerShellResult> ExecuteAsync(string command, bool trackInHistory = true)
     {
         if (_disposed)
         {
@@ -321,7 +416,10 @@ public class PowerShellExecutor : IDisposable
             await InitializeAsync();
         }
 
-        TrackCommand(command);
+        if (trackInHistory)
+        {
+            TrackCommand(command);
+        }
 
         await _executionLock.WaitAsync();
         try
@@ -402,7 +500,7 @@ public class PowerShellExecutor : IDisposable
         try
         {
             await InitializeAsync();
-            var result = await ExecuteAsync("$env:COMPUTERNAME");
+            var result = await ExecuteAsync("$env:COMPUTERNAME", trackInHistory: false);
             
             if (!result.Success)
             {

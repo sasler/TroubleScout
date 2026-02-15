@@ -1,5 +1,6 @@
 using FluentAssertions;
 using TroubleScout;
+using TroubleScout.Services;
 using Xunit;
 
 namespace TroubleScout.Tests;
@@ -59,6 +60,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         session.TargetServer.Should().Be("localhost");
+    }
+
+    [Fact]
+    public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
+    {
+        // Arrange & Act
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+
+        // Assert
+        session.CurrentExecutionMode.Should().Be(ExecutionMode.Yolo);
     }
 
     #endregion
