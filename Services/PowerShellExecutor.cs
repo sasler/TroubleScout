@@ -91,20 +91,20 @@ public class PowerShellExecutor : IDisposable
         "Resolve-"
     ];
 
-    private static readonly HashSet<string> SafeOutCmdlets =
-    [
+    private static readonly HashSet<string> SafeOutCmdlets = new(StringComparer.OrdinalIgnoreCase)
+    {
         "Out-String",
         "Out-Null"
-    ];
+    };
 
-    private static readonly HashSet<string> SafeFormatCmdlets =
-    [
+    private static readonly HashSet<string> SafeFormatCmdlets = new(StringComparer.OrdinalIgnoreCase)
+    {
         "Format-Custom",
         "Format-Hex",
         "Format-List",
         "Format-Table",
         "Format-Wide"
-    ];
+    };
 
     /// <summary>
     /// Explicitly blocked commands even if they start with Get-

@@ -42,7 +42,7 @@ public class DiagnosticTools
     {
         yield return AIFunctionFactory.Create(RunPowerShellCommandAsync,
             "run_powershell",
-            "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands are gated by execution mode (Safe/YOLO). ");
+            "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands require approval in Safe mode or run automatically in YOLO mode.");
 
         yield return AIFunctionFactory.Create(GetSystemInfoAsync,
             "get_system_info",
