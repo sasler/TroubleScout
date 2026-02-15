@@ -12,6 +12,7 @@ var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
 var debugMode = false;
+var executionMode = ExecutionMode.Safe;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -43,6 +44,13 @@ for (int i = 0; i < args.Length; i++)
             return 0;
         case "--debug" or "-debug" or "-d":
             debugMode = true;
+            break;
+        case "--mode" when i + 1 < args.Length:
+            if (!ExecutionModeParser.TryParse(args[++i], out executionMode))
+            {
+                Console.WriteLine("Invalid mode. Use: safe or yolo.");
+                return 1;
+            }
             break;
     }
 }
@@ -79,12 +87,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
+    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode);
+    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode);
 }
 
 return Environment.ExitCode;
@@ -102,6 +110,7 @@ static void ShowHelp(string version)
     Console.WriteLine("      --mcp-config <path>  MCP config JSON path (default: %USERPROFILE%\\.copilot\\mcp-config.json)");
     Console.WriteLine("      --skills-dir <path>  Skill root directory (repeatable, default: %USERPROFILE%\\.copilot\\skills if present)");
     Console.WriteLine("      --disable-skill <name>  Disable a loaded skill by name (repeatable)");
+    Console.WriteLine("      --mode <safe|yolo>  PowerShell execution mode (default: safe)");
     Console.WriteLine("  --debug, -debug, -d  Show technical diagnostics and exception details");
     Console.WriteLine("  -v, --version         Show app version and exit");
     Console.WriteLine("  -h, --help            Show help information");
@@ -176,12 +185,13 @@ static async Task RunInteractiveModeAsync(
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
     string appVersion,
-    bool debugMode)
+    bool debugMode,
+    ExecutionMode executionMode)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -196,7 +206,7 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel, session.GetStatusFields());
+    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields());
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -217,9 +227,10 @@ static async Task RunHeadlessModeAsync(
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
-    bool debugMode)
+    bool debugMode,
+    ExecutionMode executionMode)
 {
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode);
+    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -238,7 +249,7 @@ static async Task RunHeadlessModeAsync(
         return;
     }
 
-    ConsoleUI.ShowInfo($"Target: {server} | Model: {session.SelectedModel}");
+    ConsoleUI.ShowInfo($"Target: {server} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
     ConsoleUI.ShowRule();
     ConsoleUI.ShowInfo($"Processing: {prompt}");
     Console.WriteLine();

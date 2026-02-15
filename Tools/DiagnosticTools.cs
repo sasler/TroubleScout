@@ -42,7 +42,7 @@ public class DiagnosticTools
     {
         yield return AIFunctionFactory.Create(RunPowerShellCommandAsync,
             "run_powershell",
-            "Execute a PowerShell command on the target Windows server. Only Get-* commands run automatically; other commands require user approval.");
+            "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands require approval in Safe mode or run automatically in YOLO mode.");
 
         yield return AIFunctionFactory.Create(GetSystemInfoAsync,
             "get_system_info",
@@ -83,11 +83,13 @@ public class DiagnosticTools
 
         if (!validation.IsAllowed && !validation.RequiresApproval)
         {
+            _executor.AddHistoryEntry($"[BLOCKED] {command}");
             return $"[BLOCKED] {validation.Reason}";
         }
 
         if (validation.RequiresApproval)
         {
+            _executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
             var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval");
             _pendingCommands.Add(pending);
@@ -99,8 +101,9 @@ public class DiagnosticTools
 
         // Safe command - execute directly with target verification
         var wrappedCommand = WrapCommandWithTargetVerification(command);
+        _executor.AddHistoryEntry($"[EXECUTED] {command}");
         ConsoleUI.ShowCommandExecution(command, _targetServer);
-        var result = await _executor.ExecuteAsync(wrappedCommand);
+        var result = await _executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
 
         if (!result.Success)
         {
@@ -537,8 +540,9 @@ public class DiagnosticTools
     public async Task<string> ExecuteApprovedCommandAsync(PendingCommand command)
     {
         var wrappedCommand = WrapCommandWithTargetVerification(command.Command);
+        _executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
         ConsoleUI.ShowCommandExecution(command.Command, _targetServer);
-        var result = await _executor.ExecuteAsync(wrappedCommand);
+        var result = await _executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
         _pendingCommands.Remove(command);
 
         if (!result.Success)

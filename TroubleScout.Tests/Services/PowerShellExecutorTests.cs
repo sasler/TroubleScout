@@ -55,6 +55,77 @@ public class PowerShellExecutorTests : IDisposable
         result.Reason.Should().NotBeNullOrEmpty();
     }
 
+    [Fact]
+    public void ValidateCommand_SelectObjectCommand_ShouldAutoApprove()
+    {
+        // Arrange
+        var command = "Select-Object -InputObject @('a','b') -First 1";
+
+        // Act
+        var result = _executor.ValidateCommand(command);
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateCommand_SimpleVariableExpression_ShouldAutoApprove()
+    {
+        // Arrange
+        var command = "$env:COMPUTERNAME";
+
+        // Act
+        var result = _executor.ValidateCommand(command);
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateCommand_DangerousVariableExpression_ShouldRequireApproval()
+    {
+        // Arrange
+        var command = "$proc.Kill()";
+
+        // Act
+        var result = _executor.ValidateCommand(command);
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateCommand_MutatingCommandInSafeMode_ShouldRequireApproval()
+    {
+        // Arrange
+        _executor.ExecutionMode = ExecutionMode.Safe;
+
+        // Act
+        var result = _executor.ValidateCommand("Restart-Service -Name spooler");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+        result.Reason.Should().Contain("Safe mode");
+    }
+
+    [Fact]
+    public void ValidateCommand_MutatingCommandInYoloMode_ShouldNotRequireApproval()
+    {
+        // Arrange
+        _executor.ExecutionMode = ExecutionMode.Yolo;
+
+        // Act
+        var result = _executor.ValidateCommand("Restart-Service -Name spooler");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("Get-Credential")]
     [InlineData("Get-Secret -Name MySecret")]
@@ -319,6 +390,33 @@ Get-Process
         var history = _executor.GetCommandHistory();
 
         // Assert
+        history.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddHistoryEntry_ShouldRecordUserVisibleEntry()
+    {
+        // Arrange
+        var entry = "[PENDING APPROVAL] Clear-RecycleBin -Force";
+
+        // Act
+        _executor.AddHistoryEntry(entry);
+        var history = _executor.GetCommandHistory();
+
+        // Assert
+        history.Should().ContainSingle();
+        history[0].Should().Be(entry);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_ShouldNotAddInternalHistoryEntries()
+    {
+        // Act
+        var (success, _) = await _executor.TestConnectionAsync();
+        var history = _executor.GetCommandHistory();
+
+        // Assert
+        success.Should().BeTrue();
         history.Should().BeEmpty();
     }
 
