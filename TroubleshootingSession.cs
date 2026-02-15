@@ -1310,7 +1310,7 @@ public class TroubleshootingSession : IAsyncDisposable
         var reportsDir = Path.Combine(Path.GetTempPath(), "TroubleScout", "reports");
         Directory.CreateDirectory(reportsDir);
 
-        var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTime.Now:yyyyMMdd-HHmmss}.html");
+        var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.html");
         var html = BuildReportHtml(prompts);
         File.WriteAllText(reportPath, html, Encoding.UTF8);
 
@@ -1673,7 +1673,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();

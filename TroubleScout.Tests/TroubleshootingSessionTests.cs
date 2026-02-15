@@ -606,6 +606,107 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     #region Error Handling Tests
 
     [Fact]
+    public void BuildReportHtml_ShouldEncodeContentAndIncludePromptActionAndReply()
+    {
+        // Arrange
+        const string prompt = "<script>alert('xss')</script>";
+        const string command = "Get-Service -Name 'BITS' | Where-Object { $_.Status -eq 'Running' }";
+        const string output = "<b>danger</b>";
+        const string reply = "Investigated <tag> and confirmed status.";
+
+        // Act
+        var html = BuildReportHtmlViaReflection(
+            prompt,
+            command,
+            output,
+            reply,
+            "SafeAuto",
+            "PowerShell",
+            "localhost");
+
+        // Assert
+        html.Should().Contain("TroubleScout Session Report");
+        html.Should().Contain("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;");
+        html.Should().NotContain(prompt);
+        html.Should().Contain("&lt;b&gt;danger&lt;/b&gt;");
+        html.Should().Contain("Investigated &lt;tag&gt; and confirmed status.");
+        html.Should().Contain("PowerShell");
+        html.Should().Contain("SafeAuto");
+        html.Should().Contain("Command");
+        html.Should().Contain("Output");
+    }
+
+    [Fact]
+    public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
+    {
+        // Arrange
+        const string command = "Get-Service -Name 'BITS' | Where-Object { $_.Status -eq 'Running' }";
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("RenderCommandHtml", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var html = method?.Invoke(null, [command]) as string;
+
+        // Assert
+        html.Should().NotBeNullOrEmpty();
+        html.Should().Contain("tok-cmdlet");
+        html.Should().Contain("tok-param");
+        html.Should().Contain("tok-string");
+        html.Should().Contain("tok-variable");
+        html.Should().Contain("tok-op");
+    }
+
+    private static string BuildReportHtmlViaReflection(
+        string prompt,
+        string command,
+        string output,
+        string reply,
+        string safetyApproval,
+        string source,
+        string target)
+    {
+        var sessionType = typeof(TroubleshootingSession);
+        var actionType = sessionType.GetNestedType("ReportActionEntry", BindingFlags.NonPublic);
+        var promptType = sessionType.GetNestedType("ReportPromptEntry", BindingFlags.NonPublic);
+        var buildMethod = sessionType.GetMethod("BuildReportHtml", BindingFlags.Static | BindingFlags.NonPublic);
+
+        actionType.Should().NotBeNull();
+        promptType.Should().NotBeNull();
+        buildMethod.Should().NotBeNull();
+
+        var actionCtor = actionType!
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Single(ctor => ctor.GetParameters().Length == 6);
+        var action = actionCtor.Invoke([
+            DateTimeOffset.Now,
+            target,
+            command,
+            output,
+            safetyApproval,
+            source
+        ]);
+
+        var actionListType = typeof(List<>).MakeGenericType(actionType);
+        var actionList = Activator.CreateInstance(actionListType)!;
+        actionListType.GetMethod("Add")!.Invoke(actionList, [action]);
+
+        var promptCtor = promptType!
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Single(ctor => ctor.GetParameters().Length == 4);
+        var promptEntry = promptCtor.Invoke([
+            DateTimeOffset.Now,
+            prompt,
+            actionList,
+            reply
+        ]);
+
+        var promptArray = Array.CreateInstance(promptType, 1);
+        promptArray.SetValue(promptEntry, 0);
+
+        return (string)buildMethod!.Invoke(null, [promptArray])!;
+    }
+
+    [Fact]
     public async Task SendMessage_BeforeInitialization_ShouldReturnFalse()
     {
         // Act

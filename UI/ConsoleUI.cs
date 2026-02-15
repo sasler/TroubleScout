@@ -117,7 +117,7 @@ public static class ConsoleUI
         
         if (copilotReady)
         {
-            AnsiConsole.MarkupLine("[grey]  Tip: Use --model <name> to select model, or /model for more info[/]");
+            AnsiConsole.MarkupLine("[grey]  Tip: Use /model to select AI model. Free model like GPT-4.1 is recommended.[/]");
         }
         AnsiConsole.WriteLine();
     }
@@ -192,16 +192,16 @@ public static class ConsoleUI
             new Markup("  [italic]\"Analyze disk space and find what's using the most storage\"[/]"),
             new Markup(""),
             new Markup("[grey]Commands:[/]"),
-            new Markup("  [cyan]/exit[/] or [cyan]/quit[/]  - End the session"),
-            new Markup("  [cyan]/clear[/]          - Clear the screen"),
-            new Markup("  [cyan]/status[/]         - Show connection status"),
-            new Markup("  [cyan]/capabilities[/]   - Show MCP/skills availability and usage"),
-            new Markup("  [cyan]/model[/]          - Change AI model"),
-            new Markup("  [cyan]/mode[/] <safe|yolo> - Switch execution mode"),
-            new Markup("  [cyan]/connect[/] <server> - Connect to a different server"),
-            new Markup("  [cyan]/history[/]        - Show PowerShell commands run this session"),
-            new Markup("  [cyan]/report[/]         - Generate and open a HTML session report (saved in temp)"),
-            new Markup("  [cyan]/help[/]           - Show help, examples, and categories"),
+            new Markup("  [cyan]/exit[/] or [cyan]/quit[/]     - End the session"),
+            new Markup("  [cyan]/clear[/]             - Clear the screen"),
+            new Markup("  [cyan]/status[/]            - Show connection status"),
+            new Markup("  [cyan]/capabilities[/]      - Show MCP/skills availability and usage"),
+            new Markup("  [cyan]/model[/]             - Change AI model"),
+            new Markup("  [cyan]/mode[/] <safe|yolo>  - Switch execution mode"),
+            new Markup("  [cyan]/connect[/] <server>  - Connect to a different server"),
+            new Markup("  [cyan]/history[/]           - Show PowerShell commands run this session"),
+            new Markup("  [cyan]/report[/]            - Generate and open a HTML session report (saved in temp)"),
+            new Markup("  [cyan]/help[/]              - Show help, examples, and categories"),
             new Markup(""),
             new Markup("[grey]Tip:[/] Press [cyan]Tab[/] to complete /commands")
         );

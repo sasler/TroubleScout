@@ -335,6 +335,35 @@ public class DiagnosticToolsTests : IDisposable
         logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
     }
 
+    [Fact]
+    public async Task ExecuteApprovedCommand_ShouldLogApprovedByUserState()
+    {
+        // Arrange
+        var command = "Stop-Service -Name wuauserv";
+        var logs = new List<CommandActionLog>();
+        var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
+
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "done"));
+
+        var runPowerShellTool = toolsWithLogger.GetTools().First(t => t.Name == "run_powershell");
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        var pending = toolsWithLogger.PendingCommands.Should().ContainSingle().Subject;
+
+        // Act
+        await toolsWithLogger.ExecuteApprovedCommandAsync(pending);
+
+        // Assert
+        logs.Should().HaveCount(2);
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.ApprovalRequested);
+        logs[1].ApprovalState.Should().Be(CommandApprovalState.ApprovedByUser);
+    }
+
     #endregion
 
     #region Error Handling Tests

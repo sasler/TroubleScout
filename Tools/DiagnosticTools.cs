@@ -628,7 +628,7 @@ public class DiagnosticTools
                 target,
                 command.Command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                CommandApprovalState.ApprovalRequested));
+                CommandApprovalState.ApprovedByUser));
             return $"[ERROR] {result.Error ?? "Unknown error occurred"}";
         }
 
@@ -641,7 +641,7 @@ public class DiagnosticTools
             target,
             command.Command,
             output,
-            CommandApprovalState.ApprovalRequested));
+            CommandApprovalState.ApprovedByUser));
 
         return output;
     }
@@ -666,6 +666,7 @@ public enum CommandApprovalState
 {
     SafeAuto,
     ApprovalRequested,
+    ApprovedByUser,
     AutoApprovedYolo,
     Denied,
     Blocked
