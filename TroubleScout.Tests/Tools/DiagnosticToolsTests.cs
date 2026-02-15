@@ -250,6 +250,93 @@ public class DiagnosticToolsTests : IDisposable
 
     #endregion
 
+    #region Report Logging Tests
+
+    [Fact]
+    public async Task RunPowerShellCommand_SafeCommand_ShouldLogSafeAutoState()
+    {
+        // Arrange
+        var command = "Get-Service";
+        var logs = new List<CommandActionLog>();
+        var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
+
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "ok"));
+
+        // Act
+        var runPowerShellTool = toolsWithLogger.GetTools().First(t => t.Name == "run_powershell");
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        // Assert
+        logs.Should().ContainSingle();
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+    }
+
+    [Fact]
+    public async Task RunPowerShellCommand_UnsafeCommand_ShouldLogApprovalRequestedState()
+    {
+        // Arrange
+        var command = "Stop-Service -Name wuauserv";
+        var logs = new List<CommandActionLog>();
+        var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
+
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+
+        // Act
+        var runPowerShellTool = toolsWithLogger.GetTools().First(t => t.Name == "run_powershell");
+        await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        // Assert
+        logs.Should().ContainSingle();
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.ApprovalRequested);
+    }
+
+    [Fact]
+    public void LogDeniedCommand_ShouldLogDeniedStateWithExpectedOutput()
+    {
+        // Arrange
+        var logs = new List<CommandActionLog>();
+        var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
+
+        // Act
+        toolsWithLogger.LogDeniedCommand(new PendingCommand("Stop-Service -Name wuauserv", "Requires approval"));
+
+        // Assert
+        logs.Should().ContainSingle();
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.Denied);
+        logs[0].Output.Should().Be("User denied approval; command was not executed.");
+    }
+
+    [Fact]
+    public async Task GetSystemInfo_ShouldLogSafeAutoStateWithOutput()
+    {
+        // Arrange
+        var logs = new List<CommandActionLog>();
+        var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
+
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "system output"));
+
+        // Act
+        var getSystemInfoTool = toolsWithLogger.GetTools().First(t => t.Name == "get_system_info");
+        await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        // Assert
+        logs.Should().ContainSingle();
+        logs[0].Command.Should().Be("Get-SystemInfo");
+        logs[0].Output.Should().Be("system output");
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+    }
+
+    #endregion
+
     #region Error Handling Tests
 
     [Fact]

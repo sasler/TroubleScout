@@ -442,7 +442,10 @@ public class PowerShellExecutor : IDisposable
                     var wrappedCommand = $@"
                         $ErrorActionPreference = 'Continue'
                         $currentComputer = $env:COMPUTERNAME
-                        {command} | Out-String -Width 200
+                        $__tsResult = & {{
+{command}
+                        }}
+                        $__tsResult | Out-String -Width 200
                     ";
                     
                     ps.AddScript(wrappedCommand);

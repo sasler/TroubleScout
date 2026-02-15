@@ -200,6 +200,7 @@ public static class ConsoleUI
             new Markup("  [cyan]/mode[/] <safe|yolo> - Switch execution mode"),
             new Markup("  [cyan]/connect[/] <server> - Connect to a different server"),
             new Markup("  [cyan]/history[/]        - Show PowerShell commands run this session"),
+            new Markup("  [cyan]/report[/]         - Generate and open a HTML session report (saved in temp)"),
             new Markup("  [cyan]/help[/]           - Show help, examples, and categories"),
             new Markup(""),
             new Markup("[grey]Tip:[/] Press [cyan]Tab[/] to complete /commands")
@@ -400,6 +401,7 @@ public static class ConsoleUI
             .BorderColor(Color.Grey);
 
         AnsiConsole.Write(panel);
+        AnsiConsole.MarkupLine("[grey]Tip:[/] Run [cyan]/report[/] for full per-prompt details including outputs.");
         AnsiConsole.WriteLine();
     }
 

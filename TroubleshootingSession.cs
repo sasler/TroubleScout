@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Net;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
@@ -41,6 +43,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly List<string> _configurationWarnings = new();
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
+    private readonly List<ReportPromptEntry> _reportPrompts = [];
+    private readonly object _reportLock = new();
+    private int _lastPromptIndex = -1;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -56,6 +61,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/connect",
         "/capabilities",
         "/history",
+        "/report",
         "/exit",
         "/quit"
     ];
@@ -138,7 +144,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
     }
 
     private readonly string? _requestedModel;
@@ -171,6 +177,16 @@ public class TroubleshootingSession : IAsyncDisposable
                               InputTokens.HasValue || OutputTokens.HasValue || MaxContextTokens.HasValue ||
                               UsedContextTokens.HasValue || FreeContextTokens.HasValue;
     }
+
+    private sealed record ReportPromptEntry(DateTimeOffset Timestamp, string Prompt, List<ReportActionEntry> Actions, string AgentReply);
+
+    private sealed record ReportActionEntry(
+        DateTimeOffset Timestamp,
+        string Target,
+        string Command,
+        string Output,
+        string SafetyApproval,
+        string Source);
 
     public sealed record CopilotPrerequisiteIssue(string Title, string Details, bool IsBlocking);
 
@@ -858,6 +874,12 @@ public class TroubleshootingSession : IAsyncDisposable
             var hasError = false;
             var hasStartedStreaming = false;
             var processedDeltaIds = new HashSet<string>();
+            var responseBuffer = new StringBuilder();
+            int promptIndex;
+            lock (_reportLock)
+            {
+                promptIndex = _lastPromptIndex;
+            }
             
             // Create a live thinking indicator (manually disposed before recursive calls)
             var thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
@@ -878,6 +900,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     case ToolExecutionStartEvent toolStart:
                         // Show which tool is being executed
                         thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
+                        RecordMcpToolAction(toolStart);
                         break;
                     
                     case ToolExecutionCompleteEvent:
@@ -898,7 +921,9 @@ public class TroubleshootingSession : IAsyncDisposable
                             ConsoleUI.StartAIResponse();
                         }
                         // Streaming message chunk - print incrementally
-                        ConsoleUI.WriteAIResponse(delta.Data?.DeltaContent ?? "");
+                        var deltaText = delta.Data?.DeltaContent ?? "";
+                        responseBuffer.Append(deltaText);
+                        ConsoleUI.WriteAIResponse(deltaText);
                         break;
                     
                     case AssistantMessageEvent msg:
@@ -908,6 +933,7 @@ public class TroubleshootingSession : IAsyncDisposable
                             thinkingIndicator.StopForResponse();
                             ConsoleUI.StartAIResponse();
                             ConsoleUI.WriteAIResponse(msg.Data.Content);
+                            responseBuffer.Append(msg.Data.Content);
                             hasStartedStreaming = true;
                         }
                         break;
@@ -946,6 +972,8 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 ConsoleUI.EndAIResponse();
             }
+
+            SetPromptReply(promptIndex, responseBuffer.ToString());
             
             // Dispose thinking indicator before processing approvals
             thinkingIndicator.Dispose();
@@ -1003,19 +1031,30 @@ public class TroubleshootingSession : IAsyncDisposable
             else
             {
                 ConsoleUI.ShowWarning("Command skipped by user");
+                _diagnosticTools.LogDeniedCommand(pending[0]);
                 _diagnosticTools.ClearPendingCommands();
             }
         }
         else
         {
             var approved = ConsoleUI.PromptBatchApproval(commands);
-            
+
+            var pendingSnapshot = pending.ToList();
             foreach (var index in approved)
             {
-                var cmd = pending[index - 1];
+                var cmd = pendingSnapshot[index - 1];
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(cmd);
                 ConsoleUI.ShowSuccess("Command executed");
+            }
+
+            var approvedSet = new HashSet<int>(approved);
+            for (var i = 0; i < pendingSnapshot.Count; i++)
+            {
+                if (!approvedSet.Contains(i + 1))
+                {
+                    _diagnosticTools.LogDeniedCommand(pendingSnapshot[i]);
+                }
             }
 
             _diagnosticTools.ClearPendingCommands();
@@ -1087,6 +1126,12 @@ public class TroubleshootingSession : IAsyncDisposable
             if (lowerInput == "/history")
             {
                 ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory());
+                continue;
+            }
+
+            if (lowerInput == "/report")
+            {
+                GenerateAndOpenReport();
                 continue;
             }
 
@@ -1162,8 +1207,321 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             // Send message to Copilot
+            RecordPrompt(input);
             await SendMessageAsync(input);
         }
+    }
+
+    private void RecordPrompt(string prompt)
+    {
+        lock (_reportLock)
+        {
+            _reportPrompts.Add(new ReportPromptEntry(DateTimeOffset.Now, prompt, [], string.Empty));
+            _lastPromptIndex = _reportPrompts.Count - 1;
+        }
+    }
+
+    private void SetPromptReply(int promptIndex, string reply)
+    {
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (promptIndex < 0 || promptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var current = _reportPrompts[promptIndex];
+            _reportPrompts[promptIndex] = current with { AgentReply = reply.Trim() };
+        }
+    }
+
+    private void RecordCommandAction(CommandActionLog actionLog)
+    {
+        var entry = new ReportActionEntry(
+            actionLog.Timestamp,
+            actionLog.Target,
+            actionLog.Command,
+            actionLog.Output,
+            actionLog.ApprovalState.ToString(),
+            "PowerShell");
+
+        AppendActionToCurrentPrompt(entry);
+    }
+
+    private void RecordMcpToolAction(ToolExecutionStartEvent toolStart)
+    {
+        var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
+        if (string.IsNullOrWhiteSpace(mcpServerName))
+        {
+            return;
+        }
+
+        var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
+
+        var entry = new ReportActionEntry(
+            DateTimeOffset.Now,
+            mcpServerName,
+            toolName,
+            "N/A",
+            "N/A",
+            "MCP");
+
+        AppendActionToCurrentPrompt(entry);
+    }
+
+    private void AppendActionToCurrentPrompt(ReportActionEntry actionEntry)
+    {
+        lock (_reportLock)
+        {
+            if (_lastPromptIndex < 0 || _lastPromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            _reportPrompts[_lastPromptIndex].Actions.Add(actionEntry);
+        }
+    }
+
+    private void GenerateAndOpenReport()
+    {
+        List<ReportPromptEntry> prompts;
+        lock (_reportLock)
+        {
+            prompts = _reportPrompts
+                .Select(prompt => new ReportPromptEntry(
+                    prompt.Timestamp,
+                    prompt.Prompt,
+                    prompt.Actions.ToList(),
+                    prompt.AgentReply))
+                .ToList();
+        }
+
+        if (prompts.Count == 0)
+        {
+            ConsoleUI.ShowInfo("No prompts recorded yet. Ask a question first, then run /report.");
+            return;
+        }
+
+        var reportsDir = Path.Combine(Path.GetTempPath(), "TroubleScout", "reports");
+        Directory.CreateDirectory(reportsDir);
+
+        var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTime.Now:yyyyMMdd-HHmmss}.html");
+        var html = BuildReportHtml(prompts);
+        File.WriteAllText(reportPath, html, Encoding.UTF8);
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = reportPath,
+                UseShellExecute = true
+            };
+
+            System.Diagnostics.Process.Start(psi);
+            ConsoleUI.ShowSuccess($"Report generated and opened: {reportPath}");
+            ConsoleUI.ShowInfo($"Reports are stored in temp: {reportsDir}");
+        }
+        catch (Exception ex)
+        {
+            ConsoleUI.ShowWarning($"Report generated at {reportPath}, but could not auto-open browser: {TrimSingleLine(ex.Message)}");
+        }
+    }
+
+    private static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts)
+    {
+        var totalActions = prompts.Sum(prompt => prompt.Actions.Count);
+        var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("<!DOCTYPE html>");
+        sb.AppendLine("<html lang=\"en\">");
+        sb.AppendLine("<head>");
+        sb.AppendLine("  <meta charset=\"utf-8\" />");
+        sb.AppendLine("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
+        sb.AppendLine("  <title>TroubleScout Session Report</title>");
+        sb.AppendLine("  <style>");
+        sb.AppendLine("    :root { color-scheme: light dark; }");
+        sb.AppendLine("    body { font-family: Segoe UI, Inter, Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }");
+        sb.AppendLine("    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }");
+        sb.AppendLine("    .header { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 16px 20px; margin-bottom: 18px; }");
+        sb.AppendLine("    h1 { margin: 0 0 8px; font-size: 1.5rem; }");
+        sb.AppendLine("    .meta { color: #94a3b8; font-size: .92rem; }");
+        sb.AppendLine("    details { background: #111827; border: 1px solid #334155; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }");
+        sb.AppendLine("    summary { cursor: pointer; padding: 14px 16px; font-weight: 600; list-style: none; }");
+        sb.AppendLine("    summary::-webkit-details-marker { display: none; }");
+        sb.AppendLine("    summary:hover { background: #1f2937; }");
+        sb.AppendLine("    .prompt-time { color: #93c5fd; font-weight: 500; margin-right: 8px; }");
+        sb.AppendLine("    .prompt-text { color: #f8fafc; }");
+        sb.AppendLine("    .actions { padding: 0 16px 16px; }");
+        sb.AppendLine("    .action-card { background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: 12px; margin-top: 12px; }");
+        sb.AppendLine("    .meta-table { width: 100%; border-collapse: collapse; font-size: .9rem; }");
+        sb.AppendLine("    .meta-table th, .meta-table td { border: 1px solid #334155; padding: 8px 10px; text-align: left; vertical-align: middle; }");
+        sb.AppendLine("    .meta-table th { background: #1e293b; color: #bfdbfe; font-weight: 600; }");
+        sb.AppendLine("    .meta-table td { background: #0f1a2d; }");
+        sb.AppendLine("    .section-title { margin: 12px 0 6px; font-size: .85rem; letter-spacing: .02em; color: #93c5fd; text-transform: uppercase; font-weight: 700; }");
+        sb.AppendLine("    .inner-section { margin-top: 10px; border: 1px solid #334155; border-radius: 8px; overflow: hidden; background: #0a1223; }");
+        sb.AppendLine("    .inner-summary { padding: 9px 12px; font-size: .82rem; font-weight: 700; letter-spacing: .02em; color: #93c5fd; text-transform: uppercase; cursor: pointer; }");
+        sb.AppendLine("    .inner-summary:hover { background: #13203a; }");
+        sb.AppendLine("    .inner-content { padding: 10px 12px; }");
+        sb.AppendLine("    .chip { display: inline-block; border: 1px solid #475569; border-radius: 999px; padding: 2px 9px; font-size: .78rem; color: #cbd5e1; }");
+        sb.AppendLine("    .code-block, .output-block { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: Cascadia Mono, Consolas, monospace; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; }");
+        sb.AppendLine("    .code-block { background: #0a1020; }");
+        sb.AppendLine("    .output-block { background: #0a1324; }");
+        sb.AppendLine("    .tok-cmdlet { color: #67e8f9; font-weight: 600; }");
+        sb.AppendLine("    .tok-param { color: #fde68a; }");
+        sb.AppendLine("    .tok-string { color: #86efac; }");
+        sb.AppendLine("    .tok-variable { color: #93c5fd; }");
+        sb.AppendLine("    .tok-number { color: #c4b5fd; }");
+        sb.AppendLine("    .tok-op { color: #f9a8d4; }");
+        sb.AppendLine("    .muted { color: #94a3b8; }");
+        sb.AppendLine("  </style>");
+        sb.AppendLine("</head>");
+        sb.AppendLine("<body>");
+        sb.AppendLine("  <div class=\"wrap\">");
+        sb.AppendLine("    <div class=\"header\">");
+        sb.AppendLine("      <h1>TroubleScout Session Report</h1>");
+        sb.AppendLine($"      <div class=\"meta\">Generated: {HtmlEncode(generatedAt)} | Prompts: {prompts.Count} | Actions: {totalActions}</div>");
+        sb.AppendLine("    </div>");
+
+        for (var i = 0; i < prompts.Count; i++)
+        {
+            var prompt = prompts[i];
+            var promptTime = prompt.Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
+            sb.AppendLine("    <details>");
+            sb.AppendLine("      <summary>");
+            sb.AppendLine($"        <span class=\"prompt-time\">#{i + 1} • {HtmlEncode(promptTime)}</span>");
+            sb.AppendLine($"        <span class=\"prompt-text\">{HtmlEncode(prompt.Prompt)}</span>");
+            sb.AppendLine($"        <span class=\"muted\"> ({prompt.Actions.Count} actions)</span>");
+            sb.AppendLine("      </summary>");
+            sb.AppendLine("      <div class=\"actions\">");
+
+            if (prompt.Actions.Count == 0)
+            {
+                sb.AppendLine("        <div class=\"muted\">No actions captured for this prompt.</div>");
+            }
+            else
+            {
+                foreach (var action in prompt.Actions)
+                {
+                    var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                    sb.AppendLine("        <div class=\"action-card\">");
+                    sb.AppendLine("          <table class=\"meta-table\">");
+                    sb.AppendLine("            <thead><tr><th>Time</th><th>Source</th><th>Safety/Approval</th><th>Target</th></tr></thead>");
+                    sb.AppendLine("            <tbody><tr>");
+                    sb.AppendLine($"              <td>{HtmlEncode(actionTime)}</td>");
+                    sb.AppendLine($"              <td><span class=\"chip\">{HtmlEncode(action.Source)}</span></td>");
+                    sb.AppendLine($"              <td><span class=\"chip\">{HtmlEncode(action.SafetyApproval)}</span></td>");
+                    sb.AppendLine($"              <td>{HtmlEncode(action.Target)}</td>");
+                    sb.AppendLine("            </tr></tbody>");
+                    sb.AppendLine("          </table>");
+                    sb.AppendLine("          <details class=\"inner-section\" open>");
+                    sb.AppendLine("            <summary class=\"inner-summary\">Command</summary>");
+                    sb.AppendLine("            <div class=\"inner-content\">");
+                    sb.AppendLine($"              <pre class=\"code-block\">{RenderCommandHtml(action.Command)}</pre>");
+                    sb.AppendLine("            </div>");
+                    sb.AppendLine("          </details>");
+                    sb.AppendLine("          <details class=\"inner-section\">");
+                    sb.AppendLine("            <summary class=\"inner-summary\">Output</summary>");
+                    sb.AppendLine("            <div class=\"inner-content\">");
+                    sb.AppendLine($"              <pre class=\"output-block\">{HtmlEncode(action.Output)}</pre>");
+                    sb.AppendLine("            </div>");
+                    sb.AppendLine("          </details>");
+                    sb.AppendLine("        </div>");
+                }
+            }
+
+            sb.AppendLine("        <details class=\"inner-section\" open>");
+            sb.AppendLine("          <summary class=\"inner-summary\">Agent Reply</summary>");
+            sb.AppendLine("          <div class=\"inner-content\">");
+            if (string.IsNullOrWhiteSpace(prompt.AgentReply))
+            {
+                sb.AppendLine("            <div class=\"muted\">No assistant reply captured for this prompt.</div>");
+            }
+            else
+            {
+                sb.AppendLine($"            <pre class=\"output-block\">{HtmlEncode(prompt.AgentReply)}</pre>");
+            }
+            sb.AppendLine("          </div>");
+            sb.AppendLine("        </details>");
+
+            sb.AppendLine("      </div>");
+            sb.AppendLine("    </details>");
+        }
+
+        sb.AppendLine("  </div>");
+        sb.AppendLine("</body>");
+        sb.AppendLine("</html>");
+
+        return sb.ToString();
+    }
+
+    private static string HtmlEncode(string value)
+    {
+        return WebUtility.HtmlEncode(value);
+    }
+
+    private static readonly Regex CommandTokenRegex = new(
+        "(?<string>'[^'\\n\\r]*'|\"[^\"\\n\\r]*\")" +
+        "|(?<variable>\\$[A-Za-z_][\\w:]*)" +
+        "|(?<param>-[A-Za-z][\\w-]*)" +
+        "|(?<cmdlet>\\b[A-Za-z]+-[A-Za-z][A-Za-z0-9]*\\b)" +
+        "|(?<number>\\b\\d+(?:\\.\\d+)?\\b)" +
+        "|(?<op>(?:-eq|-ne|-gt|-ge|-lt|-le|-and|-or|-not)\\b|[|;])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string RenderCommandHtml(string command)
+    {
+        if (string.IsNullOrEmpty(command))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(command.Length + 32);
+        var lastIndex = 0;
+
+        foreach (Match match in CommandTokenRegex.Matches(command))
+        {
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            if (match.Index > lastIndex)
+            {
+                builder.Append(HtmlEncode(command.Substring(lastIndex, match.Index - lastIndex)));
+            }
+
+            var cssClass = match.Groups["string"].Success ? "tok-string" :
+                           match.Groups["variable"].Success ? "tok-variable" :
+                           match.Groups["param"].Success ? "tok-param" :
+                           match.Groups["cmdlet"].Success ? "tok-cmdlet" :
+                           match.Groups["number"].Success ? "tok-number" :
+                           match.Groups["op"].Success ? "tok-op" : string.Empty;
+
+            var tokenText = HtmlEncode(match.Value);
+            if (string.IsNullOrEmpty(cssClass))
+            {
+                builder.Append(tokenText);
+            }
+            else
+            {
+                builder.Append("<span class=\"").Append(cssClass).Append("\">").Append(tokenText).Append("</span>");
+            }
+
+            lastIndex = match.Index + match.Length;
+        }
+
+        if (lastIndex < command.Length)
+        {
+            builder.Append(HtmlEncode(command.Substring(lastIndex)));
+        }
+
+        return builder.ToString();
     }
 
     public async ValueTask DisposeAsync()

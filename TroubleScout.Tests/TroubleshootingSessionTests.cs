@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Reflection;
 using TroubleScout;
 using TroubleScout.Services;
 using Xunit;
@@ -70,6 +71,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         session.CurrentExecutionMode.Should().Be(ExecutionMode.Yolo);
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldIncludeReportCommand()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession).GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/report");
     }
 
     #endregion
