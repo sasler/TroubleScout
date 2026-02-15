@@ -2,6 +2,27 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.7] - 2026-02-15
+
+### ✨ Features
+
+- ✨ Add safe/YOLO execution modes with CLI flag and `/mode` switching
+- ✨ Add session report logging and `/report` HTML export for prompts/actions
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Improve Copilot startup diagnostics with targeted CLI/Node checks and PowerShell version warnings
+- 🛡️ Gate technical exception details behind `--debug` for clearer user-facing failures
+
+### 📝 Documentation & UX
+
+- 📝 Refresh Copilot CLI install guidance and release packaging notes
+- 📝 Update status/prompt UI to show execution mode and new report command
+
+### ✅ Testing
+
+- ✅ Add coverage for prerequisite validation, execution mode parsing, and report logging
+
 ## [v1.2.6] - 2026-02-12
 
 ### ✨ Features
