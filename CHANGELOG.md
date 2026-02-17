@@ -2,6 +2,22 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.2.8] - 2026-02-17
+
+### ✨ Features
+
+- ✨ Improve session output reliability and model switching (`#34`)
+- ✨ Add session report logging and UI enhancements (`#33`)
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Improve exit command parsing based on review feedback (`#34`)
+- 🛡️ Refine report and approval logging behavior from PR review updates (`#33`)
+
+### ✅ Testing
+
+- ✅ Expand troubleshooting session and diagnostic tool test coverage for output/report flows (`#33`, `#34`)
+
 ## [v1.2.7] - 2026-02-15
 
 ### ✨ Features
