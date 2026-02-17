@@ -1,4 +1,5 @@
 using FluentAssertions;
+using GitHub.Copilot.SDK;
 using System.Reflection;
 using TroubleScout;
 using TroubleScout.Services;
@@ -64,6 +65,54 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void IsCurrentModel_ShouldReturnTrue_WhenSelectedModelMatchesId()
+    {
+        // Arrange
+        SetPrivateField(_session, "_selectedModel", "gpt-4.1");
+
+        // Act
+        var actual = InvokeIsCurrentModel(_session, "gpt-4.1");
+
+        // Assert
+        actual.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsCurrentModel_ShouldReturnTrue_WhenSelectedModelMatchesDisplayName()
+    {
+        // Arrange
+        SetPrivateField(_session, "_selectedModel", "GPT-4.1");
+        SetPrivateField(_session, "_availableModels", new List<ModelInfo>
+        {
+            new() { Id = "gpt-4.1", Name = "GPT-4.1" }
+        });
+
+        // Act
+        var actual = InvokeIsCurrentModel(_session, "gpt-4.1");
+
+        // Assert
+        actual.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsCurrentModel_ShouldReturnFalse_WhenModelDoesNotMatch()
+    {
+        // Arrange
+        SetPrivateField(_session, "_selectedModel", "claude-sonnet-4.5");
+        SetPrivateField(_session, "_availableModels", new List<ModelInfo>
+        {
+            new() { Id = "gpt-4.1", Name = "GPT-4.1" },
+            new() { Id = "claude-sonnet-4.5", Name = "Claude Sonnet 4.5" }
+        });
+
+        // Act
+        var actual = InvokeIsCurrentModel(_session, "gpt-4.1");
+
+        // Assert
+        actual.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
     {
         // Arrange & Act
@@ -85,6 +134,68 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Assert
         commands.Should().NotBeNull();
         commands.Should().Contain("/report");
+        commands.Should().Contain("/model");
+        commands.Should().Contain("/mode");
+    }
+
+    [Theory]
+    [InlineData("/mode", "/mode", true)]
+    [InlineData("/mode safe", "/mode", true)]
+    [InlineData("/model", "/mode", false)]
+    [InlineData("/modeX", "/mode", false)]
+    [InlineData("/connect srv01", "/connect", true)]
+    [InlineData("/connectX", "/connect", false)]
+    public void IsSlashCommandInvocation_ShouldMatchOnlyExactCommandOrCommandWithArguments(
+        string input,
+        string command,
+        bool expected)
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsSlashCommandInvocation", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var actual = (bool)method!.Invoke(null, [input, command])!;
+
+        // Assert
+        actual.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("/model", "/model")]
+    [InlineData("/mode safe", "/mode")]
+    [InlineData("exit", "exit")]
+    [InlineData("", "")]
+    [InlineData("   ", "")]
+    public void GetFirstInputToken_ShouldReturnFirstToken(string input, string expected)
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetFirstInputToken", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var token = method!.Invoke(null, [input]) as string;
+
+        // Assert
+        token.Should().Be(expected);
+    }
+
+    [Fact]
+    public void CreateSystemMessage_ShouldRequireCapabilityAttemptBeforeClaimingUnavailability()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        // Act
+        var config = method!.Invoke(_session, ["localhost"]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Before claiming you do not have access to a tool");
+        content.Should().Contain("configured MCP servers");
+        content.Should().Contain("loaded skills");
     }
 
     #endregion
@@ -704,6 +815,22 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         promptArray.SetValue(promptEntry, 0);
 
         return (string)buildMethod!.Invoke(null, [promptArray])!;
+    }
+
+    private static bool InvokeIsCurrentModel(TroubleshootingSession session, string modelId)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsCurrentModel", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        return (bool)method!.Invoke(session, [modelId])!;
+    }
+
+    private static void SetPrivateField(object instance, string fieldName, object? value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+        field!.SetValue(instance, value);
     }
 
     [Fact]
