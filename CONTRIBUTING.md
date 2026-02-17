@@ -27,6 +27,8 @@ Branch names must follow this pattern:
 {type}/{description}
 ```
 
+`description` should be lowercase and may include letters, numbers, `-`, `_`, `.`, or `/`.
+
 **Valid types:**
 
 - `feature/` - New features or enhancements
@@ -44,6 +46,7 @@ Branch names must follow this pattern:
 
 - `feature/add-disk-diagnostics`
 - `fix/memory-leak-in-session`
+- `fix/release-1.2.8`
 - `docs/update-installation-guide`
 
 ### Commit Message Format
