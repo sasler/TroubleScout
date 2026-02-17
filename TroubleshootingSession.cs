@@ -88,6 +88,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ## Your Capabilities
             - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
+            - Use all available runtime capabilities when relevant, including built-in tools, configured MCP servers, and loaded skills
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
@@ -101,9 +102,15 @@ public class TroubleshootingSession : IAsyncDisposable
 
             ## Response Format
             - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {targetServer}...")
+            - Always format your response as Markdown
+            - Use short Markdown sections and bullet lists to keep output readable
+            - Separate distinct steps/findings with blank lines
+            - For tabular data, use compact Markdown tables (pipe syntax) and avoid fixed-width ASCII-art table alignment
+            - If a table would be too wide, reduce columns or use a concise bullet list instead of forcing alignment
             - Be concise but thorough
             - Use bullet points for lists
             - Highlight critical findings with **bold**
+            - Use fenced code blocks for commands or command output when relevant
             - For remediation commands (non-Get commands), explain what they do and why they're needed
             - Always explain your reasoning
             - When presenting diagnostic data, include the source server name in your explanation
@@ -115,6 +122,8 @@ public class TroubleshootingSession : IAsyncDisposable
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
             - Never claim a command was executed unless run_powershell returned execution output
             - If no tool was executed, clearly state that no command has been run yet
+            - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
+            - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
             - Never suggest commands that could cause data loss without clear warnings
             - Always consider the impact of recommended actions
 
@@ -873,6 +882,8 @@ public class TroubleshootingSession : IAsyncDisposable
             var done = new TaskCompletionSource<bool>();
             var hasError = false;
             var hasStartedStreaming = false;
+            var pendingStreamLineBreak = false;
+            var currentStreamMessageId = string.Empty;
             var processedDeltaIds = new HashSet<string>();
             var responseBuffer = new StringBuilder();
             int promptIndex;
@@ -892,19 +903,40 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 switch (evt)
                 {
+                    case SessionStartEvent startEvt:
+                        _selectedModel = startEvt.Data.SelectedModel;
+                        _copilotVersion = startEvt.Data.CopilotVersion;
+                        break;
+
+                    case SessionModelChangeEvent modelChangeEvt:
+                        _selectedModel = modelChangeEvt.Data.NewModel;
+                        break;
+
                     case AssistantTurnStartEvent:
                         // AI has started processing
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
                         thinkingIndicator.UpdateStatus("Analyzing");
                         break;
                     
                     case ToolExecutionStartEvent toolStart:
                         // Show which tool is being executed
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
                         thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
                         RecordMcpToolAction(toolStart);
                         break;
                     
                     case ToolExecutionCompleteEvent:
                         // Tool finished, back to thinking
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
                         thinkingIndicator.UpdateStatus("Processing results");
                         break;
                     
@@ -912,6 +944,19 @@ public class TroubleshootingSession : IAsyncDisposable
                         // Skip if we've already processed this event (deduplicate)
                         if (!processedDeltaIds.Add(delta.Id.ToString()))
                             break;
+
+                        var deltaMessageId = ReadStringProperty(delta.Data, "MessageId", "Id");
+                        if (!string.IsNullOrWhiteSpace(deltaMessageId))
+                        {
+                            if (!string.IsNullOrWhiteSpace(currentStreamMessageId)
+                                && !currentStreamMessageId.Equals(deltaMessageId, StringComparison.Ordinal)
+                                && responseBuffer.Length > 0)
+                            {
+                                pendingStreamLineBreak = true;
+                            }
+
+                            currentStreamMessageId = deltaMessageId;
+                        }
                         
                         // First streaming chunk - stop the spinner and start response
                         if (!hasStartedStreaming)
@@ -922,6 +967,12 @@ public class TroubleshootingSession : IAsyncDisposable
                         }
                         // Streaming message chunk - print incrementally
                         var deltaText = delta.Data?.DeltaContent ?? "";
+                        if (pendingStreamLineBreak && responseBuffer.Length > 0)
+                        {
+                            ConsoleUI.WriteAIResponse(Environment.NewLine);
+                            responseBuffer.AppendLine();
+                            pendingStreamLineBreak = false;
+                        }
                         responseBuffer.Append(deltaText);
                         ConsoleUI.WriteAIResponse(deltaText);
                         break;
@@ -952,6 +1003,10 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     case AssistantUsageEvent usageEvt:
                         CaptureUsageMetrics(usageEvt);
+                        if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
+                        {
+                            _selectedModel = usageEvt.Data.Model;
+                        }
                         break;
                 }
             });
@@ -996,14 +1051,17 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static string BuildPromptForExecutionSafety(string userMessage)
     {
-        if (!MutatingIntentRegex.IsMatch(userMessage))
+        var promptBuilder = new StringBuilder(userMessage);
+        promptBuilder.Append("\n\nResponse formatting requirement: Always reply in Markdown with short sections, bullet points, and blank lines between sections. ");
+        promptBuilder.Append("For tabular data, use compact Markdown tables (pipe syntax), avoid ASCII-art aligned tables, and if width is large use a concise bullet list instead.");
+
+        if (MutatingIntentRegex.IsMatch(userMessage))
         {
-            return userMessage;
+            promptBuilder.Append("\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. ");
+            promptBuilder.Append("Do not claim any action was executed unless tool output confirms execution.");
         }
 
-        return userMessage +
-               "\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. " +
-               "Do not claim any action was executed unless tool output confirms execution.";
+        return promptBuilder.ToString();
     }
 
     /// <summary>
@@ -1097,51 +1155,52 @@ public class TroubleshootingSession : IAsyncDisposable
 
             // Handle commands
             var lowerInput = input.ToLowerInvariant();
+            var firstToken = GetFirstInputToken(lowerInput);
             
-            if (lowerInput is "/exit" or "/quit" or "exit" or "quit")
+            if (firstToken is "/exit" or "/quit" || IsBareExitCommand(lowerInput))
             {
                 ConsoleUI.ShowInfo("Ending session. Goodbye!");
                 break;
             }
 
-            if (lowerInput == "/clear")
+            if (firstToken == "/clear")
             {
                 ConsoleUI.ShowBanner();
                 ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, _executionMode, GetStatusFields());
                 continue;
             }
 
-            if (lowerInput == "/status")
+            if (firstToken == "/status")
             {
                 ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                 continue;
             }
 
-            if (lowerInput == "/help")
+            if (firstToken == "/help")
             {
                 ConsoleUI.ShowHelp();
                 continue;
             }
 
-            if (lowerInput == "/history")
+            if (firstToken == "/history")
             {
                 ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory());
                 continue;
             }
 
-            if (lowerInput == "/report")
+            if (firstToken == "/report")
             {
                 GenerateAndOpenReport();
                 continue;
             }
 
-            if (lowerInput == "/capabilities")
+            if (firstToken == "/capabilities")
             {
                 ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                 continue;
             }
 
-            if (lowerInput.StartsWith("/mode", StringComparison.Ordinal))
+            if (IsSlashCommandInvocation(lowerInput, "/mode"))
             {
                 var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2)
@@ -1164,10 +1223,10 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (lowerInput == "/model")
+            if (firstToken == "/model")
             {
                 var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
-                if (newModel != null && newModel != _selectedModel)
+                if (newModel != null && !IsCurrentModel(newModel))
                 {
                     var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {newModel}...", async updateStatus =>
                     {
@@ -1182,7 +1241,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (lowerInput.StartsWith("/connect"))
+            if (IsSlashCommandInvocation(lowerInput, "/connect"))
             {
                 var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2)
@@ -1210,6 +1269,58 @@ public class TroubleshootingSession : IAsyncDisposable
             RecordPrompt(input);
             await SendMessageAsync(input);
         }
+    }
+
+    private bool IsCurrentModel(string modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId) || string.IsNullOrWhiteSpace(_selectedModel))
+        {
+            return false;
+        }
+
+        if (_selectedModel.Equals(modelId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var selectedByName = _availableModels.FirstOrDefault(model =>
+            model.Name.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase));
+
+        return selectedByName != null
+            && selectedByName.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetFirstInputToken(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        var separatorIndex = input.IndexOf(' ');
+        return separatorIndex >= 0 ? input[..separatorIndex] : input;
+    }
+
+    private static bool IsSlashCommandInvocation(string input, string command)
+    {
+        if (string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(command))
+        {
+            return false;
+        }
+
+        return input.Equals(command, StringComparison.Ordinal)
+            || input.StartsWith(command + " ", StringComparison.Ordinal);
+    }
+
+    private static bool IsBareExitCommand(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        return input.Equals("exit", StringComparison.Ordinal)
+            || input.Equals("quit", StringComparison.Ordinal);
     }
 
     private void RecordPrompt(string prompt)
@@ -1611,40 +1722,10 @@ public class TroubleshootingSession : IAsyncDisposable
             ConsoleUI.ShowWarning("Capabilities loaded with warnings. Use /status or /capabilities to review details.");
         }
 
-        // Capture model and usage info
-        updateStatus?.Invoke("Verifying model...");
-
-        var sessionIdle = new TaskCompletionSource<bool>();
-        using var subscription = _copilotSession.On(evt =>
+        if (!string.IsNullOrWhiteSpace(model))
         {
-            switch (evt)
-            {
-                case SessionStartEvent startEvt:
-                    _selectedModel = startEvt.Data.SelectedModel;
-                    _copilotVersion = startEvt.Data.CopilotVersion;
-                    break;
-                case SessionModelChangeEvent modelChange:
-                    _selectedModel = modelChange.Data.NewModel;
-                    break;
-                case AssistantUsageEvent usageEvt:
-                    CaptureUsageMetrics(usageEvt);
-                    if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
-                    {
-                        _selectedModel = usageEvt.Data.Model;
-                    }
-                    break;
-                case SessionIdleEvent:
-                    sessionIdle.TrySetResult(true);
-                    break;
-            }
-        });
-
-        await _copilotSession.SendAsync(new MessageOptions { Prompt = "Say 'ready' and nothing else." });
-        await Task.WhenAny(sessionIdle.Task, Task.Delay(15000));
-
-        if (!string.IsNullOrWhiteSpace(_selectedModel))
-        {
-            SaveLastModel(_selectedModel);
+            _selectedModel = model;
+            SaveLastModel(model);
         }
 
         return true;
