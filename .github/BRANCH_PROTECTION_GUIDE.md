@@ -65,9 +65,12 @@ git push origin --delete old-branch-name
 git push -u origin feature/new-branch-name
 ```
 
+Description should be lowercase and may include letters, numbers, `-`, `_`, `.`, or `/`.
+
 **Valid branch names:**
 - `feature/add-diagnostics`
 - `fix/memory-leak`
+- `fix/release-1.2.8`
 - `docs/update-readme`
 - `test/add-unit-tests`
 

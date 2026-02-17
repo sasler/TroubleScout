@@ -24,14 +24,14 @@ jobs:
         echo "Branch name: $BRANCH_NAME"
         
         # Allow specific branch name patterns
-        if [[ "$BRANCH_NAME" =~ ^(feature|fix|hotfix|chore|docs|test|refactor|perf|ci|build|revert)/[a-z0-9-]+$ ]] || \
+        if [[ "$BRANCH_NAME" =~ ^(feature|fix|hotfix|chore|docs|test|refactor|perf|ci|build|revert)/[a-z0-9._/-]+$ ]] || \
            [[ "$BRANCH_NAME" =~ ^(dependabot|renovate|copilot)/ ]]; then
           echo "✅ Branch name follows convention"
         else
           echo "❌ Branch name must follow pattern: {type}/{description}"
           echo "   Valid types: feature, fix, hotfix, chore, docs, test, refactor, perf, ci, build, revert"
-          echo "   Description should be lowercase with hyphens"
-          echo "   Example: feature/add-new-tool or fix/memory-leak"
+          echo "   Description should be lowercase and may include letters, numbers, '-', '_', '.', or '/'"
+          echo "   Example: feature/add-new-tool or fix/release-1.2.8"
           exit 1
         fi
 
