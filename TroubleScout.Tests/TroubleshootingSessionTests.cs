@@ -180,6 +180,25 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         token.Should().Be(expected);
     }
 
+    [Theory]
+    [InlineData("exit", true)]
+    [InlineData("quit", true)]
+    [InlineData("exit code 1", false)]
+    [InlineData("quit smoking", false)]
+    [InlineData("/exit", false)]
+    public void IsBareExitCommand_ShouldRequireExactMatch(string input, bool expected)
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsBareExitCommand", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var actual = (bool)method!.Invoke(null, [input])!;
+
+        // Assert
+        actual.Should().Be(expected);
+    }
+
     [Fact]
     public void CreateSystemMessage_ShouldRequireCapabilityAttemptBeforeClaimingUnavailability()
     {

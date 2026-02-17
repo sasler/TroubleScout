@@ -1157,7 +1157,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var lowerInput = input.ToLowerInvariant();
             var firstToken = GetFirstInputToken(lowerInput);
             
-            if (firstToken is "/exit" or "/quit" or "exit" or "quit")
+            if (firstToken is "/exit" or "/quit" || IsBareExitCommand(lowerInput))
             {
                 ConsoleUI.ShowInfo("Ending session. Goodbye!");
                 break;
@@ -1310,6 +1310,17 @@ public class TroubleshootingSession : IAsyncDisposable
 
         return input.Equals(command, StringComparison.Ordinal)
             || input.StartsWith(command + " ", StringComparison.Ordinal);
+    }
+
+    private static bool IsBareExitCommand(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        return input.Equals("exit", StringComparison.Ordinal)
+            || input.Equals("quit", StringComparison.Ordinal);
     }
 
     private void RecordPrompt(string prompt)
