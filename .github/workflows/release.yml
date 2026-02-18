@@ -108,12 +108,54 @@ jobs:
           }
           Write-Output "Verified package exists: $zipName"
 
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $lines = Get-Content CHANGELOG.md
+
+          $startIndex = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## \[$([Regex]::Escape($version))\] - ") {
+              $startIndex = $i
+              break
+            }
+          }
+
+          if ($startIndex -lt 0) {
+            Write-Error "Could not find CHANGELOG section for $version"
+            exit 1
+          }
+
+          $endIndex = $lines.Count
+          for ($i = $startIndex + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^## \[') {
+              $endIndex = $i
+              break
+            }
+          }
+
+          $bodyLines = @()
+          if ($endIndex -gt ($startIndex + 1)) {
+            $bodyLines = $lines[($startIndex + 1)..($endIndex - 1)]
+          }
+
+          if ($bodyLines.Count -eq 0) {
+            Write-Error "CHANGELOG section for $version is empty"
+            exit 1
+          }
+
+          Set-Content -Path RELEASE_BODY.md -Value ($bodyLines -join "`n")
+          Write-Output "Generated RELEASE_BODY.md from CHANGELOG.md"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
-          generate_release_notes: true
+          generate_release_notes: false
+          body_path: RELEASE_BODY.md
           files: |
             TroubleScout-${{ steps.version.outputs.version }}-win-x64.zip
           draft: false

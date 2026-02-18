@@ -160,6 +160,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private static readonly Regex MutatingIntentRegex = new(
         "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex CliModelIdRegex = new(
+        "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
@@ -254,7 +257,7 @@ public class TroubleshootingSession : IAsyncDisposable
             updateStatus?.Invoke("Starting Copilot SDK...");
             copilotInitializationStarted = true;
             
-            // Resolve Copilot CLI path (env override, known locations, then PATH)
+            // Resolve Copilot CLI path (env override, otherwise use installed CLI from PATH)
             var cliPath = GetCopilotCliPath();
             
             _copilotClient = new CopilotClient(new CopilotClientOptions
@@ -282,13 +285,13 @@ public class TroubleshootingSession : IAsyncDisposable
             if (!authStatus.IsAuthenticated)
             {
                 await ShowCopilotInitializationFailureAsync(
-                    "Copilot CLI is not authenticated.\n\nRun: copilot login",
+                    "Copilot CLI is installed but not authenticated.\n\nTo continue:\n  1. Run: copilot login\n  2. Re-run TroubleScout",
                     includeDiagnostics: true);
                 return false;
             }
 
             updateStatus?.Invoke("Fetching available models...");
-            _availableModels = await _copilotClient.ListModelsAsync();
+            _availableModels = await GetMergedModelListAsync(cliPath);
 
             if (_availableModels.Count == 0)
             {
@@ -375,7 +378,7 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Get the path to the Copilot CLI from the SDK package
+    /// Get the path to the Copilot CLI.
     /// </summary>
     internal static string GetCopilotCliPath()
     {
@@ -386,29 +389,56 @@ public class TroubleshootingSession : IAsyncDisposable
             return envPath;
         }
 
-        // Look for the CLI in common npm global locations
-        var npmGlobalRoot = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        
-        // Only check npm paths if we have a valid ApplicationData folder
-        if (!string.IsNullOrEmpty(npmGlobalRoot))
+        var installedPath = TryResolveInstalledCopilotCliPath();
+        if (!string.IsNullOrWhiteSpace(installedPath))
         {
-            var possiblePaths = new[]
-            {
-                // npm global on Windows
-                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot-sdk", "node_modules", "@github", "copilot", "index.js"),
-                Path.Combine(npmGlobalRoot, "npm", "node_modules", "@github", "copilot", "index.js")
-            };
-
-            // Use explicit filtering to find existing paths
-            var existingPath = possiblePaths.Where(File.Exists).FirstOrDefault();
-            if (existingPath != null)
-            {
-                return existingPath;
-            }
+            return installedPath;
         }
 
         // Default to copilot in PATH
         return "copilot";
+    }
+
+    private static string? TryResolveInstalledCopilotCliPath()
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathValue))
+        {
+            return null;
+        }
+
+        var searchDirs = pathValue
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim().Trim('"'))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var directory in searchDirs)
+        {
+            var exePath = Path.Combine(directory, "copilot.exe");
+            if (File.Exists(exePath))
+            {
+                return exePath;
+            }
+        }
+
+        foreach (var directory in searchDirs)
+        {
+            var npmLoaderPath = Path.Combine(directory, "node_modules", "@github", "copilot", "npm-loader.js");
+            if (File.Exists(npmLoaderPath))
+            {
+                return npmLoaderPath;
+            }
+
+            var indexPath = Path.Combine(directory, "node_modules", "@github", "copilot", "index.js");
+            if (File.Exists(indexPath))
+            {
+                return indexPath;
+            }
+        }
+
+        return null;
     }
 
     private string? GetModelDisplayName(string? modelId)
@@ -663,6 +693,134 @@ public class TroubleshootingSession : IAsyncDisposable
             || string.IsNullOrWhiteSpace(extension);
     }
 
+    private async Task<List<ModelInfo>> GetMergedModelListAsync(string cliPath)
+    {
+        if (_copilotClient == null)
+        {
+            return [];
+        }
+
+        var models = await _copilotClient.ListModelsAsync();
+
+        var existingIds = new HashSet<string>(
+            models.Where(model => !string.IsNullOrWhiteSpace(model.Id)).Select(model => model.Id),
+            StringComparer.OrdinalIgnoreCase);
+
+        var cliModelIds = await TryGetCliModelIdsAsync(cliPath);
+        foreach (var cliModelId in cliModelIds)
+        {
+            if (existingIds.Contains(cliModelId))
+            {
+                continue;
+            }
+
+            models.Add(new ModelInfo
+            {
+                Id = cliModelId,
+                Name = ToModelDisplayName(cliModelId)
+            });
+            existingIds.Add(cliModelId);
+        }
+
+        return models;
+    }
+
+    private static string ToModelDisplayName(string modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return modelId;
+        }
+
+        var tokens = modelId.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+        {
+            return modelId;
+        }
+
+        var formattedTokens = tokens.Select(token => token.ToLowerInvariant() switch
+        {
+            "gpt" => "GPT",
+            "claude" => "Claude",
+            "gemini" => "Gemini",
+            "codex" => "Codex",
+            "mini" => "Mini",
+            "max" => "Max",
+            "pro" => "Pro",
+            "preview" => "(Preview)",
+            _ => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(token)
+        });
+
+        return string.Join(' ', formattedTokens);
+    }
+
+    private async Task<IReadOnlyList<string>> TryGetCliModelIdsAsync(string cliPath)
+    {
+        try
+        {
+            var (command, args) = BuildCopilotCommand(cliPath, "--help");
+            var helpResult = await ProcessRunnerResolver(command, args);
+            if (helpResult.ExitCode != 0)
+            {
+                return [];
+            }
+
+            return ParseCliModelIds(helpResult.StdOut);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static IReadOnlyList<string> ParseCliModelIds(string helpText)
+    {
+        if (string.IsNullOrWhiteSpace(helpText))
+        {
+            return [];
+        }
+
+        static void ExtractModelIds(string text, List<string> target)
+        {
+            foreach (Match match in CliModelIdRegex.Matches(text))
+            {
+                if (match.Groups.Count < 2)
+                {
+                    continue;
+                }
+
+                var value = match.Groups[1].Value;
+                if (!target.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    target.Add(value);
+                }
+            }
+        }
+
+        var modelIds = new List<string>();
+
+        var modelSectionStart = helpText.IndexOf("--model <model>", StringComparison.OrdinalIgnoreCase);
+        if (modelSectionStart < 0)
+        {
+            ExtractModelIds(helpText, modelIds);
+            return modelIds;
+        }
+
+        var modelSectionEnd = helpText.IndexOf("--no-alt-screen", modelSectionStart, StringComparison.OrdinalIgnoreCase);
+        var modelSection = modelSectionEnd > modelSectionStart
+            ? helpText[modelSectionStart..modelSectionEnd]
+            : helpText[modelSectionStart..];
+
+        ExtractModelIds(modelSection, modelIds);
+
+        if (modelIds.Count == 0)
+        {
+            ExtractModelIds(helpText, modelIds);
+        }
+
+        return modelIds;
+    }
+
     private async Task WarnIfPowerShellVersionIsOldAsync()
     {
         var warning = await DetectPowerShellVersionWarningAsync();
@@ -828,7 +986,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 ? report.ToDisplayText(includeWarnings: true)
                 : string.Join(Environment.NewLine, report.Issues.Select(issue => $"- {issue.Title}"));
 
-            return "TroubleScout could not initialize the Copilot session.\n\n" +
+            return "Copilot CLI prerequisites are not ready.\n\n" +
                    "Prerequisite diagnostics:\n" +
                    diagnosticsText;
         }
@@ -837,7 +995,29 @@ public class TroubleshootingSession : IAsyncDisposable
         if (message.Contains("not authenticated", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("auth", StringComparison.OrdinalIgnoreCase))
         {
-            return "Copilot CLI is not authenticated.\n\nRun: copilot login";
+            return "Copilot CLI is installed but not authenticated.\n\n" +
+                   "To continue:\n" +
+                   "  1. Run: copilot login\n" +
+                   "  2. Re-run TroubleScout";
+        }
+
+        if (message.Contains("failed to start cli", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("cli process exited", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("communication error with copilot cli", StringComparison.OrdinalIgnoreCase))
+        {
+            var startupFailureMessage = "The Copilot CLI failed during startup.\n\n" +
+                                      "Try:\n" +
+                                      "  - copilot --version\n" +
+                                      "  - copilot login\n" +
+                                      $"  - Install/update Copilot CLI: {CopilotCliInstallUrl}\n" +
+                                      "  - Re-run TroubleScout";
+
+            if (includeTechnicalDetails)
+            {
+                startupFailureMessage += $"\n\nTechnical details: {message}";
+            }
+
+            return startupFailureMessage;
         }
 
         if (message.Contains("node", StringComparison.OrdinalIgnoreCase) ||
@@ -1225,6 +1405,25 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/model")
             {
+                if (_copilotClient != null)
+                {
+                    try
+                    {
+                        var latestModels = await GetMergedModelListAsync(GetCopilotCliPath());
+                        if (latestModels.Count > 0)
+                        {
+                            _availableModels = latestModels;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_debugMode)
+                        {
+                            ConsoleUI.ShowWarning($"Could not refresh model list: {TrimSingleLine(ex.Message)}");
+                        }
+                    }
+                }
+
                 var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
                 if (newModel != null && !IsCurrentModel(newModel))
                 {

@@ -14,6 +14,28 @@ public static class ConsoleUI
 {
     private static ExecutionMode _currentExecutionMode = ExecutionMode.Safe;
     private static int _lastInputRowCount = 1;
+    private static readonly IReadOnlyDictionary<string, string> KnownModelRateLabels =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["claude-haiku-4.5"] = "0.33x",
+            ["claude-opus-4.6-fast"] = "30x",
+            ["claude-opus-4.6"] = "3x",
+            ["claude-opus-4.5"] = "3x",
+            ["claude-sonnet-4.6"] = "1x",
+            ["claude-sonnet-4.5"] = "1x",
+            ["claude-sonnet-4"] = "1x",
+            ["gemini-3-pro-preview"] = "1x",
+            ["gpt-5.3-codex"] = "1x",
+            ["gpt-5.2-codex"] = "1x",
+            ["gpt-5.2"] = "1x",
+            ["gpt-5.1-codex-max"] = "1x",
+            ["gpt-5.1-codex"] = "1x",
+            ["gpt-5.1"] = "1x",
+            ["gpt-5"] = "1x",
+            ["gpt-5.1-codex-mini"] = "0.33x",
+            ["gpt-5-mini"] = "0x",
+            ["gpt-4.1"] = "0x"
+        };
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -809,7 +831,25 @@ public static class ConsoleUI
 
     private static string GetRateLabel(ModelInfo model)
     {
-        return model.Billing != null ? $"{model.Billing.Multiplier:0.##}x" : "n/a";
+        if (model.Billing != null)
+        {
+            return $"{model.Billing.Multiplier:0.##}x";
+        }
+
+        var inferredRate = GetInferredRateLabel(model.Id);
+        return inferredRate ?? "n/a";
+    }
+
+    private static string? GetInferredRateLabel(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return null;
+        }
+
+        return KnownModelRateLabels.TryGetValue(modelId.Trim(), out var rateLabel)
+            ? rateLabel
+            : null;
     }
 
     private sealed record ModelChoice(ModelInfo Model, string DisplayName, string RateLabel)

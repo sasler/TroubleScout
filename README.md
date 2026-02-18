@@ -32,6 +32,8 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 
 5. **Node.js 24+ (LTS recommended)** is only needed when using npm-based Copilot CLI installs - [Download](https://nodejs.org/)
 
+> **Important**: TroubleScout uses your preinstalled Copilot CLI and does not bundle the CLI binary.
+
 **For building from source:**
 
 1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -119,13 +121,13 @@ You can specify which AI model to use with the `--model` option:
 
 ```bash
 # Use a specific model
-dotnet run -- --model gpt-4o
+dotnet run -- --model gpt-5.3-codex
 
 # Use Claude
-dotnet run -- --model claude-sonnet-4
+dotnet run -- --model claude-sonnet-4.6
 ```
 
-Available models depend on your GitHub Copilot subscription. If not specified, the default model for your account is used.
+Available models depend on your GitHub Copilot subscription and Copilot CLI version. If not specified, the default model for your account is used.
 
 ### MCP Servers and Skills
 

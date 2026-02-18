@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.1.23`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`0.1.25`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 
@@ -102,6 +102,7 @@ Also ensure analyzer/compiler issues remain clean.
 - Branch naming:
   - `feature/<short-desc>` for features/changes
   - `fix/<short-desc>` for bug fixes
+- Before opening a PR, always bump app version in `TroubleScout.csproj` (`Version`, `AssemblyVersion`, `FileVersion`) and update `CHANGELOG.md`.
 - Commit subject must start with an emoji.
 - Do not force-push.
 
