@@ -2,6 +2,29 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.3.0] - 2026-02-18
+
+### ✨ Features
+
+- ✨ Upgrade `GitHub.Copilot.SDK` to `0.1.25`
+- ✨ Expand `/model` catalog to include newly available CLI models (including `claude-sonnet-4.6` and `gpt-5.3-codex`)
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Enforce preinstalled Copilot CLI strategy with `CopilotSkipCliDownload=true`
+- 🛡️ Improve Copilot CLI path resolution to avoid stale shell wrappers and use concrete installed targets
+- 🛡️ Refresh model list when opening `/model` to surface newly available models without restarting
+- 🛡️ Refine initialization failure messaging to clearly separate install, auth, and CLI startup issues
+
+### 📝 Documentation & UX
+
+- 📝 Update README prerequisites and model examples for current Copilot CLI usage
+- 📝 Add inferred model multiplier labels when SDK billing metadata is absent in the model picker
+
+### ✅ Testing
+
+- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+
 ## [v1.2.8] - 2026-02-17
 
 ### ✨ Features
