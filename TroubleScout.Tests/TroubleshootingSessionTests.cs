@@ -911,8 +911,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         cliPath.Should().NotBeNullOrEmpty();
-        // Should either be "copilot" or a path ending with .js
-        (cliPath == "copilot" || cliPath.EndsWith(".js")).Should().BeTrue();
+        // Should either be PATH fallback or a concrete install path
+        (cliPath == "copilot" || Path.IsPathRooted(cliPath)).Should().BeTrue();
     }
 
     [Fact]
@@ -945,30 +945,175 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public void GetCopilotCliPath_WhenApplicationDataIsNull_ShouldFallbackToCopilotInPath()
+    public void GetCopilotCliPath_WhenNoResolversMatch_ShouldFallbackToCopilotInPath()
     {
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
         
         try
         {
-            // Clear COPILOT_CLI_PATH to force the method to check ApplicationData
+            // Clear COPILOT_CLI_PATH and PATH to force fallback behavior
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
+            Environment.SetEnvironmentVariable("PATH", string.Empty);
 
             // Act
             var cliPath = TroubleshootingSession.GetCopilotCliPath();
 
             // Assert
-            // When ApplicationData is null or npm paths don't exist, should fallback to "copilot"
-            cliPath.Should().NotBeNullOrEmpty();
-            // The path will either be a valid npm path or the fallback "copilot"
-            (cliPath.Contains("copilot") || cliPath == "copilot").Should().BeTrue();
+            cliPath.Should().Be("copilot");
         }
         finally
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
+            Environment.SetEnvironmentVariable("PATH", originalPath);
         }
     }
 
+    [Fact]
+    public void GetCopilotCliPath_WhenCopilotExeIsOnPath_ShouldReturnExePath()
+    {
+        // Arrange
+        var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var exePath = Path.Combine(tempDir, "copilot.exe");
+        File.WriteAllText(exePath, "test");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
+            Environment.SetEnvironmentVariable("PATH", tempDir);
+
+            // Act
+            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+
+            // Assert
+            cliPath.Should().Be(exePath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void GetCopilotCliPath_WhenNpmLoaderIsOnPath_ShouldReturnNpmLoaderPath()
+    {
+        // Arrange
+        var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
+        var npmLoaderPath = Path.Combine(tempDir, "node_modules", "@github", "copilot", "npm-loader.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(npmLoaderPath)!);
+        File.WriteAllText(npmLoaderPath, "test");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
+            Environment.SetEnvironmentVariable("PATH", tempDir);
+
+            // Act
+            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+
+            // Assert
+            cliPath.Should().Be(npmLoaderPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ParseCliModelIds_ShouldExtractDistinctModelIdsFromModelSection()
+    {
+        // Arrange
+        const string helpText = """
+            Usage:
+                            --model <model>  Model to use ("gpt-5.3-codex", "claude-sonnet-4.6", "gpt-5.3-codex")
+              --no-alt-screen  Disable alternate screen mode
+            """;
+
+        // Act
+        var result = InvokeParseCliModelIds(helpText);
+
+        // Assert
+        result.Should().ContainInOrder("gpt-5.3-codex", "claude-sonnet-4.6");
+        result.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void ParseCliModelIds_WhenSectionMarkerMissing_ShouldFallbackToFullHelpText()
+    {
+        // Arrange
+        const string helpText = "Available models: \"gpt-5.1\", \"claude-opus-4.6\", \"1.0.0\"";
+
+        // Act
+        var result = InvokeParseCliModelIds(helpText);
+
+        // Assert
+        result.Should().Contain("gpt-5.1");
+        result.Should().Contain("claude-opus-4.6");
+        result.Should().NotContain("1.0.0");
+    }
+
+    [Fact]
+    public void ParseCliModelIds_WhenSectionHasNoMatches_ShouldFallbackToFullHelpText()
+    {
+        // Arrange
+        const string helpText = """
+            --model <model>  Choose from aliases like "default"
+            --no-alt-screen
+            Other output includes "gpt-5" and "gemini-3-pro-preview"
+            """;
+
+        // Act
+        var result = InvokeParseCliModelIds(helpText);
+
+        // Assert
+        result.Should().Contain("gpt-5");
+        result.Should().Contain("gemini-3-pro-preview");
+    }
+
+    [Fact]
+    public void ToModelDisplayName_ShouldFormatKnownTokens()
+    {
+        // Arrange & Act
+        var displayName = InvokeToModelDisplayName("gpt-5.3-codex-mini-preview");
+
+        // Assert
+        displayName.Should().Be("GPT 5.3 Codex Mini (Preview)");
+    }
+
     #endregion
+
+    private static IReadOnlyList<string> InvokeParseCliModelIds(string helpText)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ParseCliModelIds", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        return (IReadOnlyList<string>)method!.Invoke(null, [helpText])!;
+    }
+
+    private static string InvokeToModelDisplayName(string modelId)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ToModelDisplayName", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        return (string)method!.Invoke(null, [modelId])!;
+    }
 }

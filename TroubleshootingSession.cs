@@ -160,6 +160,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private static readonly Regex MutatingIntentRegex = new(
         "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex CliModelIdRegex = new(
+        "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
@@ -777,10 +780,30 @@ public class TroubleshootingSession : IAsyncDisposable
             return [];
         }
 
+        static void ExtractModelIds(string text, List<string> target)
+        {
+            foreach (Match match in CliModelIdRegex.Matches(text))
+            {
+                if (match.Groups.Count < 2)
+                {
+                    continue;
+                }
+
+                var value = match.Groups[1].Value;
+                if (!target.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    target.Add(value);
+                }
+            }
+        }
+
+        var modelIds = new List<string>();
+
         var modelSectionStart = helpText.IndexOf("--model <model>", StringComparison.OrdinalIgnoreCase);
         if (modelSectionStart < 0)
         {
-            return [];
+            ExtractModelIds(helpText, modelIds);
+            return modelIds;
         }
 
         var modelSectionEnd = helpText.IndexOf("--no-alt-screen", modelSectionStart, StringComparison.OrdinalIgnoreCase);
@@ -788,26 +811,11 @@ public class TroubleshootingSession : IAsyncDisposable
             ? helpText[modelSectionStart..modelSectionEnd]
             : helpText[modelSectionStart..];
 
-        var modelIds = new List<string>();
-        foreach (Match match in Regex.Matches(modelSection, "\"([a-z0-9][a-z0-9.-]*)\"", RegexOptions.IgnoreCase))
+        ExtractModelIds(modelSection, modelIds);
+
+        if (modelIds.Count == 0)
         {
-            if (match.Groups.Count < 2)
-            {
-                continue;
-            }
-
-            var value = match.Groups[1].Value;
-            if (!(value.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)
-                  || value.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)
-                  || value.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            if (!modelIds.Contains(value, StringComparer.OrdinalIgnoreCase))
-            {
-                modelIds.Add(value);
-            }
+            ExtractModelIds(helpText, modelIds);
         }
 
         return modelIds;
