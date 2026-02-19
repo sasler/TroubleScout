@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Reflection;
+using Spectre.Console;
 using TroubleScout.UI;
 using Xunit;
 
@@ -47,6 +48,63 @@ public class ConsoleUITests
 
         // Assert
         actual.Should().Be("1x");
+    }
+
+    [Fact]
+    public void ParseMarkdownTable_ShouldCreateTableWithColumnsAndRows()
+    {
+        // Arrange
+        var lines = new[]
+        {
+            "| Name | Status |",
+            "| ---- | ------ |",
+            "| SQL  | Running |",
+            "| IIS  | Stopped |"
+        };
+
+        // Act
+        var table = ConsoleUI.ParseMarkdownTable(lines);
+
+        // Assert
+        table.Should().NotBeNull();
+        table!.Columns.Should().HaveCount(2);
+        table.Rows.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void ParseMarkdownTable_ShouldIgnoreSeparatorOnlyRows()
+    {
+        // Arrange
+        var lines = new[]
+        {
+            "| --- | --- |",
+            "| :--- | ---: |"
+        };
+
+        // Act
+        var table = ConsoleUI.ParseMarkdownTable(lines);
+
+        // Assert
+        table.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseMarkdownTable_ShouldHandleHeaderWithoutSeparator()
+    {
+        // Arrange
+        var lines = new[]
+        {
+            "| Service | State |",
+            "| DNS | Running |"
+        };
+
+        // Act
+        var table = ConsoleUI.ParseMarkdownTable(lines);
+
+        // Assert
+        table.Should().NotBeNull();
+        table!.Columns.Should().HaveCount(2);
+        table.Rows.Should().HaveCount(1);
     }
 
     private static string? InvokeGetInferredRateLabel(string? modelId)

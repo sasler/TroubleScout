@@ -14,6 +14,9 @@ public static class ConsoleUI
 {
     private static ExecutionMode _currentExecutionMode = ExecutionMode.Safe;
     private static int _lastInputRowCount = 1;
+    private static int _lastSuggestionRowCount;
+    private static int _lastSuggestionRowOffset = 1;
+    private const int MaxPromptInputLength = 4000;
     private static readonly IReadOnlyDictionary<string, string> KnownModelRateLabels =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -152,47 +155,53 @@ public static class ConsoleUI
         var table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
-            .AddColumn(new TableColumn("[bold cyan]Category[/]").Centered())
+            .AddColumn(new TableColumn("[bold cyan]Area[/]").Centered())
             .AddColumn(new TableColumn("[bold cyan]Description[/]"))
             .AddColumn(new TableColumn("[bold cyan]Example Commands[/]"));
 
         table.AddRow(
-            "[green]System[/]",
+            "System",
             "OS info, uptime, hardware specs",
             "Get-ComputerInfo, Get-CimInstance");
         
         table.AddRow(
-            "[yellow]Events[/]",
+            "Events",
             "Windows Event Log analysis",
             "Get-EventLog, Get-WinEvent");
         
         table.AddRow(
-            "[blue]Services[/]",
+            "Services",
             "Windows service status",
             "Get-Service");
         
         table.AddRow(
-            "[magenta]Processes[/]",
+            "Processes",
             "Running processes and resource usage",
             "Get-Process");
         
         table.AddRow(
-            "[red]Performance[/]",
+            "Performance",
             "CPU, memory, disk metrics",
             "Get-Counter");
         
         table.AddRow(
-            "[cyan]Network[/]",
+            "Network",
             "Network adapters and configuration",
             "Get-NetAdapter, Get-NetIPAddress");
         
         table.AddRow(
-            "[white]Storage[/]",
+            "Storage",
             "Disk space and volume health",
             "Get-Volume, Get-Disk");
 
-        var panel = new Panel(table)
-            .Header("[bold cyan] Diagnostic Categories [/]")
+        var content = new Rows(
+            new Markup("[grey]These are troubleshooting areas the assistant uses as guidance. They are not strict command groups.[/]"),
+            new Markup(""),
+            table
+        );
+
+        var panel = new Panel(content)
+            .Header("[bold cyan] Troubleshooting Areas [/]")
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.Grey);
         
@@ -205,27 +214,26 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowWelcomeMessage()
     {
+        var commandTable = new Table()
+            .Border(TableBorder.None)
+            .AddColumn(new TableColumn("[grey]Command[/]").NoWrap())
+            .AddColumn(new TableColumn("[grey]Action[/]"));
+
+        commandTable.AddRow("[cyan]/clear[/]", "Start new session");
+        commandTable.AddRow("[cyan]/status[/]", "Show current status");
+        commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
+        commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
+        commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Connect to server");
+        commandTable.AddRow("[cyan]/help[/]", "Show full command help");
+        commandTable.AddRow("[cyan]/exit[/] [grey]or[/] [cyan]/quit[/]", "End the app");
+
         var tips = new Rows(
-            new Markup("[grey]Describe your issue in natural language, and TroubleScout will investigate.[/]"),
+            new Markup("[grey]Describe your issue naturally and TroubleScout will investigate.[/]"),
+            new Markup("[grey]Example:[/] [italic]\"The server is slow and login takes too long\"[/]"),
             new Markup(""),
-            new Markup("[grey]Examples:[/]"),
-            new Markup("  [italic]\"The server is running slow and users are complaining about login times\"[/]"),
-            new Markup("  [italic]\"Check why the SQL Server service keeps stopping\"[/]"),
-            new Markup("  [italic]\"Analyze disk space and find what's using the most storage\"[/]"),
+            commandTable,
             new Markup(""),
-            new Markup("[grey]Commands:[/]"),
-            new Markup("  [cyan]/exit[/] or [cyan]/quit[/]     - End the session"),
-            new Markup("  [cyan]/clear[/]             - Clear the screen"),
-            new Markup("  [cyan]/status[/]            - Show connection status"),
-            new Markup("  [cyan]/capabilities[/]      - Show MCP/skills availability and usage"),
-            new Markup("  [cyan]/model[/]             - Change AI model"),
-            new Markup("  [cyan]/mode[/] <safe|yolo>  - Switch execution mode"),
-            new Markup("  [cyan]/connect[/] <server>  - Connect to a different server"),
-            new Markup("  [cyan]/history[/]           - Show PowerShell commands run this session"),
-            new Markup("  [cyan]/report[/]            - Generate and open a HTML session report (saved in temp)"),
-            new Markup("  [cyan]/help[/]              - Show help, examples, and categories"),
-            new Markup(""),
-            new Markup("[grey]Tip:[/] Press [cyan]Tab[/] to complete /commands")
+            new Markup("[grey]Tip:[/] Type [cyan]/[/] to show matching commands. Use [cyan]/help[/] for complete command list.")
         );
 
         var panel = new Panel(tips)
@@ -242,7 +250,37 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowHelp()
     {
-        ShowWelcomeMessage();
+        var commandTable = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[bold cyan]Command[/]").NoWrap())
+            .AddColumn(new TableColumn("[bold cyan]Description[/]"));
+
+        commandTable.AddRow("[cyan]/help[/]", "Show this full command reference");
+        commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
+        commandTable.AddRow("[cyan]/clear[/]", "Start new session");
+        commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
+        commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
+        commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Reconnect to a different target server");
+        commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
+        commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
+        commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
+        commandTable.AddRow("[cyan]/exit[/], [cyan]/quit[/], [cyan]exit[/], [cyan]quit[/]", "Leave the interactive session");
+
+        var helpPanel = new Panel(new Rows(
+            new Markup("[grey]Interactive command reference[/]"),
+            new Markup(""),
+            commandTable,
+            new Markup(""),
+            new Markup("[grey]Tip:[/] Type [cyan]/[/] and keep typing to filter commands live. Press [cyan]Tab[/] to complete.")
+        ))
+        .Header("[bold cyan] Help [/]")
+        .Border(BoxBorder.Rounded)
+        .BorderColor(Color.Grey);
+
+        AnsiConsole.Write(helpPanel);
+        AnsiConsole.WriteLine();
+
         ShowDiagnosticCategories();
     }
 
@@ -254,13 +292,24 @@ public static class ConsoleUI
         AnsiConsole.Markup(GetPromptMarkup());
         if (slashCommands == null || slashCommands.Count == 0)
         {
-            return Console.ReadLine() ?? string.Empty;
+            var value = Console.ReadLine() ?? string.Empty;
+            if (value.Length > MaxPromptInputLength)
+            {
+                Console.WriteLine();
+                Console.WriteLine();
+                ShowProminentWarning("Input Too Large", $"Prompt exceeds {MaxPromptInputLength:N0} characters and was discarded.");
+                AnsiConsole.Markup(GetPromptMarkup());
+                return string.Empty;
+            }
+
+            return value;
         }
 
         var buffer = new StringBuilder();
         var completionIndex = -1;
         List<string>? matches = null;
         _lastInputRowCount = 1;
+        _lastSuggestionRowCount = 0;
 
         while (true)
         {
@@ -274,9 +323,11 @@ public static class ConsoleUI
                     completionIndex = -1;
                     matches = null;
                     RedrawInputLine(buffer.ToString());
+                    ClearSuggestions();
                     continue;
                 }
 
+                ClearSuggestions();
                 Console.WriteLine();
                 _lastInputRowCount = 1;
                 return buffer.ToString();
@@ -290,6 +341,7 @@ public static class ConsoleUI
                     completionIndex = -1;
                     matches = null;
                     RedrawInputLine(buffer.ToString());
+                    UpdateSuggestions(buffer.ToString(), slashCommands);
                 }
                 continue;
             }
@@ -317,16 +369,26 @@ public static class ConsoleUI
                 buffer.Clear();
                 buffer.Append(matches[completionIndex]);
                 RedrawInputLine(buffer.ToString());
+                UpdateSuggestions(buffer.ToString(), slashCommands);
                 continue;
             }
 
             if (!char.IsControl(key.KeyChar))
             {
+                if (buffer.Length + 1 > MaxPromptInputLength)
+                {
+                    HandleOversizedInput(buffer);
+                    completionIndex = -1;
+                    matches = null;
+                    continue;
+                }
+
                 buffer.Append(key.KeyChar);
                 completionIndex = -1;
                 matches = null;
                 Console.Write(key.KeyChar);
                 UpdateInputRowCount(buffer.Length);
+                UpdateSuggestions(buffer.ToString(), slashCommands);
             }
         }
     }
@@ -337,10 +399,118 @@ public static class ConsoleUI
         var currentRows = GetInputRowCount(width, text.Length);
         var rowsToClear = Math.Max(_lastInputRowCount, currentRows);
 
+        ClearSuggestions();
         ClearInputRows(rowsToClear, width);
         AnsiConsole.Markup(GetPromptMarkup());
         Console.Write(text);
         _lastInputRowCount = currentRows;
+    }
+
+    private static void UpdateSuggestions(string text, IReadOnlyList<string> slashCommands)
+    {
+        if (!text.StartsWith("/", StringComparison.OrdinalIgnoreCase) || text.Contains(' '))
+        {
+            ClearSuggestions();
+            return;
+        }
+
+        var matches = slashCommands
+            .Where(cmd => cmd.StartsWith(text, StringComparison.OrdinalIgnoreCase))
+            .Take(6)
+            .ToList();
+
+        if (matches.Count == 0)
+        {
+            ClearSuggestions();
+            return;
+        }
+
+        DrawSuggestions(matches, text);
+    }
+
+    private static void DrawSuggestions(IReadOnlyList<string> matches, string typedPrefix)
+    {
+        if (matches.Count == 0)
+        {
+            ClearSuggestions();
+            return;
+        }
+
+        var width = Math.Max(1, Console.BufferWidth);
+        var originalLeft = Console.CursorLeft;
+        var originalTop = Console.CursorTop;
+        var suggestionRow = originalTop + 1;
+        var offset = 1;
+
+        if (suggestionRow >= Console.BufferHeight)
+        {
+            suggestionRow = Math.Max(0, originalTop - 1);
+            offset = suggestionRow - originalTop;
+        }
+
+        var rendered = "Suggestions: " + string.Join("  ", matches.Select(match =>
+        {
+            var prefixLength = Math.Min(typedPrefix.Length, match.Length);
+            var remaining = prefixLength < match.Length ? match[prefixLength..] : string.Empty;
+            return $"{match[..prefixLength]}{remaining}";
+        }));
+
+        if (rendered.Length > width)
+        {
+            rendered = rendered[..Math.Max(0, width - 1)];
+        }
+
+        Console.SetCursorPosition(0, suggestionRow);
+        Console.Write(new string(' ', width));
+        Console.SetCursorPosition(0, suggestionRow);
+        Console.Write(rendered);
+
+        Console.SetCursorPosition(Math.Min(originalLeft, width - 1), originalTop);
+        _lastSuggestionRowCount = 1;
+        _lastSuggestionRowOffset = offset;
+    }
+
+    private static void ClearSuggestions()
+    {
+        if (_lastSuggestionRowCount <= 0)
+        {
+            return;
+        }
+
+        var width = Math.Max(1, Console.BufferWidth);
+        var originalLeft = Console.CursorLeft;
+        var originalTop = Console.CursorTop;
+        var suggestionRow = originalTop + _lastSuggestionRowOffset;
+
+        if (suggestionRow >= 0 && suggestionRow < Console.BufferHeight)
+        {
+            Console.SetCursorPosition(0, suggestionRow);
+            Console.Write(new string(' ', width));
+        }
+
+        Console.SetCursorPosition(Math.Min(originalLeft, width - 1), originalTop);
+        _lastSuggestionRowCount = 0;
+        _lastSuggestionRowOffset = 1;
+    }
+
+    private static void HandleOversizedInput(StringBuilder buffer)
+    {
+        ClearSuggestions();
+        Console.WriteLine();
+        Console.WriteLine();
+        ShowProminentWarning("Input Too Large", $"Prompt exceeds {MaxPromptInputLength:N0} characters and was cleared.");
+        buffer.Clear();
+        DrainPendingInput();
+        _lastInputRowCount = 1;
+        AnsiConsole.Markup(GetPromptMarkup());
+    }
+
+    private static void DrainPendingInput()
+    {
+        while (Console.KeyAvailable)
+        {
+            _ = Console.ReadKey(intercept: true);
+        }
     }
 
     private static void UpdateInputRowCount(int textLength)
@@ -384,7 +554,7 @@ public static class ConsoleUI
         var startRow = cursorTop - (rowsToClear - 1);
 
 
-        for (var i = 0; i < rows; i++)
+        for (var i = 0; i < rowsToClear; i++)
         {
             Console.SetCursorPosition(0, startRow + i);
             Console.Write(new string(' ', width));
@@ -557,6 +727,10 @@ public static class ConsoleUI
     private static bool _inBold;
     private static bool _inCode;
     private static bool _inCodeBlock;
+    private static bool _atLineStart = true;
+    private static bool _inMarkdownTable;
+    private static readonly StringBuilder _tableLineAccumulator = new();
+    private static readonly List<string> _markdownTableLines = [];
 
     /// <summary>
     /// Reset the stream buffer state (call at start of new response)
@@ -567,6 +741,10 @@ public static class ConsoleUI
         _inBold = false;
         _inCode = false;
         _inCodeBlock = false;
+        _atLineStart = true;
+        _inMarkdownTable = false;
+        _tableLineAccumulator.Clear();
+        _markdownTableLines.Clear();
     }
 
     /// <summary>
@@ -582,6 +760,45 @@ public static class ConsoleUI
 
         while (i < content.Length)
         {
+            if (_inMarkdownTable)
+            {
+                if (_atLineStart && content[i] != '|')
+                {
+                    FlushMarkdownTable();
+                    _inMarkdownTable = false;
+                    continue;
+                }
+
+                var tableChar = content[i];
+                _tableLineAccumulator.Append(tableChar);
+
+                if (tableChar == '\n')
+                {
+                    _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
+                    _tableLineAccumulator.Clear();
+                    _atLineStart = true;
+                }
+                else if (tableChar != '\r')
+                {
+                    _atLineStart = false;
+                }
+
+                i++;
+                continue;
+            }
+
+            if (!_inCodeBlock && _atLineStart && content[i] == '|')
+            {
+                if (output.Length > 0)
+                {
+                    Console.Write(output.ToString());
+                    output.Clear();
+                }
+
+                _inMarkdownTable = true;
+                continue;
+            }
+
             // Check for code block (```)
             if (i + 2 < content.Length && content[i] == '`' && content[i + 1] == '`' && content[i + 2] == '`')
             {
@@ -612,6 +829,14 @@ public static class ConsoleUI
             if (_inCodeBlock)
             {
                 output.Append(content[i]);
+                if (content[i] == '\n')
+                {
+                    _atLineStart = true;
+                }
+                else if (content[i] != '\r')
+                {
+                    _atLineStart = false;
+                }
                 i++;
                 continue;
             }
@@ -673,6 +898,7 @@ public static class ConsoleUI
                     i++;
                 }
                 output.Append("\x1b[0m"); // Reset after header
+                _atLineStart = false;
                 continue;
             }
 
@@ -696,12 +922,160 @@ public static class ConsoleUI
 
             // Regular character
             output.Append(content[i]);
+            if (content[i] == '\n')
+            {
+                _atLineStart = true;
+            }
+            else if (content[i] != '\r')
+            {
+                _atLineStart = false;
+            }
             i++;
         }
 
+        if (forceFlush && _inMarkdownTable)
+        {
+            if (_tableLineAccumulator.Length > 0)
+            {
+                _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
+                _tableLineAccumulator.Clear();
+            }
+
+            FlushMarkdownTable();
+            _inMarkdownTable = false;
+        }
+
         // Write the processed output
-        Console.Write(output.ToString());
+        if (output.Length > 0)
+        {
+            Console.Write(output.ToString());
+        }
         _streamBuffer.Clear();
+    }
+
+    internal static Table? ParseMarkdownTable(IReadOnlyList<string> lines)
+    {
+        var rows = lines
+            .Select(ParseMarkdownTableRow)
+            .Where(cells => cells.Count > 0)
+            .Where(cells => !IsSeparatorRow(cells))
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            return null;
+        }
+
+        var header = rows[0];
+        if (header.Count == 0)
+        {
+            return null;
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey);
+
+        foreach (var headerCell in header)
+        {
+            table.AddColumn(new TableColumn($"[bold]{Markup.Escape(headerCell)}[/]"));
+        }
+
+        for (var rowIndex = 1; rowIndex < rows.Count; rowIndex++)
+        {
+            var row = rows[rowIndex];
+            var normalizedCells = new List<IRenderable>(header.Count);
+            for (var columnIndex = 0; columnIndex < header.Count; columnIndex++)
+            {
+                var cell = columnIndex < row.Count ? row[columnIndex] : string.Empty;
+                normalizedCells.Add(new Markup(Markup.Escape(cell)));
+            }
+
+            table.AddRow(normalizedCells);
+        }
+
+        return table;
+    }
+
+    private static void FlushMarkdownTable()
+    {
+        if (_tableLineAccumulator.Length > 0)
+        {
+            _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
+            _tableLineAccumulator.Clear();
+        }
+
+        if (_markdownTableLines.Count == 0)
+        {
+            return;
+        }
+
+        var table = ParseMarkdownTable(_markdownTableLines);
+        if (table != null)
+        {
+            AnsiConsole.Write(table);
+            AnsiConsole.WriteLine();
+        }
+        else
+        {
+            foreach (var line in _markdownTableLines)
+            {
+                Console.WriteLine(line);
+            }
+        }
+
+        _markdownTableLines.Clear();
+    }
+
+    private static List<string> ParseMarkdownTableRow(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0)
+        {
+            return [];
+        }
+
+        if (trimmed.StartsWith("|", StringComparison.Ordinal))
+        {
+            trimmed = trimmed[1..];
+        }
+
+        if (trimmed.EndsWith("|", StringComparison.Ordinal))
+        {
+            trimmed = trimmed[..^1];
+        }
+
+        return trimmed
+            .Split('|')
+            .Select(cell => cell.Trim())
+            .ToList();
+    }
+
+    private static bool IsSeparatorRow(IReadOnlyList<string> cells)
+    {
+        if (cells.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var cell in cells)
+        {
+            var normalized = cell.Replace(" ", string.Empty, StringComparison.Ordinal);
+            if (normalized.Length == 0)
+            {
+                return false;
+            }
+
+            foreach (var ch in normalized)
+            {
+                if (ch != '-' && ch != ':')
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -719,6 +1093,14 @@ public static class ConsoleUI
     /// </summary>
     public static void EndAIResponse()
     {
+        FlushStreamBuffer(forceFlush: true);
+
+        if (_inMarkdownTable)
+        {
+            FlushMarkdownTable();
+            _inMarkdownTable = false;
+        }
+
         // Ensure any remaining formatting is reset
         Console.Write("\x1b[0m");
         AnsiConsole.WriteLine();
@@ -894,6 +1276,17 @@ public static class ConsoleUI
     public static void ShowWarning(string message)
     {
         AnsiConsole.MarkupLine($"[yellow]⚠[/] {Markup.Escape(message)}");
+    }
+
+    public static void ShowProminentWarning(string title, string message)
+    {
+        var panel = new Panel(new Markup($"[bold yellow]{Markup.Escape(message)}[/]"))
+            .Header($"[bold yellow] {Markup.Escape(title)} [/]")
+            .Border(BoxBorder.Heavy)
+            .BorderColor(Color.Yellow);
+
+        AnsiConsole.Write(panel);
+        AnsiConsole.WriteLine();
     }
 
     /// <summary>

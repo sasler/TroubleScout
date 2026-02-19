@@ -37,7 +37,8 @@ for (int i = 0; i < args.Length; i++)
             disabledSkills.Add(args[++i]);
             break;
         case "--help" or "-h":
-            ShowHelp(appVersion);
+            ConsoleUI.ShowBanner(appVersion);
+            ConsoleUI.ShowHelp();
             return 0;
         case "--version" or "-v":
             Console.WriteLine($"TroubleScout {appVersion}");
@@ -96,27 +97,6 @@ else
 }
 
 return Environment.ExitCode;
-
-static void ShowHelp(string version)
-{
-    Console.WriteLine($"TroubleScout {version} - AI-Powered Windows Server Troubleshooting Assistant");
-    Console.WriteLine();
-    Console.WriteLine("Usage: TroubleScout [options]");
-    Console.WriteLine();
-    Console.WriteLine("Options:");
-    Console.WriteLine("  -s, --server <name>   Target Windows Server (default: localhost)");
-    Console.WriteLine("  -m, --model <name>    AI model to use (e.g., gpt-4o, claude-sonnet-4)");
-    Console.WriteLine("  -p, --prompt <text>   Initial prompt for headless mode");
-    Console.WriteLine("      --mcp-config <path>  MCP config JSON path (default: %USERPROFILE%\\.copilot\\mcp-config.json)");
-    Console.WriteLine("      --skills-dir <path>  Skill root directory (repeatable, default: %USERPROFILE%\\.copilot\\skills if present)");
-    Console.WriteLine("      --disable-skill <name>  Disable a loaded skill by name (repeatable)");
-    Console.WriteLine("      --mode <safe|yolo>  PowerShell execution mode (default: safe)");
-    Console.WriteLine("  --debug, -debug, -d  Show technical diagnostics and exception details");
-    Console.WriteLine("  -v, --version         Show app version and exit");
-    Console.WriteLine("  -h, --help            Show help information");
-    Console.WriteLine();
-    Console.WriteLine("Available models depend on your GitHub Copilot subscription.");
-}
 
 static string? ResolveDefaultMcpConfigPath()
 {
