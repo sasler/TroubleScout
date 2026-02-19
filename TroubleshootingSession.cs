@@ -46,6 +46,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly List<ReportPromptEntry> _reportPrompts = [];
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
+    private string _sessionId = "n/a";
+    private int _sessionCounter;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -1345,8 +1347,20 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/clear")
             {
-                ConsoleUI.ShowBanner();
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, true, SelectedModel, _executionMode, GetStatusFields());
+                var resetSucceeded = await ResetConversationAsync();
+                if (resetSucceeded)
+                {
+                    Console.Clear();
+                    ConsoleUI.ShowBanner();
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                    ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
+                    ConsoleUI.ShowWelcomeMessage();
+                }
+                else
+                {
+                    ConsoleUI.ShowWarning("Could not start a new session.");
+                }
+
                 continue;
             }
 
@@ -1509,6 +1523,34 @@ public class TroubleshootingSession : IAsyncDisposable
 
         return input.Equals(command, StringComparison.Ordinal)
             || input.StartsWith(command + " ", StringComparison.Ordinal);
+    }
+
+    private async Task<bool> ResetConversationAsync(Action<string>? updateStatus = null)
+    {
+        try
+        {
+            if (_copilotSession != null)
+            {
+                await _copilotSession.DisposeAsync();
+                _copilotSession = null;
+            }
+
+            lock (_reportLock)
+            {
+                _reportPrompts.Clear();
+                _lastPromptIndex = -1;
+            }
+
+            var modelToUse = string.IsNullOrWhiteSpace(_selectedModel)
+                ? _requestedModel
+                : _selectedModel;
+
+            return await CreateCopilotSessionAsync(modelToUse, updateStatus);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool IsBareExitCommand(string input)
@@ -1914,6 +1956,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
+        _sessionId = CreateSessionId();
         _lastUsage = null;
 
         if (_configurationWarnings.Count > 0)
@@ -1994,6 +2037,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
         var fields = new List<(string Label, string Value)>();
+        fields.Add(("Session ID", _sessionId));
 
         if (_lastUsage != null && _lastUsage.HasAny)
         {
@@ -2038,7 +2082,15 @@ public class TroubleshootingSession : IAsyncDisposable
         if (distinct.Count == 0)
             return;
 
-        fields.Add((label, string.Join(", ", distinct)));
+        const int maxItems = 2;
+        var shown = distinct.Take(maxItems);
+        var value = string.Join(", ", shown);
+        if (distinct.Count > maxItems)
+        {
+            value += $" (+{distinct.Count - maxItems} more)";
+        }
+
+        fields.Add((label, value));
     }
 
     private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
@@ -2129,6 +2181,12 @@ public class TroubleshootingSession : IAsyncDisposable
         _runtimeMcpServers.Clear();
         _runtimeSkills.Clear();
         _configurationWarnings.Clear();
+    }
+
+    private string CreateSessionId()
+    {
+        var sequence = Interlocked.Increment(ref _sessionCounter);
+        return $"TS-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{sequence:D3}";
     }
 
     private static string ReadSkillNameFromManifest(string manifestPath)
