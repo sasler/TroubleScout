@@ -425,10 +425,10 @@ public static class ConsoleUI
             return;
         }
 
-        DrawSuggestions(matches, text);
+        DrawSuggestions(matches);
     }
 
-    private static void DrawSuggestions(IReadOnlyList<string> matches, string typedPrefix)
+    private static void DrawSuggestions(IReadOnlyList<string> matches)
     {
         if (matches.Count == 0)
         {
@@ -444,16 +444,19 @@ public static class ConsoleUI
 
         if (suggestionRow >= Console.BufferHeight)
         {
-            suggestionRow = Math.Max(0, originalTop - 1);
-            offset = suggestionRow - originalTop;
+            if (originalTop == 0)
+            {
+                ClearSuggestions();
+                _lastSuggestionRowCount = 0;
+                _lastSuggestionRowOffset = 0;
+                return;
+            }
+
+            suggestionRow = originalTop - 1;
+            offset = -1;
         }
 
-        var rendered = "Suggestions: " + string.Join("  ", matches.Select(match =>
-        {
-            var prefixLength = Math.Min(typedPrefix.Length, match.Length);
-            var remaining = prefixLength < match.Length ? match[prefixLength..] : string.Empty;
-            return $"{match[..prefixLength]}{remaining}";
-        }));
+        var rendered = "Suggestions: " + string.Join("  ", matches);
 
         if (rendered.Length > width)
         {
@@ -1094,12 +1097,6 @@ public static class ConsoleUI
     public static void EndAIResponse()
     {
         FlushStreamBuffer(forceFlush: true);
-
-        if (_inMarkdownTable)
-        {
-            FlushMarkdownTable();
-            _inMarkdownTable = false;
-        }
 
         // Ensure any remaining formatting is reset
         Console.Write("\x1b[0m");

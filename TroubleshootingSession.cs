@@ -1348,18 +1348,19 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/clear")
             {
                 var resetSucceeded = await ResetConversationAsync();
-                Console.Clear();
-                ConsoleUI.ShowBanner();
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                 if (resetSucceeded)
                 {
+                    Console.Clear();
+                    ConsoleUI.ShowBanner();
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
                     ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
+                    ConsoleUI.ShowWelcomeMessage();
                 }
                 else
                 {
-                    ConsoleUI.ShowWarning("Could not start a new session. Use /status and try again.");
+                    ConsoleUI.ShowWarning("Could not start a new session.");
                 }
-                ConsoleUI.ShowWelcomeMessage();
+
                 continue;
             }
 
@@ -1546,9 +1547,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
             return await CreateCopilotSessionAsync(modelToUse, updateStatus);
         }
-        catch (Exception ex)
+        catch
         {
-            ConsoleUI.ShowError("Reset Failed", $"Could not start a new conversation: {TrimSingleLine(ex.Message)}");
             return false;
         }
     }
