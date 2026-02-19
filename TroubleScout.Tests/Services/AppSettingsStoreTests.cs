@@ -85,6 +85,32 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Save_ByokApiKey_ShouldPersistEncryptedFieldAndKeepCompatibility()
+    {
+        // Arrange
+        var settings = new AppSettings
+        {
+            UseByokOpenAi = true,
+            ByokOpenAiBaseUrl = "https://proxy.example/v1",
+            ByokOpenAiApiKey = "sk-secret"
+        };
+
+        // Act
+        AppSettingsStore.Save(settings);
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+        var loaded = AppSettingsStore.Load();
+
+        // Assert
+        json.Should().Contain("\"ByokOpenAiApiKeyEncrypted\"");
+        loaded.ByokOpenAiApiKey.Should().Be("sk-secret");
+
+        if (OperatingSystem.IsWindows())
+        {
+            json.Should().NotContain("\"ByokOpenAiApiKey\": \"sk-secret\"");
+        }
+    }
+
+    [Fact]
     public void Save_ShouldCreateDirectoryAndPersist()
     {
         // Arrange

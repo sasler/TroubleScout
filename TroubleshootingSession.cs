@@ -610,7 +610,14 @@ public class TroubleshootingSession : IAsyncDisposable
     private static string? TryResolveBundledCopilotCliPath()
     {
         var baseDirectory = AppContext.BaseDirectory;
-        var architecture = RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
+        var architecture = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.X86 => "x86",
+            Architecture.Arm64 => "arm64",
+            Architecture.Arm => "arm",
+            _ => RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()
+        };
         var runtimeIdentifier = $"win-{architecture}";
 
         var candidates = new[]
@@ -977,7 +984,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 ? existing | ModelSource.Byok
                 : ModelSource.Byok;
 
-            if (!byId.ContainsKey(model.Id))
+            if (!byId.TryGetValue(model.Id, out var existingModel))
             {
                 byId[model.Id] = new ModelInfo
                 {
@@ -985,6 +992,18 @@ public class TroubleshootingSession : IAsyncDisposable
                     Name = model.Name,
                     Billing = model.Billing
                 };
+            }
+            else
+            {
+                if (existingModel.Billing == null && model.Billing != null)
+                {
+                    existingModel.Billing = model.Billing;
+                }
+
+                if (string.IsNullOrWhiteSpace(existingModel.Name) && !string.IsNullOrWhiteSpace(model.Name))
+                {
+                    existingModel.Name = model.Name;
+                }
             }
         }
 

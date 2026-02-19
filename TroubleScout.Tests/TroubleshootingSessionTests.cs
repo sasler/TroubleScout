@@ -1111,6 +1111,58 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         displayName.Should().Be("GPT 5.3 Codex Mini (Preview)");
     }
 
+    [Fact]
+    public void ResolveTargetSource_WhenModelAvailableInBothAndByokActive_ShouldPreferByok()
+    {
+        // Arrange
+        SetModelSources(_session, ["gpt-5"], "GitHub, Byok");
+        SetPrivateField(_session, "_useByokOpenAi", true);
+        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
+
+        // Act
+        var source = InvokeResolveTargetSource(_session, "gpt-5");
+
+        // Assert
+        source.Should().Be("Byok");
+    }
+
+    [Fact]
+    public void UpdateAvailableModels_WhenDuplicateAcrossProviders_ShouldLabelCombinedSource()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo>
+        {
+            new() { Id = "gpt-5", Name = "GPT 5" }
+        };
+
+        var byokModels = new List<ModelInfo>
+        {
+            new() { Id = "gpt-5", Name = "GPT 5 (BYOK)" }
+        };
+
+        // Act
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+        var availableModels = GetPrivateField<List<ModelInfo>>(_session, "_availableModels");
+
+        // Assert
+        availableModels.Should().ContainSingle(model =>
+            model.Id == "gpt-5" && model.Name.Contains("[GitHub+BYOK]", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TryGetByokProviderModelsAsync_WhenByokNotConfigured_ShouldReturnEmpty()
+    {
+        // Arrange
+        SetPrivateField(_session, "_byokOpenAiApiKey", null);
+        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
+
+        // Act
+        var models = await InvokeTryGetByokProviderModelsAsync(_session);
+
+        // Assert
+        models.Should().BeEmpty();
+    }
+
     #endregion
 
     private static IReadOnlyList<string> InvokeParseCliModelIds(string helpText)
@@ -1129,5 +1181,71 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull();
         return (string)method!.Invoke(null, [modelId])!;
+    }
+
+    private static string InvokeResolveTargetSource(TroubleshootingSession session, string modelId)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ResolveTargetSource", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        var result = method!.Invoke(session, [modelId]);
+        result.Should().NotBeNull();
+        return result!.ToString()!;
+    }
+
+    private static void InvokeUpdateAvailableModels(
+        TroubleshootingSession session,
+        IReadOnlyList<ModelInfo> githubModels,
+        IReadOnlyList<ModelInfo> byokModels)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("UpdateAvailableModels", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(session, [githubModels, byokModels]);
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+        return (T)field!.GetValue(instance)!;
+    }
+
+    private static void SetModelSources(TroubleshootingSession session, IReadOnlyList<string> modelIds, string enumName)
+    {
+        var field = session.GetType().GetField("_modelSources", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var modelSources = field!.GetValue(session);
+        modelSources.Should().NotBeNull();
+
+        var dictionaryType = modelSources!.GetType();
+        var clearMethod = dictionaryType.GetMethod("Clear");
+        clearMethod.Should().NotBeNull();
+        clearMethod!.Invoke(modelSources, null);
+
+        var modelSourceType = session.GetType().GetNestedType("ModelSource", BindingFlags.NonPublic);
+        modelSourceType.Should().NotBeNull();
+        var sourceValue = Enum.Parse(modelSourceType!, enumName, ignoreCase: true);
+
+        var addMethod = dictionaryType.GetMethod("Add", [typeof(string), modelSourceType!]);
+        addMethod.Should().NotBeNull();
+
+        foreach (var modelId in modelIds)
+        {
+            addMethod!.Invoke(modelSources, [modelId, sourceValue]);
+        }
+    }
+
+    private static async Task<List<ModelInfo>> InvokeTryGetByokProviderModelsAsync(TroubleshootingSession session)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("TryGetByokProviderModelsAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        var task = (Task<List<ModelInfo>>)method!.Invoke(session, [])!;
+        return await task;
     }
 }
