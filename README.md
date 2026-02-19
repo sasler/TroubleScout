@@ -22,9 +22,11 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 
 **For pre-built release:**
 
-1. **Windows x64** operating system
-2. **GitHub Copilot Access** - Active GitHub Copilot subscription
-3. **GitHub Copilot CLI** - Install or update using the official guide:
+1. **Windows x64 or Windows ARM64** operating system
+2. **Authentication mode**:
+   - **GitHub mode (default):** Active GitHub Copilot subscription and authenticated Copilot CLI
+   - **BYOK mode:** OpenAI API key (`OPENAI_API_KEY`) with `--byok-openai`
+3. **GitHub Copilot CLI** - Bundled with TroubleScout releases; install separately only if you run from source without bundled assets:
 
    [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
@@ -32,7 +34,7 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 
 5. **Node.js 24+ (LTS recommended)** is only needed when using npm-based Copilot CLI installs - [Download](https://nodejs.org/)
 
-> **Important**: TroubleScout uses your preinstalled Copilot CLI and does not bundle the CLI binary.
+> **Important**: TroubleScout release packages include architecture-specific Copilot CLI assets for bundled use.
 
 **For building from source:**
 
@@ -47,11 +49,14 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 
 1. **Download the latest release** from [Releases](https://github.com/sasler/TroubleScout/releases)
 2. **Extract** `TroubleScout.exe` (and `runtimes/` if present) to a directory
-3. **Install prerequisites**:
+3. **Choose auth mode**:
+   - GitHub mode: run `copilot login` once
+   - BYOK mode: set `OPENAI_API_KEY` and pass `--byok-openai`
+4. **Install prerequisites**:
    - Ensure PowerShell 6+ (PowerShell 7+ recommended)
-   - Install/update GitHub Copilot CLI: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+   - Install/update GitHub Copilot CLI only if you are not using bundled release assets: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
    - Install [Node.js](https://nodejs.org/) only if you choose npm-based Copilot CLI install
-4. **Run** `TroubleScout.exe` from the command line
+5. **Run** `TroubleScout.exe` from the command line
 
 > **Note**: The release includes a self-contained .NET runtime - no .NET SDK installation required!
 
@@ -74,6 +79,9 @@ dotnet run
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 # Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe
+
+dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true
+# Output: bin\Release\net10.0\win-arm64\publish\TroubleScout.exe
 ```
 
 ## Usage
@@ -112,6 +120,9 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 - `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)
 - `--disable-skill`: Disable a loaded skill by name (repeatable)
 - `--debug` (`-d` or `-debug`): Show technical diagnostics and exception details
+- `--byok-openai`: Use BYOK mode with OpenAI provider instead of GitHub auth
+- `--openai-base-url`: Override OpenAI base URL (default: `https://api.openai.com/v1`)
+- `--openai-api-key`: Provide OpenAI API key directly (or use `OPENAI_API_KEY`)
 - `--version` (`-v`): Show app version and exit
 - `--help` (`-h`): Show help information
 
@@ -127,7 +138,10 @@ dotnet run -- --model gpt-5.3-codex
 dotnet run -- --model claude-sonnet-4.6
 ```
 
-Available models depend on your GitHub Copilot subscription and Copilot CLI version. If not specified, the default model for your account is used.
+Available models depend on auth mode:
+
+- GitHub mode: models available to your Copilot account/subscription
+- BYOK mode: models available from your configured OpenAI provider
 
 ### MCP Servers and Skills
 
@@ -193,11 +207,14 @@ TroubleScout uses a permission-based security model:
 
 ## Interactive Commands
 
-| Command            | Description            |
-| ------------------ | ---------------------- |
-| `/exit` or `/quit` | End the session        |
-| `/clear`           | Clear the screen       |
-| `/status`          | Show connection status |
+| Command              | Description                                 |
+| -------------------- | ------------------------------------------- |
+| `/exit` or `/quit`   | End the session                             |
+| `/clear`             | Clear the screen                            |
+| `/status`            | Show connection status                      |
+| `/login`             | Run Copilot login from the app              |
+
+Use `/byok env <base-url> [model]` (or `/byok <api-key> <base-url> [model]`) to enable OpenAI-compatible BYOK. TroubleScout fetches available models from that endpoint and uses the same model picker as `/model`.
 
 ## Architecture
 

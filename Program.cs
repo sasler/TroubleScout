@@ -13,6 +13,9 @@ var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
 var debugMode = false;
 var executionMode = ExecutionMode.Safe;
+var useByokOpenAi = false;
+string? byokOpenAiBaseUrl = null;
+string? byokOpenAiApiKey = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -53,16 +56,44 @@ for (int i = 0; i < args.Length; i++)
                 return 1;
             }
             break;
+        case "--byok-openai":
+            useByokOpenAi = true;
+            break;
+        case "--openai-base-url" when i + 1 < args.Length:
+            byokOpenAiBaseUrl = args[++i];
+            break;
+        case "--openai-api-key" when i + 1 < args.Length:
+            byokOpenAiApiKey = args[++i];
+            break;
     }
+}
+
+var settings = AppSettingsStore.Load();
+
+if (!useByokOpenAi && settings.UseByokOpenAi)
+{
+    useByokOpenAi = true;
+    byokOpenAiBaseUrl = settings.ByokOpenAiBaseUrl;
+    byokOpenAiApiKey = settings.ByokOpenAiApiKey;
 }
 
 if (string.IsNullOrWhiteSpace(model))
 {
-    var settings = AppSettingsStore.Load();
     if (!string.IsNullOrWhiteSpace(settings.LastModel))
     {
         model = settings.LastModel;
     }
+}
+
+if (useByokOpenAi)
+{
+    byokOpenAiApiKey = string.IsNullOrWhiteSpace(byokOpenAiApiKey)
+        ? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+        : byokOpenAiApiKey;
+
+    byokOpenAiBaseUrl = string.IsNullOrWhiteSpace(byokOpenAiBaseUrl)
+        ? "https://api.openai.com/v1"
+        : byokOpenAiBaseUrl;
 }
 
 if (string.IsNullOrWhiteSpace(mcpConfigPath))
@@ -88,12 +119,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
+    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode);
+    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
 }
 
 return Environment.ExitCode;
@@ -166,17 +197,30 @@ static async Task RunInteractiveModeAsync(
     IReadOnlyList<string> disabledSkills,
     string appVersion,
     bool debugMode,
-    ExecutionMode executionMode)
+    ExecutionMode executionMode,
+    bool useByokOpenAi,
+    string? byokOpenAiBaseUrl,
+    string? byokOpenAiApiKey)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
+    await using var session = new TroubleshootingSession(
+        server,
+        model,
+        mcpConfigPath,
+        skillDirectories,
+        disabledSkills,
+        debugMode,
+        executionMode,
+        useByokOpenAi,
+        byokOpenAiBaseUrl,
+        byokOpenAiApiKey);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
     {
-        return await session.InitializeAsync(updateStatus);
+        return await session.InitializeAsync(updateStatus, allowInteractiveSetup: true);
     });
     
     if (!success)
@@ -186,7 +230,7 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, true, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields());
+    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields());
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -208,14 +252,27 @@ static async Task RunHeadlessModeAsync(
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
     bool debugMode,
-    ExecutionMode executionMode)
+    ExecutionMode executionMode,
+    bool useByokOpenAi,
+    string? byokOpenAiBaseUrl,
+    string? byokOpenAiApiKey)
 {
-    await using var session = new TroubleshootingSession(server, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode);
+    await using var session = new TroubleshootingSession(
+        server,
+        model,
+        mcpConfigPath,
+        skillDirectories,
+        disabledSkills,
+        debugMode,
+        executionMode,
+        useByokOpenAi,
+        byokOpenAiBaseUrl,
+        byokOpenAiApiKey);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
     {
-        return await session.InitializeAsync(updateStatus);
+        return await session.InitializeAsync(updateStatus, allowInteractiveSetup: false);
     });
 
     if (!success)

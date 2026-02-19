@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Reflection;
+using GitHub.Copilot.SDK;
 using Spectre.Console;
 using TroubleScout.UI;
 using Xunit;
@@ -8,46 +9,17 @@ namespace TroubleScout.Tests.UI;
 
 public class ConsoleUITests
 {
-    [Theory]
-    [InlineData("claude-haiku-4.5", "0.33x")]
-    [InlineData("claude-opus-4.6", "3x")]
-    [InlineData("claude-sonnet-4.6", "1x")]
-    [InlineData("gemini-3-pro-preview", "1x")]
-    [InlineData("gpt-5.3-codex", "1x")]
-    [InlineData("gpt-5.1-codex-mini", "0.33x")]
-    [InlineData("gpt-5-mini", "0x")]
-    [InlineData("gpt-4.1", "0x")]
-    public void GetInferredRateLabel_ShouldReturnExpectedRates(string modelId, string expected)
-    {
-        // Act
-        var actual = InvokeGetInferredRateLabel(modelId);
-
-        // Assert
-        actual.Should().Be(expected);
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData("unknown-model")]
-    public void GetInferredRateLabel_ShouldReturnNullForUnknownOrEmpty(string? modelId)
-    {
-        // Act
-        var actual = InvokeGetInferredRateLabel(modelId);
-
-        // Assert
-        actual.Should().BeNull();
-    }
-
     [Fact]
-    public void GetInferredRateLabel_ShouldBeCaseInsensitiveAndTrimmed()
+    public void GetRateLabel_ShouldReturnNa_WhenBillingIsMissing()
     {
+        // Arrange
+        var model = new ModelInfo { Id = "model-a", Name = "Model A" };
+
         // Act
-        var actual = InvokeGetInferredRateLabel("  GPT-5.3-CODEX  ");
+        var actual = InvokeGetRateLabel(model);
 
         // Assert
-        actual.Should().Be("1x");
+        actual.Should().Be("n/a");
     }
 
     [Fact]
@@ -107,11 +79,11 @@ public class ConsoleUITests
         table.Rows.Should().HaveCount(1);
     }
 
-    private static string? InvokeGetInferredRateLabel(string? modelId)
+    private static string InvokeGetRateLabel(ModelInfo model)
     {
-        var method = typeof(ConsoleUI).GetMethod("GetInferredRateLabel", BindingFlags.Static | BindingFlags.NonPublic);
+        var method = typeof(ConsoleUI).GetMethod("GetRateLabel", BindingFlags.Static | BindingFlags.NonPublic);
 
         method.Should().NotBeNull();
-        return method!.Invoke(null, [modelId]) as string;
+        return method!.Invoke(null, [model]) as string ?? string.Empty;
     }
 }

@@ -5,6 +5,9 @@ namespace TroubleScout.Services;
 public sealed class AppSettings
 {
     public string? LastModel { get; set; }
+    public bool UseByokOpenAi { get; set; }
+    public string? ByokOpenAiBaseUrl { get; set; }
+    public string? ByokOpenAiApiKey { get; set; }
 }
 
 public static class AppSettingsStore

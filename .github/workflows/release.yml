@@ -37,76 +37,88 @@ jobs:
       - name: Build self-contained release
         shell: pwsh
         run: |
-          dotnet publish .\TroubleScout.csproj -c Release -r win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -o $env:PUBLISH_DIR
+          $rids = @("win-x64", "win-arm64")
+          foreach ($rid in $rids) {
+            $ridPublishDir = Join-Path $env:PUBLISH_DIR $rid
+            dotnet publish .\TroubleScout.csproj -c Release -r $rid `
+              --self-contained true `
+              -p:PublishSingleFile=true `
+              -o $ridPublishDir
+          }
 
       - name: Package release
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $publishPath = $env:PUBLISH_DIR
-          $zipName = "TroubleScout-$version-win-x64.zip"
-          $exePath = Join-Path $publishPath "TroubleScout.exe"
+          $rids = @("win-x64", "win-arm64")
 
-          # Verify executable exists
-          if (-not (Test-Path $exePath)) {
-            Write-Error "TroubleScout.exe not found at $exePath"
-            Write-Output "Contents of publish directory ($publishPath):"
-            if (Test-Path $publishPath) {
-              Get-ChildItem $publishPath | Select-Object Name,Mode,Length | Format-Table -AutoSize
-            } else {
-              Write-Output "Publish directory does not exist: $publishPath"
-              Get-ChildItem | Select-Object Name,Mode | Format-Table -AutoSize
-            }
-            exit 1
-          }
+          foreach ($rid in $rids) {
+            $publishPath = Join-Path $env:PUBLISH_DIR $rid
+            $zipName = "TroubleScout-$version-$rid.zip"
+            $exePath = Join-Path $publishPath "TroubleScout.exe"
 
-          # Create zip file with exact contents at archive root:
-          # - TroubleScout.exe
-          # - runtimes/  (only when publish output contains runtime files)
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          if (Test-Path $zipName) { Remove-Item $zipName -Force }
-
-          $zip = [System.IO.Compression.ZipFile]::Open($zipName, [System.IO.Compression.ZipArchiveMode]::Create)
-          try {
-            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $exePath, "TroubleScout.exe") | Out-Null
-
-            $runtimesSource = Join-Path $publishPath "runtimes"
-            if (Test-Path $runtimesSource) {
-              $runtimeFiles = Get-ChildItem $runtimesSource -Recurse -File -ErrorAction SilentlyContinue
-              if ($null -ne $runtimeFiles -and $runtimeFiles.Count -gt 0) {
-                foreach ($file in $runtimeFiles) {
-                  $relative = $file.FullName.Substring($runtimesSource.Length).TrimStart('\\','/')
-                  $entryName = ("runtimes/" + ($relative -replace '\\','/'))
-                  [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName) | Out-Null
-                }
-                Write-Output "Included runtimes/ files in release package."
+            # Verify executable exists
+            if (-not (Test-Path $exePath)) {
+              Write-Error "TroubleScout.exe not found at $exePath"
+              Write-Output "Contents of publish directory ($publishPath):"
+              if (Test-Path $publishPath) {
+                Get-ChildItem $publishPath | Select-Object Name,Mode,Length | Format-Table -AutoSize
               } else {
-                Write-Output "No runtime files found in publish output; skipping runtimes/ in release package."
+                Write-Output "Publish directory does not exist: $publishPath"
+                Get-ChildItem | Select-Object Name,Mode | Format-Table -AutoSize
               }
-            } else {
-              Write-Output "No runtimes folder found in publish output; skipping runtimes/ in release package."
+              exit 1
             }
-          }
-          finally {
-            $zip.Dispose()
-          }
 
-          Write-Output "Package created: $zipName"
+            # Create zip file with exact contents at archive root:
+            # - TroubleScout.exe
+            # - runtimes/  (only when publish output contains runtime files)
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            if (Test-Path $zipName) { Remove-Item $zipName -Force }
+
+            $zip = [System.IO.Compression.ZipFile]::Open($zipName, [System.IO.Compression.ZipArchiveMode]::Create)
+            try {
+              [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $exePath, "TroubleScout.exe") | Out-Null
+
+              $runtimesSource = Join-Path $publishPath "runtimes"
+              if (Test-Path $runtimesSource) {
+                $runtimeFiles = Get-ChildItem $runtimesSource -Recurse -File -ErrorAction SilentlyContinue
+                if ($null -ne $runtimeFiles -and $runtimeFiles.Count -gt 0) {
+                  foreach ($file in $runtimeFiles) {
+                    $relative = $file.FullName.Substring($runtimesSource.Length).TrimStart('\\','/')
+                    $entryName = ("runtimes/" + ($relative -replace '\\','/'))
+                    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName) | Out-Null
+                  }
+                  Write-Output "Included runtimes/ files in release package for $rid."
+                } else {
+                  Write-Output "No runtime files found in publish output for $rid; skipping runtimes/ in release package."
+                }
+              } else {
+                Write-Output "No runtimes folder found in publish output for $rid; skipping runtimes/ in release package."
+              }
+            }
+            finally {
+              $zip.Dispose()
+            }
+
+            Write-Output "Package created: $zipName"
+          }
 
       - name: Verify package exists
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $zipName = "TroubleScout-$version-win-x64.zip"
-          if (-not (Test-Path $zipName)) {
-            Write-Error "Expected release package '$zipName' was not found in the workspace."
-            Get-ChildItem | Select-Object Name,Length | Format-Table -AutoSize
-            exit 1
+          $rids = @("win-x64", "win-arm64")
+
+          foreach ($rid in $rids) {
+            $zipName = "TroubleScout-$version-$rid.zip"
+            if (-not (Test-Path $zipName)) {
+              Write-Error "Expected release package '$zipName' was not found in the workspace."
+              Get-ChildItem | Select-Object Name,Length | Format-Table -AutoSize
+              exit 1
+            }
+            Write-Output "Verified package exists: $zipName"
           }
-          Write-Output "Verified package exists: $zipName"
 
       - name: Extract release notes from CHANGELOG
         id: changelog
@@ -158,6 +170,7 @@ jobs:
           body_path: RELEASE_BODY.md
           files: |
             TroubleScout-${{ steps.version.outputs.version }}-win-x64.zip
+            TroubleScout-${{ steps.version.outputs.version }}-win-arm64.zip
           draft: false
           prerelease: false
         env:
