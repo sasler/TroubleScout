@@ -7,6 +7,11 @@ using Xunit;
 
 namespace TroubleScout.Tests;
 
+// Tests in this class mutate static resolver delegates and must not run in parallel.
+[CollectionDefinition("TroubleshootingSession", DisableParallelization = true)]
+public class TroubleshootingSessionCollection { }
+
+[Collection("TroubleshootingSession")]
 public class TroubleshootingSessionTests : IAsyncDisposable
 {
     private readonly TroubleshootingSession _session;
@@ -979,6 +984,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
         var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         var exePath = Path.Combine(tempDir, "copilot.exe");
@@ -988,6 +994,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", tempDir);
+            TroubleshootingSession.FileExistsResolver = _ => false;
 
             // Act
             var cliPath = TroubleshootingSession.GetCopilotCliPath();
@@ -999,6 +1006,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
+            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
             if (Directory.Exists(tempDir))
             {
                 Directory.Delete(tempDir, recursive: true);
@@ -1012,6 +1020,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
         var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
         var npmLoaderPath = Path.Combine(tempDir, "node_modules", "@github", "copilot", "npm-loader.js");
         Directory.CreateDirectory(Path.GetDirectoryName(npmLoaderPath)!);
@@ -1021,6 +1030,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", tempDir);
+            TroubleshootingSession.FileExistsResolver = _ => false;
 
             // Act
             var cliPath = TroubleshootingSession.GetCopilotCliPath();
@@ -1032,6 +1042,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
+            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
             if (Directory.Exists(tempDir))
             {
                 Directory.Delete(tempDir, recursive: true);
