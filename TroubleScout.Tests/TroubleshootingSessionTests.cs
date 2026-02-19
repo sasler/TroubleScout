@@ -950,12 +950,14 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
         
         try
         {
             // Clear COPILOT_CLI_PATH and PATH to force fallback behavior
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", string.Empty);
+            TroubleshootingSession.FileExistsResolver = _ => false;
 
             // Act
             var cliPath = TroubleshootingSession.GetCopilotCliPath();
@@ -967,6 +969,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
+            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
         }
     }
 
