@@ -2,6 +2,30 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.3.1] - 2026-02-19
+
+### ✨ Features
+
+- ✨ Render markdown pipe tables from streamed assistant responses as Spectre tables
+- ✨ Add live slash-command suggestions while typing prompt input
+- ✨ Make `/clear` start a new Copilot conversation session and surface a session ID
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Guard interactive prompt input against oversized pastes and reset input safely with explicit warning
+- 🛡️ Fix multiline input redraw clearing to avoid row-overflow cursor issues
+
+### 📝 Documentation & UX
+
+- 📝 Split startup quick-help from full `/help` command reference
+- 📝 Refresh help copy and reframe legacy "Diagnostic Categories" as "Troubleshooting Areas"
+- 📝 Route `--help` output through Spectre-based UI help rendering
+
+### ✅ Testing
+
+- ✅ Add markdown table parsing tests in `TroubleScout.Tests/UI/ConsoleUITests.cs`
+- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+
 ## [v1.3.0] - 2026-02-18
 
 ### ✨ Features
