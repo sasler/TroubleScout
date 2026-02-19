@@ -2,6 +2,34 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.3.2] - 2026-02-19
+
+### ✨ Features
+
+- ✨ Add OpenAI-compatible BYOK mode with `/byok`, base URL + API key configuration, and persisted session settings
+- ✨ Add in-app `/login` command and allow dual-provider model usage (GitHub Copilot + BYOK)
+- ✨ Merge `/model` catalog across providers and label model source (`GitHub`, `BYOK`, `GitHub+BYOK`)
+- ✨ Add Windows ARM64 release artifacts alongside Windows x64 in release workflow and packaging
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Improve startup behavior for unauthenticated GitHub sessions by allowing interactive setup without immediate failure
+- 🛡️ Fix status panel markup crash by escaping model text that contains source tags (e.g., `[GitHub]`)
+- 🛡️ Keep GitHub auth status tracking accurate while BYOK is active
+- 🛡️ Remove hardcoded model-rate and default-model assumptions from model selection paths
+
+### 📝 Documentation & UX
+
+- 📝 Add `LICENSE.md` for distribution and publishing readiness
+- 📝 Refresh README/CONTRIBUTING/release docs for BYOK usage, bundled CLI behavior, and multi-architecture releases
+- 📝 Expand quick-help and `/help` command references for `/login` and `/byok`
+
+### ✅ Testing
+
+- ✅ Update `ConsoleUITests` for dynamic model-rate behavior (no hardcoded model map)
+- ✅ Update app settings persistence tests for BYOK fields
+- ✅ Re-validate with `dotnet build` and targeted test runs for session, settings, and UI flows
+
 ## [v1.3.1] - 2026-02-19
 
 ### ✨ Features

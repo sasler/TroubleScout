@@ -187,7 +187,7 @@ dotnet test TroubleScout.Tests/TroubleScout.Tests.csproj
 ### Prerequisites
 
 1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
-2. **GitHub Copilot CLI** - Install/update via:
+2. **GitHub Copilot CLI** - Optional for local source runs without bundled assets. Install/update via:
 
    [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
@@ -195,7 +195,9 @@ dotnet test TroubleScout.Tests/TroubleScout.Tests.csproj
 
 4. **Node.js** - Only needed for npm-based Copilot CLI installation - [Download](https://nodejs.org/)
 
-5. **GitHub Copilot Access** - Active subscription required
+5. **Authentication mode**:
+   - GitHub mode: active GitHub Copilot subscription
+   - BYOK mode: OpenAI API key (`OPENAI_API_KEY`) and use `--byok-openai`
 
 ### Building from Source
 

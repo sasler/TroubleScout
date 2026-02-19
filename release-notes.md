@@ -13,18 +13,20 @@ AI-Powered Windows Server Troubleshooting Assistant using GitHub Copilot SDK
 
 ## 📦 Installation
 
-1. Download `TroubleScout-v1.0.0-win-x64.zip` below
+1. Download the architecture package you need (`TroubleScout-v1.0.0-win-x64.zip` or `TroubleScout-v1.0.0-win-arm64.zip`) below
 2. Extract to a folder
-3. Install Node.js and install/update Copilot CLI: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+3. Choose auth mode:
+   - GitHub mode: run `copilot login`
+   - BYOK mode: set `OPENAI_API_KEY` and run with `--byok-openai`
 4. Run `TroubleScout.exe`
 
 **No .NET SDK required** - self-contained runtime included!
 
 ## 📋 Requirements
 
-- Windows x64
-- Node.js ([Download](https://nodejs.org/))
-- Active GitHub Copilot subscription
+- Windows x64 or Windows ARM64
+- Node.js ([Download](https://nodejs.org/)) only for npm-based CLI installs
+- GitHub Copilot subscription (GitHub mode) or OpenAI API key (BYOK mode)
 
 ## 📝 What's Inside
 

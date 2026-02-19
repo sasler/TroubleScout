@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -16,9 +17,19 @@ namespace TroubleScout;
 /// </summary>
 public class TroubleshootingSession : IAsyncDisposable
 {
+    [Flags]
+    private enum ModelSource
+    {
+        None = 0,
+        GitHub = 1,
+        Byok = 2
+    }
+
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
     private const int MinSupportedNodeMajorVersion = 24;
+    private const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
+    private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
 
     internal static Func<string> CopilotCliPathResolver { get; set; } = GetCopilotCliPath;
     internal static Func<string, bool> FileExistsResolver { get; set; } = File.Exists;
@@ -33,6 +44,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _selectedModel;
     private string? _copilotVersion;
     private List<ModelInfo> _availableModels = new();
+    private readonly Dictionary<string, ModelSource> _modelSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly string? _mcpConfigPath;
     private readonly List<string> _skillDirectories;
     private readonly List<string> _disabledSkills;
@@ -43,11 +55,15 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly List<string> _configurationWarnings = new();
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
+    private bool _useByokOpenAi;
+    private string _byokOpenAiBaseUrl;
+    private string? _byokOpenAiApiKey;
     private readonly List<ReportPromptEntry> _reportPrompts = [];
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
     private string _sessionId = "n/a";
     private int _sessionCounter;
+    private bool _isGitHubCopilotAuthenticated;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -64,6 +80,8 @@ public class TroubleshootingSession : IAsyncDisposable
         "/capabilities",
         "/history",
         "/report",
+        "/login",
+        "/byok",
         "/exit",
         "/quit"
     ];
@@ -143,7 +161,10 @@ public class TroubleshootingSession : IAsyncDisposable
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
         bool debugMode = false,
-        ExecutionMode executionMode = ExecutionMode.Safe)
+        ExecutionMode executionMode = ExecutionMode.Safe,
+        bool useByokOpenAi = false,
+        string? byokOpenAiBaseUrl = null,
+        string? byokOpenAiApiKey = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _requestedModel = model;
@@ -152,6 +173,12 @@ public class TroubleshootingSession : IAsyncDisposable
         _disabledSkills = disabledSkills?.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
         _debugMode = debugMode;
         _executionMode = executionMode;
+        _useByokOpenAi = useByokOpenAi;
+        _byokOpenAiBaseUrl = string.IsNullOrWhiteSpace(byokOpenAiBaseUrl) ? DefaultOpenAiBaseUrl : byokOpenAiBaseUrl.Trim();
+        _byokOpenAiApiKey = string.IsNullOrWhiteSpace(byokOpenAiApiKey)
+            ? Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
+            : byokOpenAiApiKey.Trim();
+        _isGitHubCopilotAuthenticated = false;
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
@@ -168,6 +195,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
+    public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string CopilotVersion => _copilotVersion ?? "unknown";
     public IReadOnlyList<string> ConfiguredMcpServers => _configuredMcpServers;
@@ -231,7 +259,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// <summary>
     /// Initialize the session and establish connections
     /// </summary>
-    public async Task<bool> InitializeAsync(Action<string>? updateStatus = null)
+    public async Task<bool> InitializeAsync(Action<string>? updateStatus = null, bool allowInteractiveSetup = false)
     {
         if (_isInitialized)
             return true;
@@ -259,14 +287,21 @@ public class TroubleshootingSession : IAsyncDisposable
             updateStatus?.Invoke("Starting Copilot SDK...");
             copilotInitializationStarted = true;
             
-            // Resolve Copilot CLI path (env override, otherwise use installed CLI from PATH)
-            var cliPath = GetCopilotCliPath();
-            
-            _copilotClient = new CopilotClient(new CopilotClientOptions
+            // Resolve Copilot CLI path (env override, bundled app CLI, then installed fallback).
+            // If nothing explicit is found, let the SDK use its default resolution path.
+            var cliPath = TryResolvePreferredCopilotCliPath();
+
+            var clientOptions = new CopilotClientOptions
             {
-                CliPath = cliPath,
                 LogLevel = "info"
-            });
+            };
+
+            if (!string.IsNullOrWhiteSpace(cliPath))
+            {
+                clientOptions.CliPath = cliPath;
+            }
+
+            _copilotClient = new CopilotClient(clientOptions);
 
             try
             {
@@ -283,9 +318,41 @@ public class TroubleshootingSession : IAsyncDisposable
                 return false;
             }
 
-            var authStatus = await _copilotClient.GetAuthStatusAsync();
-            if (!authStatus.IsAuthenticated)
+            _isGitHubCopilotAuthenticated = await IsGitHubAuthenticatedAsync();
+
+            if (_useByokOpenAi)
             {
+                if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey))
+                {
+                    await ShowCopilotInitializationFailureAsync(
+                        $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
+                        includeDiagnostics: false);
+                    return false;
+                }
+
+                var byokModel = !string.IsNullOrWhiteSpace(_requestedModel) ? _requestedModel : _selectedModel;
+
+                if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
+                {
+                    return false;
+                }
+
+                await RefreshAvailableModelsAsync();
+
+                _isInitialized = true;
+                return true;
+            }
+
+            if (!_isGitHubCopilotAuthenticated)
+            {
+                if (allowInteractiveSetup)
+                {
+                    ConsoleUI.ShowWarning(
+                        "GitHub Copilot is not authenticated. Use /login to sign in, or /byok to configure OpenAI-compatible BYOK.");
+                    _isInitialized = true;
+                    return true;
+                }
+
                 await ShowCopilotInitializationFailureAsync(
                     "Copilot CLI is installed but not authenticated.\n\nTo continue:\n  1. Run: copilot login\n  2. Re-run TroubleScout",
                     includeDiagnostics: true);
@@ -305,14 +372,23 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (!string.IsNullOrWhiteSpace(_requestedModel) && _availableModels.All(m => m.Id != _requestedModel))
             {
-                ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available for your account.");
+                ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available.");
                 return false;
             }
 
             if (!await CreateCopilotSessionAsync(_requestedModel, updateStatus))
             {
+                if (allowInteractiveSetup)
+                {
+                    ConsoleUI.ShowWarning("AI session is not ready. Use /login or /byok to set up authentication, then continue.");
+                    _isInitialized = true;
+                    return true;
+                }
+
                 return false;
             }
+
+            await RefreshAvailableModelsAsync();
             
             _isInitialized = true;
             return true;
@@ -322,6 +398,13 @@ public class TroubleshootingSession : IAsyncDisposable
             if (copilotInitializationStarted)
             {
                 var report = await ValidateCopilotPrerequisitesAsync();
+                if (allowInteractiveSetup)
+                {
+                    ConsoleUI.ShowWarning(BuildActionableInitializationMessage(ex, report, _debugMode));
+                    _isInitialized = true;
+                    return true;
+                }
+
                 await ShowCopilotInitializationFailureAsync(
                     BuildActionableInitializationMessage(ex, report, _debugMode),
                     ex,
@@ -349,10 +432,44 @@ public class TroubleshootingSession : IAsyncDisposable
             return false;
         }
 
-        if (_availableModels.Count == 0 || _availableModels.All(m => m.Id != newModel))
+        if (string.IsNullOrWhiteSpace(newModel))
         {
-            ConsoleUI.ShowError("Invalid Model", $"The selected model '{newModel}' is not available for your account.");
+            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
             return false;
+        }
+
+        if (_availableModels.Count == 0 || _availableModels.All(m => !m.Id.Equals(newModel, StringComparison.OrdinalIgnoreCase)))
+        {
+            ConsoleUI.ShowError("Invalid Model", $"The selected model '{newModel}' is not available.");
+            return false;
+        }
+
+        var targetSource = ResolveTargetSource(newModel);
+        if (targetSource == ModelSource.None)
+        {
+            ConsoleUI.ShowError("Invalid Model", $"Could not determine provider for model '{newModel}'.");
+            return false;
+        }
+
+        if (targetSource == ModelSource.Byok)
+        {
+            if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+            {
+                ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
+                return false;
+            }
+
+            _useByokOpenAi = true;
+        }
+        else
+        {
+            if (!_isGitHubCopilotAuthenticated)
+            {
+                ConsoleUI.ShowWarning("GitHub Copilot is not authenticated. Run /login to use GitHub models.");
+                return false;
+            }
+
+            _useByokOpenAi = false;
         }
 
         try
@@ -379,16 +496,64 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
+    private ModelSource ResolveTargetSource(string modelId)
+    {
+        if (!_modelSources.TryGetValue(modelId, out var source))
+        {
+            return ModelSource.None;
+        }
+
+        if ((source & ModelSource.Byok) != 0 && (source & ModelSource.GitHub) != 0)
+        {
+            if (_useByokOpenAi)
+            {
+                return ModelSource.Byok;
+            }
+
+            return _isGitHubCopilotAuthenticated ? ModelSource.GitHub : ModelSource.Byok;
+        }
+
+        if ((source & ModelSource.Byok) != 0)
+        {
+            return ModelSource.Byok;
+        }
+
+        if ((source & ModelSource.GitHub) != 0)
+        {
+            return ModelSource.GitHub;
+        }
+
+        return ModelSource.None;
+    }
+
     /// <summary>
     /// Get the path to the Copilot CLI.
     /// </summary>
     internal static string GetCopilotCliPath()
     {
+        var preferredPath = TryResolvePreferredCopilotCliPath();
+        if (!string.IsNullOrWhiteSpace(preferredPath))
+        {
+            return preferredPath;
+        }
+
+        // Default to copilot in PATH
+        return "copilot";
+    }
+
+    private static string? TryResolvePreferredCopilotCliPath()
+    {
         // Check for COPILOT_CLI_PATH environment variable first
         var envPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
-        if (!string.IsNullOrEmpty(envPath) && File.Exists(envPath))
+        if (!string.IsNullOrEmpty(envPath) && FileExistsResolver(envPath))
         {
             return envPath;
+        }
+
+        var bundledPath = TryResolveBundledCopilotCliPath();
+        if (!string.IsNullOrWhiteSpace(bundledPath))
+        {
+            return bundledPath;
         }
 
         var installedPath = TryResolveInstalledCopilotCliPath();
@@ -397,8 +562,7 @@ public class TroubleshootingSession : IAsyncDisposable
             return installedPath;
         }
 
-        // Default to copilot in PATH
-        return "copilot";
+        return null;
     }
 
     private static string? TryResolveInstalledCopilotCliPath()
@@ -443,6 +607,40 @@ public class TroubleshootingSession : IAsyncDisposable
         return null;
     }
 
+    private static string? TryResolveBundledCopilotCliPath()
+    {
+        var baseDirectory = AppContext.BaseDirectory;
+        var architecture = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.X86 => "x86",
+            Architecture.Arm64 => "arm64",
+            Architecture.Arm => "arm",
+            _ => RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()
+        };
+        var runtimeIdentifier = $"win-{architecture}";
+
+        var candidates = new[]
+        {
+            Path.Combine(baseDirectory, "copilot.exe"),
+            Path.Combine(baseDirectory, $"copilot-{runtimeIdentifier}.exe"),
+            Path.Combine(baseDirectory, "vendor", "copilot.exe"),
+            Path.Combine(baseDirectory, "vendor", $"copilot-{runtimeIdentifier}.exe"),
+            Path.Combine(baseDirectory, "runtimes", runtimeIdentifier, "native", "copilot.exe"),
+            Path.Combine(baseDirectory, "runtimes", runtimeIdentifier, "native", $"copilot-{runtimeIdentifier}.exe")
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (FileExistsResolver(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     private string? GetModelDisplayName(string? modelId)
     {
         if (string.IsNullOrWhiteSpace(modelId))
@@ -468,6 +666,19 @@ public class TroubleshootingSession : IAsyncDisposable
         try
         {
             var cliPath = CopilotCliPathResolver();
+
+            if (Path.IsPathRooted(cliPath) && !FileExistsResolver(cliPath))
+            {
+                issues.Add(new CopilotPrerequisiteIssue(
+                    "Copilot CLI binary was not found",
+                    "TroubleScout could not locate the configured Copilot CLI path.\n" +
+                    $"Configured path: {cliPath}\n\n" +
+                    "If you are using a bundled deployment, ensure the CLI binary is included in the app folder.\n" +
+                    "If you are using a system installation, set COPILOT_CLI_PATH or install Copilot CLI globally.",
+                    true));
+
+                return new CopilotPrerequisiteReport(issues);
+            }
 
             if (cliPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase) && !FileExistsResolver(cliPath))
             {
@@ -695,7 +906,7 @@ public class TroubleshootingSession : IAsyncDisposable
             || string.IsNullOrWhiteSpace(extension);
     }
 
-    private async Task<List<ModelInfo>> GetMergedModelListAsync(string cliPath)
+    private async Task<List<ModelInfo>> GetMergedModelListAsync(string? cliPath)
     {
         if (_copilotClient == null)
         {
@@ -708,23 +919,119 @@ public class TroubleshootingSession : IAsyncDisposable
             models.Where(model => !string.IsNullOrWhiteSpace(model.Id)).Select(model => model.Id),
             StringComparer.OrdinalIgnoreCase);
 
-        var cliModelIds = await TryGetCliModelIdsAsync(cliPath);
-        foreach (var cliModelId in cliModelIds)
+        if (!string.IsNullOrWhiteSpace(cliPath))
         {
-            if (existingIds.Contains(cliModelId))
+            var cliModelIds = await TryGetCliModelIdsAsync(cliPath);
+            foreach (var cliModelId in cliModelIds)
             {
-                continue;
-            }
+                if (existingIds.Contains(cliModelId))
+                {
+                    continue;
+                }
 
-            models.Add(new ModelInfo
-            {
-                Id = cliModelId,
-                Name = ToModelDisplayName(cliModelId)
-            });
-            existingIds.Add(cliModelId);
+                models.Add(new ModelInfo
+                {
+                    Id = cliModelId,
+                    Name = ToModelDisplayName(cliModelId)
+                });
+                existingIds.Add(cliModelId);
+            }
         }
 
         return models;
+    }
+
+    private async Task<List<ModelInfo>> TryGetGitHubProviderModelsAsync()
+    {
+        if (_copilotClient == null || !_isGitHubCopilotAuthenticated)
+        {
+            return [];
+        }
+
+        try
+        {
+            return await GetMergedModelListAsync(GetCopilotCliPath());
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private void UpdateAvailableModels(IReadOnlyList<ModelInfo> githubModels, IReadOnlyList<ModelInfo> byokModels)
+    {
+        _modelSources.Clear();
+
+        var byId = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var model in githubModels.Where(model => !string.IsNullOrWhiteSpace(model.Id)))
+        {
+            _modelSources[model.Id] = _modelSources.TryGetValue(model.Id, out var existing)
+                ? existing | ModelSource.GitHub
+                : ModelSource.GitHub;
+
+            byId[model.Id] = new ModelInfo
+            {
+                Id = model.Id,
+                Name = model.Name,
+                Billing = model.Billing
+            };
+        }
+
+        foreach (var model in byokModels.Where(model => !string.IsNullOrWhiteSpace(model.Id)))
+        {
+            _modelSources[model.Id] = _modelSources.TryGetValue(model.Id, out var existing)
+                ? existing | ModelSource.Byok
+                : ModelSource.Byok;
+
+            if (!byId.TryGetValue(model.Id, out var existingModel))
+            {
+                byId[model.Id] = new ModelInfo
+                {
+                    Id = model.Id,
+                    Name = model.Name,
+                    Billing = model.Billing
+                };
+            }
+            else
+            {
+                if (existingModel.Billing == null && model.Billing != null)
+                {
+                    existingModel.Billing = model.Billing;
+                }
+
+                if (string.IsNullOrWhiteSpace(existingModel.Name) && !string.IsNullOrWhiteSpace(model.Name))
+                {
+                    existingModel.Name = model.Name;
+                }
+            }
+        }
+
+        _availableModels = byId.Values
+            .OrderBy(model => model.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var model in _availableModels)
+        {
+            var sourceLabel = _modelSources.TryGetValue(model.Id, out var source)
+                ? source switch
+                {
+                    ModelSource.GitHub => "GitHub",
+                    ModelSource.Byok => "BYOK",
+                    ModelSource.GitHub | ModelSource.Byok => "GitHub+BYOK",
+                    _ => "Unknown"
+                }
+                : "Unknown";
+
+            model.Name = $"{ToModelDisplayName(model.Id)} [{sourceLabel}]";
+        }
+    }
+
+    private async Task RefreshAvailableModelsAsync()
+    {
+        var githubModels = await TryGetGitHubProviderModelsAsync();
+        var byokModels = await TryGetByokProviderModelsAsync();
+        UpdateAvailableModels(githubModels, byokModels);
     }
 
     private static string ToModelDisplayName(string modelId)
@@ -909,8 +1216,9 @@ public class TroubleshootingSession : IAsyncDisposable
         var cliPath = CopilotCliPathResolver();
         var nodeRuntimeRequired = await CliPathRequiresNodeRuntimeAsync(cliPath);
 
-        var copilotVersion = await ProcessRunnerResolver("cmd.exe", "/c copilot --version");
-        diagnostics.Add(FormatDiagnosticLine("copilot --version", copilotVersion));
+        var (copilotCommand, copilotArguments) = BuildCopilotCommand(cliPath, "--version");
+        var copilotVersion = await ProcessRunnerResolver(copilotCommand, copilotArguments);
+        diagnostics.Add(FormatDiagnosticLine($"{copilotCommand} {copilotArguments}", copilotVersion));
 
         var nodeVersion = await ProcessRunnerResolver("node", "--version");
         diagnostics.Add(FormatDiagnosticLine("node --version", nodeVersion));
@@ -1321,6 +1629,15 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
+    private static void SaveByokSettings(bool enabled, string? baseUrl, string? apiKey)
+    {
+        var settings = AppSettingsStore.Load();
+        settings.UseByokOpenAi = enabled;
+        settings.ByokOpenAiBaseUrl = enabled ? baseUrl : null;
+        settings.ByokOpenAiApiKey = enabled ? apiKey : null;
+        AppSettingsStore.Save(settings);
+    }
+
     /// <summary>
     /// Run the interactive session loop
     /// </summary>
@@ -1367,6 +1684,130 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/status")
             {
                 ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                continue;
+            }
+
+            if (firstToken == "/login")
+            {
+                var loginSucceeded = await ConsoleUI.RunWithSpinnerAsync("Running Copilot login...", async updateStatus =>
+                {
+                    return await LoginAndCreateGitHubSessionAsync(updateStatus);
+                });
+
+                if (loginSucceeded)
+                {
+                    ConsoleUI.ShowSuccess("GitHub Copilot login completed and session is ready.");
+                }
+
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/byok"))
+            {
+                var byokParts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string? apiKey = null;
+                var byokBaseUrl = _byokOpenAiBaseUrl;
+                var byokModel = _selectedModel ?? _requestedModel;
+
+                if (byokParts.Length == 1)
+                {
+                    ConsoleUI.ShowInfo($"Enter OpenAI-compatible base URL (default: {_byokOpenAiBaseUrl})");
+                    var baseUrlInput = ConsoleUI.GetUserInput().Trim();
+                    if (!string.IsNullOrWhiteSpace(baseUrlInput))
+                    {
+                        byokBaseUrl = baseUrlInput;
+                    }
+
+                    ConsoleUI.ShowInfo($"Enter API key, or type 'env' to use {OpenAiApiKeyEnvironmentVariable}.");
+                    var apiKeyInput = ConsoleUI.GetUserInput().Trim();
+                    if (apiKeyInput.Equals("env", StringComparison.OrdinalIgnoreCase))
+                    {
+                        apiKey = Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
+                    }
+                    else
+                    {
+                        apiKey = apiKeyInput;
+                    }
+                }
+                else
+                {
+                    var sourceArg = byokParts[1];
+
+                    if (sourceArg.Equals("env", StringComparison.OrdinalIgnoreCase))
+                    {
+                        apiKey = Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
+                        if (byokParts.Length > 2)
+                        {
+                            if (LooksLikeUrl(byokParts[2]))
+                            {
+                                byokBaseUrl = byokParts[2];
+                                if (byokParts.Length > 3)
+                                {
+                                    byokModel = byokParts[3];
+                                }
+                            }
+                            else
+                            {
+                                byokModel = byokParts[2];
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (byokParts.Length > 2 && LooksLikeUrl(byokParts[2]))
+                        {
+                            apiKey = sourceArg;
+                            byokBaseUrl = byokParts[2];
+                            if (byokParts.Length > 3)
+                            {
+                                byokModel = byokParts[3];
+                            }
+                        }
+                        else if (LooksLikeUrl(sourceArg))
+                        {
+                            byokBaseUrl = sourceArg;
+                            if (byokParts.Length > 2)
+                            {
+                                apiKey = byokParts[2];
+                            }
+                            if (byokParts.Length > 3)
+                            {
+                                byokModel = byokParts[3];
+                            }
+                        }
+                        else
+                        {
+                            apiKey = sourceArg;
+                            if (byokParts.Length > 2)
+                            {
+                                byokModel = byokParts[2];
+                            }
+                        }
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    ConsoleUI.ShowWarning($"No API key was provided. Set {OpenAiApiKeyEnvironmentVariable} or pass it as /byok <api-key> [base-url] [model].");
+                    ConsoleUI.ShowInfo("Examples:");
+                    ConsoleUI.ShowInfo("  /byok env https://api.openai.com/v1");
+                    ConsoleUI.ShowInfo("  /byok sk-... https://aigw.example.org");
+                    continue;
+                }
+
+                if (!LooksLikeUrl(byokBaseUrl))
+                {
+                    ConsoleUI.ShowWarning("Base URL is invalid. Example: https://api.openai.com/v1");
+                    continue;
+                }
+
+                var byokReady = await ConfigureByokOpenAiAsync(byokBaseUrl, apiKey, byokModel, updateStatus: null);
+
+                if (byokReady)
+                {
+                    ConsoleUI.ShowSuccess($"BYOK enabled with model: {SelectedModel}");
+                }
+
                 continue;
             }
 
@@ -1423,10 +1864,11 @@ public class TroubleshootingSession : IAsyncDisposable
                 {
                     try
                     {
-                        var latestModels = await GetMergedModelListAsync(GetCopilotCliPath());
-                        if (latestModels.Count > 0)
+                        await RefreshAvailableModelsAsync();
+
+                        if (_availableModels.Count == 0)
                         {
-                            _availableModels = latestModels;
+                            ConsoleUI.ShowWarning("No models available. Authenticate with /login and/or configure BYOK with /byok.");
                         }
                     }
                     catch (Exception ex)
@@ -1436,6 +1878,11 @@ public class TroubleshootingSession : IAsyncDisposable
                             ConsoleUI.ShowWarning($"Could not refresh model list: {TrimSingleLine(ex.Message)}");
                         }
                     }
+                }
+
+                if (_availableModels.Count == 0)
+                {
+                    continue;
                 }
 
                 var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
@@ -1546,6 +1993,281 @@ public class TroubleshootingSession : IAsyncDisposable
                 : _selectedModel;
 
             return await CreateCopilotSessionAsync(modelToUse, updateStatus);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool LooksLikeUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+               && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                   || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> BuildByokModelEndpointCandidates(string baseUrl)
+    {
+        var normalizedBaseUrl = baseUrl.Trim().TrimEnd('/');
+        var candidates = new List<string>
+        {
+            normalizedBaseUrl + "/models"
+        };
+
+        if (!normalizedBaseUrl.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            candidates.Add(normalizedBaseUrl + "/v1/models");
+        }
+
+        return candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<List<ModelInfo>> TryGetByokProviderModelsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+        {
+            return [];
+        }
+
+        using var httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(15)
+        };
+
+        var endpointCandidates = BuildByokModelEndpointCandidates(_byokOpenAiBaseUrl);
+        foreach (var endpoint in endpointCandidates)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {_byokOpenAiApiKey}");
+                request.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+                using var response = await httpClient.SendAsync(request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    continue;
+                }
+
+                await using var stream = await response.Content.ReadAsStreamAsync();
+                using var document = await JsonDocument.ParseAsync(stream);
+
+                if (!document.RootElement.TryGetProperty("data", out var dataElement)
+                    || dataElement.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                var discovered = new List<ModelInfo>();
+                foreach (var modelElement in dataElement.EnumerateArray())
+                {
+                    if (!modelElement.TryGetProperty("id", out var idElement)
+                        || idElement.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var modelId = idElement.GetString();
+                    if (string.IsNullOrWhiteSpace(modelId)
+                        || discovered.Any(existing => existing.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    discovered.Add(new ModelInfo
+                    {
+                        Id = modelId,
+                        Name = ToModelDisplayName(modelId)
+                    });
+                }
+
+                if (discovered.Count > 0)
+                {
+                    return discovered;
+                }
+            }
+            catch
+            {
+                // Try next candidate endpoint.
+            }
+        }
+
+        return [];
+    }
+
+    private async Task<bool> ConfigureByokOpenAiAsync(string baseUrl, string apiKey, string? model, Action<string>? updateStatus)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            ConsoleUI.ShowWarning($"OpenAI API key is required. Set {OpenAiApiKeyEnvironmentVariable} or pass /byok <api-key> [base-url] [model].");
+            return false;
+        }
+
+        if (!LooksLikeUrl(baseUrl))
+        {
+            ConsoleUI.ShowWarning("OpenAI-compatible base URL is required. Example: https://api.openai.com/v1");
+            return false;
+        }
+
+        _useByokOpenAi = true;
+        _byokOpenAiBaseUrl = baseUrl.Trim();
+        _byokOpenAiApiKey = apiKey.Trim();
+
+        if (_copilotClient == null)
+        {
+            ConsoleUI.ShowWarning("Copilot client is not ready. Restart TroubleScout and try /byok again.");
+            return false;
+        }
+
+        if (_copilotSession != null)
+        {
+            await _copilotSession.DisposeAsync();
+            _copilotSession = null;
+        }
+
+        updateStatus?.Invoke("Fetching models from OpenAI-compatible endpoint...");
+        if (updateStatus == null)
+        {
+            ConsoleUI.ShowInfo("Fetching models from OpenAI-compatible endpoint...");
+        }
+
+        var discoveredModels = await TryGetByokProviderModelsAsync();
+        if (discoveredModels.Count > 0)
+        {
+            var preferredModel = !string.IsNullOrWhiteSpace(model) && discoveredModels.Any(item => item.Id.Equals(model, StringComparison.OrdinalIgnoreCase))
+                ? model
+                : discoveredModels[0].Id;
+
+            var selectedModel = ConsoleUI.PromptModelSelection(preferredModel, discoveredModels);
+            if (string.IsNullOrWhiteSpace(selectedModel))
+            {
+                ConsoleUI.ShowWarning("BYOK model selection was canceled.");
+                return false;
+            }
+
+            model = selectedModel;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                ConsoleUI.ShowInfo("Could not fetch models from the OpenAI-compatible endpoint.");
+                ConsoleUI.ShowInfo("Enter model ID to continue with BYOK:");
+                model = ConsoleUI.GetUserInput().Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                ConsoleUI.ShowWarning("A model ID is required when provider model discovery is unavailable.");
+                return false;
+            }
+        }
+
+        var created = await CreateCopilotSessionAsync(model, updateStatus);
+        if (created)
+        {
+            SaveByokSettings(true, _byokOpenAiBaseUrl, _byokOpenAiApiKey);
+        }
+
+        return created;
+    }
+
+    private async Task<bool> LoginAndCreateGitHubSessionAsync(Action<string>? updateStatus)
+    {
+        if (_copilotClient == null)
+        {
+            ConsoleUI.ShowWarning("Copilot client is not ready. Restart TroubleScout and try again.");
+            return false;
+        }
+
+        var cliPath = GetCopilotCliPath();
+        var (command, args) = BuildCopilotCommand(cliPath, "login");
+
+        updateStatus?.Invoke("Launching authentication flow...");
+
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = command,
+                Arguments = args,
+                UseShellExecute = true,
+                CreateNoWindow = false
+            });
+
+            if (process == null)
+            {
+                ConsoleUI.ShowWarning("Could not start copilot login process.");
+                return false;
+            }
+
+            await process.WaitForExitAsync();
+        }
+        catch (Exception ex)
+        {
+            ConsoleUI.ShowWarning($"Failed to run login flow: {TrimSingleLine(ex.Message)}");
+            return false;
+        }
+
+        var authStatus = await _copilotClient.GetAuthStatusAsync();
+        if (!authStatus.IsAuthenticated)
+        {
+            _isGitHubCopilotAuthenticated = false;
+            ConsoleUI.ShowWarning("Login did not complete. Try /login again, then verify your browser/device flow finished.");
+            return false;
+        }
+
+        _isGitHubCopilotAuthenticated = true;
+
+        if (_copilotSession != null)
+        {
+            await _copilotSession.DisposeAsync();
+            _copilotSession = null;
+        }
+
+        updateStatus?.Invoke("Creating authenticated AI session...");
+
+        var githubModels = await GetMergedModelListAsync(GetCopilotCliPath());
+        if (githubModels.Count == 0)
+        {
+            ConsoleUI.ShowWarning("No GitHub Copilot models are currently available after login.");
+            return false;
+        }
+
+        _useByokOpenAi = false;
+        var modelToUse = !string.IsNullOrWhiteSpace(_selectedModel)
+            && githubModels.Any(model => model.Id.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase))
+                ? _selectedModel
+                : githubModels[0].Id;
+
+        var created = await CreateCopilotSessionAsync(modelToUse, updateStatus);
+        if (created)
+        {
+            await RefreshAvailableModelsAsync();
+        }
+
+        return created;
+    }
+
+    private async Task<bool> IsGitHubAuthenticatedAsync()
+    {
+        if (_copilotClient == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var authStatus = await _copilotClient.GetAuthStatusAsync();
+            return authStatus.IsAuthenticated;
         }
         catch
         {
@@ -1940,6 +2662,16 @@ public class TroubleshootingSession : IAsyncDisposable
             Tools = _diagnosticTools.GetTools().ToList()
         };
 
+        if (_useByokOpenAi)
+        {
+            config.Provider = new ProviderConfig
+            {
+                Type = "openai",
+                BaseUrl = _byokOpenAiBaseUrl,
+                ApiKey = _byokOpenAiApiKey
+            };
+        }
+
         if (mcpServers.Count > 0)
         {
             config.McpServers = mcpServers;
@@ -2037,6 +2769,9 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
         var fields = new List<(string Label, string Value)>();
+        fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
+        fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
+        fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
         fields.Add(("Session ID", _sessionId));
 
         if (_lastUsage != null && _lastUsage.HasAny)

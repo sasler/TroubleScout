@@ -17,28 +17,6 @@ public static class ConsoleUI
     private static int _lastSuggestionRowCount;
     private static int _lastSuggestionRowOffset = 1;
     private const int MaxPromptInputLength = 4000;
-    private static readonly IReadOnlyDictionary<string, string> KnownModelRateLabels =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["claude-haiku-4.5"] = "0.33x",
-            ["claude-opus-4.6-fast"] = "30x",
-            ["claude-opus-4.6"] = "3x",
-            ["claude-opus-4.5"] = "3x",
-            ["claude-sonnet-4.6"] = "1x",
-            ["claude-sonnet-4.5"] = "1x",
-            ["claude-sonnet-4"] = "1x",
-            ["gemini-3-pro-preview"] = "1x",
-            ["gpt-5.3-codex"] = "1x",
-            ["gpt-5.2-codex"] = "1x",
-            ["gpt-5.2"] = "1x",
-            ["gpt-5.1-codex-max"] = "1x",
-            ["gpt-5.1-codex"] = "1x",
-            ["gpt-5.1"] = "1x",
-            ["gpt-5"] = "1x",
-            ["gpt-5.1-codex-mini"] = "0.33x",
-            ["gpt-5-mini"] = "0x",
-            ["gpt-4.1"] = "0x"
-        };
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -105,7 +83,7 @@ public static class ConsoleUI
         
         var copilotStatus = copilotReady 
             ? "[green]Connected[/]" 
-            : "[yellow]Connecting...[/]";
+            : "[yellow]Not ready[/]";
         
         grid.AddRow("[grey]Target Server:[/]", serverStatus);
         grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{connectionMode}[/]");
@@ -115,7 +93,7 @@ public static class ConsoleUI
         if (copilotReady)
         {
             var modelDisplay = !string.IsNullOrEmpty(model) && model != "default" 
-                ? $"[magenta]{model}[/]" 
+                ? $"[magenta]{Markup.Escape(model)}[/]" 
                 : "[grey]default[/]";
             grid.AddRow("[grey]AI Model:[/]", modelDisplay);
         }
@@ -142,7 +120,7 @@ public static class ConsoleUI
         
         if (copilotReady)
         {
-            AnsiConsole.MarkupLine("[grey]  Tip: Use /model to select AI model. Free model like GPT-4.1 is recommended.[/]");
+            AnsiConsole.MarkupLine("[grey]  Tip: Use /model to select AI model.[/]");
         }
         AnsiConsole.WriteLine();
     }
@@ -224,6 +202,8 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
         commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Connect to server");
+        commandTable.AddRow("[cyan]/login[/]", "Start in-app GitHub Copilot login flow");
+        commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Configure OpenAI-compatible BYOK for this session");
         commandTable.AddRow("[cyan]/help[/]", "Show full command help");
         commandTable.AddRow("[cyan]/exit[/] [grey]or[/] [cyan]/quit[/]", "End the app");
 
@@ -262,6 +242,8 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Reconnect to a different target server");
+        commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
+        commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
         commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
         commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
         commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
@@ -1215,20 +1197,7 @@ public static class ConsoleUI
             return $"{model.Billing.Multiplier:0.##}x";
         }
 
-        var inferredRate = GetInferredRateLabel(model.Id);
-        return inferredRate ?? "n/a";
-    }
-
-    private static string? GetInferredRateLabel(string? modelId)
-    {
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            return null;
-        }
-
-        return KnownModelRateLabels.TryGetValue(modelId.Trim(), out var rateLabel)
-            ? rateLabel
-            : null;
+        return "n/a";
     }
 
     private sealed record ModelChoice(ModelInfo Model, string DisplayName, string RateLabel)

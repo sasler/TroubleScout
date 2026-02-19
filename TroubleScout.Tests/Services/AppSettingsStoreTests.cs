@@ -66,7 +66,10 @@ public class AppSettingsStoreTests : IDisposable
         // Arrange
         var settings = new AppSettings
         {
-            LastModel = "gpt-4o"
+            LastModel = "gpt-4o",
+            UseByokOpenAi = true,
+            ByokOpenAiBaseUrl = "https://proxy.example/v1",
+            ByokOpenAiApiKey = "sk-test"
         };
 
         // Act
@@ -76,6 +79,35 @@ public class AppSettingsStoreTests : IDisposable
         // Assert
         loaded.Should().NotBeNull();
         loaded.LastModel.Should().Be("gpt-4o");
+        loaded.UseByokOpenAi.Should().BeTrue();
+        loaded.ByokOpenAiBaseUrl.Should().Be("https://proxy.example/v1");
+        loaded.ByokOpenAiApiKey.Should().Be("sk-test");
+    }
+
+    [Fact]
+    public void Save_ByokApiKey_ShouldPersistEncryptedFieldAndKeepCompatibility()
+    {
+        // Arrange
+        var settings = new AppSettings
+        {
+            UseByokOpenAi = true,
+            ByokOpenAiBaseUrl = "https://proxy.example/v1",
+            ByokOpenAiApiKey = "sk-secret"
+        };
+
+        // Act
+        AppSettingsStore.Save(settings);
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+        var loaded = AppSettingsStore.Load();
+
+        // Assert
+        json.Should().Contain("\"ByokOpenAiApiKeyEncrypted\"");
+        loaded.ByokOpenAiApiKey.Should().Be("sk-secret");
+
+        if (OperatingSystem.IsWindows())
+        {
+            json.Should().NotContain("\"ByokOpenAiApiKey\": \"sk-secret\"");
+        }
     }
 
     [Fact]
