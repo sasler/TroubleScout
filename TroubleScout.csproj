@@ -9,9 +9,9 @@
     <CopilotCliDownloadTimeout>600000</CopilotCliDownloadTimeout>
     <CopilotSkipCliDownload Condition="'$(Configuration)' != 'Release'">true</CopilotSkipCliDownload>
     <CopilotSkipCliDownload Condition="'$(Configuration)' == 'Release'">false</CopilotSkipCliDownload>
-    <Version>1.3.2</Version>
-    <AssemblyVersion>1.3.2.0</AssemblyVersion>
-    <FileVersion>1.3.2.0</FileVersion>
+    <Version>1.3.3</Version>
+    <AssemblyVersion>1.3.3.0</AssemblyVersion>
+    <FileVersion>1.3.3.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

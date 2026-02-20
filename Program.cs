@@ -68,6 +68,13 @@ for (int i = 0; i < args.Length; i++)
     }
 }
 
+if (args.Length == 0 && IsNonInteractiveLaunch())
+{
+    Console.WriteLine($"TroubleScout {appVersion}");
+    Console.WriteLine("Non-interactive launch detected. Use --help for usage.");
+    return 0;
+}
+
 var settings = AppSettingsStore.Load();
 
 if (!useByokOpenAi && settings.UseByokOpenAi)
@@ -128,6 +135,14 @@ else
 }
 
 return Environment.ExitCode;
+
+static bool IsNonInteractiveLaunch()
+{
+    return !Environment.UserInteractive
+        || Console.IsInputRedirected
+        || Console.IsOutputRedirected
+        || Console.IsErrorRedirected;
+}
 
 static string? ResolveDefaultMcpConfigPath()
 {
