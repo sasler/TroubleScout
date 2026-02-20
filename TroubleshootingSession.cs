@@ -1711,11 +1711,9 @@ public class TroubleshootingSession : IAsyncDisposable
                      || byokParts[1].Equals("off", StringComparison.OrdinalIgnoreCase)
                      || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
                 {
-                    _useByokOpenAi = false;
-                    _byokOpenAiApiKey = null;
-                    _byokOpenAiBaseUrl = DefaultOpenAiBaseUrl;
                     SaveByokSettings(false, null, null);
-                    ConsoleUI.ShowSuccess("BYOK settings cleared for this profile.");
+                    ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
+                    ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
                     ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
                     continue;
                 }
