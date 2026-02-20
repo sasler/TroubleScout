@@ -204,6 +204,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Connect to server");
         commandTable.AddRow("[cyan]/login[/]", "Start in-app GitHub Copilot login flow");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Configure OpenAI-compatible BYOK for this session");
+        commandTable.AddRow("[cyan]/byok clear[/]", "Remove saved BYOK settings for this profile");
         commandTable.AddRow("[cyan]/help[/]", "Show full command help");
         commandTable.AddRow("[cyan]/exit[/] [grey]or[/] [cyan]/quit[/]", "End the app");
 
@@ -244,6 +245,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Reconnect to a different target server");
         commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
+        commandTable.AddRow("[cyan]/byok clear[/]", "Clear saved BYOK settings for this profile");
         commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
         commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
         commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");

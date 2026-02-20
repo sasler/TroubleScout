@@ -2,6 +2,24 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.3.3] - 2026-02-20
+
+### ✨ Features
+
+- ✨ Add `/byok clear` command aliases (`/byok off`, `/byok disable`) to remove saved BYOK settings from profile storage
+
+### 🛡️ Reliability Improvements
+
+- 🛡️ Add non-interactive startup guard for no-argument launches so validator-style executable checks exit cleanly with status code 0
+
+### 📝 Documentation & UX
+
+- 📝 Update welcome and `/help` command references to include `/byok clear`
+
+### ✅ Testing
+
+- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+
 ## [v1.3.2] - 2026-02-19
 
 ### ✨ Features

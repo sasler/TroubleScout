@@ -1705,6 +1705,19 @@ public class TroubleshootingSession : IAsyncDisposable
             if (IsSlashCommandInvocation(lowerInput, "/byok"))
             {
                 var byokParts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                if (byokParts.Length > 1 &&
+                    (byokParts[1].Equals("clear", StringComparison.OrdinalIgnoreCase)
+                     || byokParts[1].Equals("off", StringComparison.OrdinalIgnoreCase)
+                     || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
+                {
+                    SaveByokSettings(false, null, null);
+                    ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
+                    ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
+                    ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
+                    continue;
+                }
+
                 string? apiKey = null;
                 var byokBaseUrl = _byokOpenAiBaseUrl;
                 var byokModel = _selectedModel ?? _requestedModel;
