@@ -2880,8 +2880,6 @@ public class TroubleshootingSession : IAsyncDisposable
 
     internal SessionConfig BuildSessionConfig(string? model)
     {
-        var executionMode = _executionMode; // capture for lambda
-
         return new SessionConfig
         {
             Model = model,
@@ -2896,8 +2894,8 @@ public class TroubleshootingSession : IAsyncDisposable
                 if (kind is "file-read" or "url-fetch" or "custom-tool")
                     return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
 
-                // In YOLO mode, approve everything
-                if (executionMode == ExecutionMode.Yolo)
+                // In YOLO mode, approve everything (read live value so /mode changes take effect)
+                if (_executionMode == ExecutionMode.Yolo)
                     return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
 
                 // In Safe mode: MCP, shell, file-write require user approval

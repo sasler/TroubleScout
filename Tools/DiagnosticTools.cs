@@ -686,7 +686,7 @@ public class DiagnosticTools
     {
         var executor = command.Executor ?? _executor;
         var serverName = command.ServerName;
-        var wrappedCommand = WrapCommandWithTargetVerification(command.Command);
+        var wrappedCommand = WrapCommandWithTargetVerification(command.Command, executor, serverName);
         _executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
         var displayTarget = serverName ?? _targetServer;
         ConsoleUI.ShowCommandExecution(command.Command, displayTarget);
