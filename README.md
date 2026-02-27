@@ -114,7 +114,7 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 ### Command Line Options
 
 - `--server` (`-s`): Target server name or IP (default: localhost)
-- `--model` (`-m`): AI model to use (e.g., gpt-4o, claude-sonnet-4)
+- `--model` (`-m`): AI model to use (e.g., gpt-4.1, claude-sonnet-4.6)
 - `--prompt` (`-p`): Initial prompt for headless mode
 - `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
 - `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)

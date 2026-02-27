@@ -249,7 +249,7 @@ public static class ConsoleUI
 
         optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server hostname or IP (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
-        optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4o, o3-mini)");
+        optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
         optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
@@ -273,7 +273,7 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01 --prompt [grey]\"Check disk space\"[/]");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with YOLO execution mode[/]");
-        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4o --mode yolo");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode yolo");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Use BYOK OpenAI-compatible endpoint[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --byok-openai --openai-api-key $env:MY_KEY");

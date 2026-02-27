@@ -37,7 +37,7 @@ for (int i = 0; i < args.Length; i++)
             model = args[++i];
             break;
         case "--model" or "-m":
-            Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4o, o3-mini).");
+            Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4.1, gpt-5-mini).");
             Console.WriteLine("Available models can be viewed by running TroubleScout interactively and using /model.");
             return 1;
         case "--mcp-config" when i + 1 < args.Length:
