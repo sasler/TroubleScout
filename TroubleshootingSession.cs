@@ -2667,13 +2667,7 @@ public class TroubleshootingSession : IAsyncDisposable
             _configuredMcpServers.Add(serverName);
         }
 
-        var config = new SessionConfig
-        {
-            Model = model,
-            SystemMessage = _systemMessageConfig,
-            Streaming = true,
-            Tools = _diagnosticTools.GetTools().ToList()
-        };
+        var config = BuildSessionConfig(model);
 
         if (_useByokOpenAi)
         {
@@ -2716,6 +2710,19 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return true;
+    }
+
+    internal SessionConfig BuildSessionConfig(string? model)
+    {
+        return new SessionConfig
+        {
+            Model = model,
+            SystemMessage = _systemMessageConfig,
+            Streaming = true,
+            Tools = _diagnosticTools.GetTools().ToList(),
+            ClientName = "TroubleScout",
+            OnPermissionRequest = (req, inv) => Task.FromResult(new PermissionRequestResult { Kind = "approved" })
+        };
     }
 
     private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)

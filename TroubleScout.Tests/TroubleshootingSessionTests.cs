@@ -1165,6 +1165,53 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     #endregion
 
+    #region SessionConfig Tests
+
+    [Fact]
+    public void BuildSessionConfig_ShouldIncludeClientName()
+    {
+        // Arrange & Act
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        // Assert
+        config.ClientName.Should().Be("TroubleScout");
+    }
+
+    [Fact]
+    public void BuildSessionConfig_ShouldIncludePermissionRequestHandler()
+    {
+        // Arrange & Act
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        // Assert
+        config.OnPermissionRequest.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task PermissionHandler_ShouldApproveAllRequests()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act - invoke the handler with default request/invocation objects
+        var result = await handler(new PermissionRequest(), new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    #endregion
+
+    private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildSessionConfig", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildSessionConfig should be an internal/private method on TroubleshootingSession");
+        return (SessionConfig)method!.Invoke(session, [model])!;
+    }
+
     private static IReadOnlyList<string> InvokeParseCliModelIds(string helpText)
     {
         var method = typeof(TroubleshootingSession)
