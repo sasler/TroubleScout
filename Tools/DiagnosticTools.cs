@@ -148,7 +148,8 @@ public class DiagnosticTools
         {
             _executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
-            var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval");
+            var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval",
+                isAlternate ? executor : null, isAlternate ? sessionName : null);
             _pendingCommands.Add(pending);
             _actionLogger?.Invoke(new CommandActionLog(
                 DateTimeOffset.Now,
@@ -683,12 +684,16 @@ public class DiagnosticTools
     /// </summary>
     public async Task<string> ExecuteApprovedCommandAsync(PendingCommand command)
     {
+        var executor = command.Executor ?? _executor;
+        var serverName = command.ServerName;
         var wrappedCommand = WrapCommandWithTargetVerification(command.Command);
         _executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
-        ConsoleUI.ShowCommandExecution(command.Command, _targetServer);
-        var result = await _executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
+        var displayTarget = serverName ?? _targetServer;
+        ConsoleUI.ShowCommandExecution(command.Command, displayTarget);
+        var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
         _pendingCommands.Remove(command);
-        var target = _executor.ActualComputerName ?? _targetServer;
+        var target = executor.ActualComputerName ?? displayTarget;
+        var prefix = serverName != null ? $"[{serverName}] " : string.Empty;
 
         if (!result.Success)
         {
@@ -698,7 +703,7 @@ public class DiagnosticTools
                 command.Command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
                 CommandApprovalState.ApprovedByUser));
-            return $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+            return $"{prefix}[ERROR] {result.Error ?? "Unknown error occurred"}";
         }
 
         var output = string.IsNullOrWhiteSpace(result.Output)
@@ -712,7 +717,7 @@ public class DiagnosticTools
             output,
             CommandApprovalState.ApprovedByUser));
 
-        return output;
+        return $"{prefix}{output}";
     }
 
     public void LogDeniedCommand(PendingCommand command)
@@ -729,7 +734,7 @@ public class DiagnosticTools
 /// <summary>
 /// Represents a command pending user approval
 /// </summary>
-public record PendingCommand(string Command, string Reason);
+public sealed record PendingCommand(string Command, string Reason, PowerShellExecutor? Executor = null, string? ServerName = null);
 
 public enum CommandApprovalState
 {

@@ -2045,7 +2045,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 var selectionEntries = GetModelSelectionEntries();
                 var selectedEntry = ConsoleUI.PromptModelSelection(SelectedModel, selectionEntries);
-                if (selectedEntry != null && !IsCurrentModel(selectedEntry.ModelId))
+                if (selectedEntry != null && !IsCurrentModelAndSource(selectedEntry))
                 {
                     var displayName = selectedEntry.DisplayName;
                     var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
@@ -2108,6 +2108,16 @@ public class TroubleshootingSession : IAsyncDisposable
 
         return selectedByName != null
             && selectedByName.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsCurrentModelAndSource(ModelSelectionEntry entry)
+    {
+        if (!IsCurrentModel(entry.ModelId))
+            return false;
+
+        // Same model — check if provider also matches
+        var currentSource = _useByokOpenAi ? ModelSource.Byok : ModelSource.GitHub;
+        return currentSource == entry.Source;
     }
 
     private static string GetFirstInputToken(string input)
@@ -2792,8 +2802,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
         _executor.Dispose();
 
+        var disposeErrors = new List<Exception>();
         foreach (var exec in _additionalExecutors.Values)
-            exec.Dispose();
+        {
+            try { exec.Dispose(); }
+            catch (Exception ex) { disposeErrors.Add(ex); }
+        }
         _additionalExecutors.Clear();
         
         GC.SuppressFinalize(this);
@@ -2866,6 +2880,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
     internal SessionConfig BuildSessionConfig(string? model)
     {
+        var executionMode = _executionMode; // capture for lambda
+
         return new SessionConfig
         {
             Model = model,
@@ -2873,7 +2889,33 @@ public class TroubleshootingSession : IAsyncDisposable
             Streaming = true,
             Tools = _diagnosticTools.GetTools().ToList(),
             ClientName = "TroubleScout",
-            OnPermissionRequest = (req, inv) => Task.FromResult(new PermissionRequestResult { Kind = "approved" })
+            OnPermissionRequest = (req, inv) =>
+            {
+                // Read-only operations and our own custom tools are always auto-approved
+                var kind = req.Kind ?? string.Empty;
+                if (kind is "file-read" or "url-fetch" or "custom-tool")
+                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+
+                // In YOLO mode, approve everything
+                if (executionMode == ExecutionMode.Yolo)
+                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+
+                // In Safe mode: MCP, shell, file-write require user approval
+                var description = kind switch
+                {
+                    "mcp"        => "An MCP tool is requesting permission to execute",
+                    "shell"      => "An external shell command is requesting permission",
+                    "file-write" => "A tool is requesting permission to write files",
+                    _            => $"A tool operation ({Markup.Escape(kind)}) is requesting permission"
+                };
+                var approved = ConsoleUI.PromptCommandApproval(
+                    description,
+                    $"Allow this in Safe mode? (kind: {Markup.Escape(kind)})");
+                return Task.FromResult(new PermissionRequestResult
+                {
+                    Kind = approved ? "approved" : "denied-interactively-by-user"
+                });
+            }
         };
     }
 
@@ -2981,8 +3023,9 @@ public class TroubleshootingSession : IAsyncDisposable
         if (!_additionalExecutors.TryGetValue(serverName, out var executor))
             return false;
 
-        executor.Dispose();
-        _additionalExecutors.Remove(serverName);
+        _additionalExecutors.Remove(serverName); // remove first
+        try { executor.Dispose(); }
+        catch { /* swallow - best effort disposal */ }
         return true;
     }
 
@@ -2990,6 +3033,8 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         _executionMode = mode;
         _executor.ExecutionMode = mode;
+        foreach (var exec in _additionalExecutors.Values)
+            exec.ExecutionMode = mode;
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()

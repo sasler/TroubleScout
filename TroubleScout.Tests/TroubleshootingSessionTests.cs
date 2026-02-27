@@ -118,6 +118,32 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void IsCurrentModelAndSource_SameModelDifferentProvider_ShouldReturnFalse()
+    {
+        // Arrange - session defaults to GitHub (not BYOK)
+        SetPrivateField(_session, "_selectedModel", "gpt-4.1");
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Create a ModelSelectionEntry with Byok source via reflection
+        var entryType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(t => t.Name == "ModelSelectionEntry");
+        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(t => t.Name == "ModelSource");
+        var byokValue = Enum.Parse(sourceType, "Byok");
+        var entry = Activator.CreateInstance(entryType, "gpt-4.1", "GPT-4.1", byokValue)!;
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var result = (bool)method!.Invoke(_session, [entry])!;
+
+        // Assert - same model but different source should return false
+        result.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
     {
         // Arrange & Act
@@ -736,6 +762,27 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         session.Should().NotBeNull();
     }
 
+    [Fact]
+    public void SetExecutionMode_ShouldPropagateToAdditionalExecutors()
+    {
+        // Arrange - add an additional executor via the private field
+        var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(_session, "_additionalExecutors");
+        var altExecutor = new PowerShellExecutor("server2");
+        altExecutor.ExecutionMode = ExecutionMode.Safe;
+        additionalExecutors["server2"] = altExecutor;
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("SetExecutionMode", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        method!.Invoke(_session, [ExecutionMode.Yolo]);
+
+        // Assert
+        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Yolo);
+        altExecutor.Dispose();
+    }
+
     #endregion
 
     #region Error Handling Tests
@@ -1340,17 +1387,61 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PermissionHandler_ShouldApproveAllRequests()
+    public async Task PermissionHandler_FileRead_ShouldApproveInSafeMode()
+    {
+        // Arrange - default session is Safe mode
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "file-read" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_UrlFetch_ShouldApproveInSafeMode()
     {
         // Arrange
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
 
-        // Act - invoke the handler with default request/invocation objects
-        var result = await handler(new PermissionRequest(), new PermissionInvocation());
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "url-fetch" }, new PermissionInvocation());
 
         // Assert
         result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_CustomTool_ShouldApproveInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "custom-tool" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Mcp_InYoloMode_ShouldApprove()
+    {
+        // Arrange - switch to YOLO mode
+        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        var config = InvokeBuildSessionConfig(session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "mcp" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+        await session.DisposeAsync();
     }
 
     #endregion

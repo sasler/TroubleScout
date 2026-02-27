@@ -582,4 +582,56 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     #endregion
+
+    #region PendingCommand Session Context Tests
+
+    [Fact]
+    public async Task RunPowerShell_WithSessionName_PendingCommand_ShouldUseCorrectExecutor()
+    {
+        // Arrange
+        var altExecutor = new Mock<PowerShellExecutor>("ServerB");
+        altExecutor.Setup(x => x.ActualComputerName).Returns("ServerB");
+        altExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        altExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "alt-approved-output"));
+
+        _mockExecutor.Setup(x => x.ActualComputerName).Returns("PrimaryServer");
+
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = _ =>
+            Task.FromResult<(bool, string?)>((true, null));
+        Func<string, PowerShellExecutor?> getExecutorCallback = name =>
+            name.Equals("ServerB", StringComparison.OrdinalIgnoreCase) ? altExecutor.Object : null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var runTool = tools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act - run a command that requires approval on an alternate server
+        await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Stop-Service -Name wuauserv",
+            ["sessionName"] = "ServerB"
+        });
+
+        // Assert - the pending command should carry the alternate executor and server name
+        tools.PendingCommands.Should().HaveCount(1);
+        var pending = tools.PendingCommands[0];
+        pending.Executor.Should().BeSameAs(altExecutor.Object);
+        pending.ServerName.Should().Be("ServerB");
+
+        // Act - execute the approved command
+        var result = await tools.ExecuteApprovedCommandAsync(pending);
+
+        // Assert - should have used the alternate executor, not the primary
+        result.Should().Contain("[ServerB]");
+        result.Should().Contain("alt-approved-output");
+        altExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+        altExecutor.Object.Dispose();
+    }
+
+    #endregion
 }
