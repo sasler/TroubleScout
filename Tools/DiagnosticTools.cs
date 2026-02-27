@@ -120,6 +120,11 @@ public class DiagnosticTools
         var target = _executor.ActualComputerName ?? _targetServer;
         var isAlternate = false;
 
+        if (!string.IsNullOrWhiteSpace(sessionName) && _getExecutorCallback == null)
+        {
+            return $"[ERROR] This tool instance does not support multiple sessions. Cannot target server '{sessionName}'.";
+        }
+
         if (!string.IsNullOrWhiteSpace(sessionName) && _getExecutorCallback != null)
         {
             var altExecutor = _getExecutorCallback(sessionName);
@@ -134,7 +139,7 @@ public class DiagnosticTools
 
         if (!validation.IsAllowed && !validation.RequiresApproval)
         {
-            _executor.AddHistoryEntry($"[BLOCKED] {command}");
+            executor.AddHistoryEntry($"[BLOCKED] {command}");
             _actionLogger?.Invoke(new CommandActionLog(
                 DateTimeOffset.Now,
                 target,
@@ -146,7 +151,7 @@ public class DiagnosticTools
 
         if (validation.RequiresApproval)
         {
-            _executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
+            executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
             var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval",
                 isAlternate ? executor : null, isAlternate ? sessionName : null);
@@ -687,7 +692,7 @@ public class DiagnosticTools
         var executor = command.Executor ?? _executor;
         var serverName = command.ServerName;
         var wrappedCommand = WrapCommandWithTargetVerification(command.Command, executor, serverName);
-        _executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
+        executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
         var displayTarget = serverName ?? _targetServer;
         ConsoleUI.ShowCommandExecution(command.Command, displayTarget);
         var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);

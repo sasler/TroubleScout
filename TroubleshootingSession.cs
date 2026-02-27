@@ -2802,11 +2802,16 @@ public class TroubleshootingSession : IAsyncDisposable
 
         _executor.Dispose();
 
-        var disposeErrors = new List<Exception>();
         foreach (var exec in _additionalExecutors.Values)
         {
             try { exec.Dispose(); }
-            catch (Exception ex) { disposeErrors.Add(ex); }
+            catch (Exception ex)
+            {
+                if (_debugMode)
+                {
+                    ConsoleUI.ShowWarning($"Additional session cleanup warning: {TrimSingleLine(ex.Message)}");
+                }
+            }
         }
         _additionalExecutors.Clear();
         
@@ -3016,15 +3021,15 @@ public class TroubleshootingSession : IAsyncDisposable
         return exec;
     }
 
-    private async Task<bool> CloseAdditionalServerSessionAsync(string serverName)
+    private Task<bool> CloseAdditionalServerSessionAsync(string serverName)
     {
         if (!_additionalExecutors.TryGetValue(serverName, out var executor))
-            return false;
+            return Task.FromResult(false);
 
         _additionalExecutors.Remove(serverName); // remove first
         try { executor.Dispose(); }
         catch { /* swallow - best effort disposal */ }
-        return true;
+        return Task.FromResult(true);
     }
 
     private void SetExecutionMode(ExecutionMode mode)

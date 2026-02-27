@@ -549,6 +549,30 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task RunPowerShell_WithSessionName_WithoutMultiSessionSupport_ShouldReturnError()
+    {
+        // Arrange
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "primary-output"));
+
+        var runTool = _diagnosticTools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act
+        var result = await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Get-Service",
+            ["sessionName"] = "ServerB"
+        });
+
+        // Assert
+        var resultStr = result?.ToString();
+        resultStr.Should().Contain("does not support multiple sessions");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
     public async Task RunPowerShell_WithNullSession_ShouldUsePrimaryExecutor()
     {
         // Arrange
