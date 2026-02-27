@@ -1767,10 +1767,11 @@ public class TroubleshootingSession : IAsyncDisposable
         return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason));
     }
 
-    private static void SaveLastModel(string model)
+    private static void SaveModelAndProviderState(string model, bool useByokOpenAi)
     {
         var settings = AppSettingsStore.Load();
         settings.LastModel = model;
+        settings.UseByokOpenAi = useByokOpenAi;
         AppSettingsStore.Save(settings);
     }
 
@@ -2877,7 +2878,8 @@ public class TroubleshootingSession : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(model))
         {
             _selectedModel = model;
-            SaveLastModel(model);
+            // Persist model and active provider together to avoid stale provider mismatch after restart.
+            SaveModelAndProviderState(model, _useByokOpenAi);
         }
 
         return true;

@@ -2,6 +2,17 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.4.1] - 2026-02-27
+
+### 🐛 Bug Fixes
+
+- 🐛 Fix provider/model restart mismatch by persisting selected model and active provider mode together after successful model switches
+- 🐛 Fix BYOK settings visibility after restart by always restoring saved BYOK base URL/API key from profile settings, even when GitHub is the active provider
+
+### ✅ Testing
+
+- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+
 ## [v1.4.0] - 2026-02-27
 
 ✨ **Features**

@@ -1362,6 +1362,56 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
     }
 
+    [Fact]
+    public void SaveModelAndProviderState_WhenSwitchingToGitHub_ShouldPersistProviderAndKeepByokConfig()
+    {
+        ExecuteWithTemporarySettingsPath(_ =>
+        {
+            // Arrange
+            AppSettingsStore.Save(new AppSettings
+            {
+                LastModel = "old-model",
+                UseByokOpenAi = true,
+                ByokOpenAiBaseUrl = "https://proxy.example/v1",
+                ByokOpenAiApiKey = "sk-test"
+            });
+
+            // Act
+            InvokeSaveModelAndProviderState("gpt-4.1", useByokOpenAi: false);
+            var saved = AppSettingsStore.Load();
+
+            // Assert
+            saved.LastModel.Should().Be("gpt-4.1");
+            saved.UseByokOpenAi.Should().BeFalse();
+            saved.ByokOpenAiBaseUrl.Should().Be("https://proxy.example/v1");
+            saved.ByokOpenAiApiKey.Should().Be("sk-test");
+        });
+    }
+
+    [Fact]
+    public void SaveModelAndProviderState_WhenSwitchingToByok_ShouldPersistProviderAndModel()
+    {
+        ExecuteWithTemporarySettingsPath(_ =>
+        {
+            // Arrange
+            AppSettingsStore.Save(new AppSettings
+            {
+                LastModel = "old-model",
+                UseByokOpenAi = false,
+                ByokOpenAiBaseUrl = "https://api.openai.com/v1",
+                ByokOpenAiApiKey = "sk-test"
+            });
+
+            // Act
+            InvokeSaveModelAndProviderState("gpt-4.1", useByokOpenAi: true);
+            var saved = AppSettingsStore.Load();
+
+            // Assert
+            saved.LastModel.Should().Be("gpt-4.1");
+            saved.UseByokOpenAi.Should().BeTrue();
+        });
+    }
+
     #endregion
 
     #region SessionConfig Tests
@@ -1453,6 +1503,41 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("BuildSessionConfig should be an internal/private method on TroubleshootingSession");
         return (SessionConfig)method!.Invoke(session, [model])!;
+    }
+
+    private static void InvokeSaveModelAndProviderState(string model, bool useByokOpenAi)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("SaveModelAndProviderState", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("SaveModelAndProviderState should exist on TroubleshootingSession");
+        method!.Invoke(null, [model, useByokOpenAi]);
+    }
+
+    private static void ExecuteWithTemporarySettingsPath(Action<string> testAction)
+    {
+        var originalSettingsPath = AppSettingsStore.SettingsPath;
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"troublescout-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+
+        try
+        {
+            var tempSettingsPath = Path.Combine(tempDirectory, "settings.json");
+            AppSettingsStore.SettingsPath = tempSettingsPath;
+            testAction(tempSettingsPath);
+        }
+        finally
+        {
+            AppSettingsStore.SettingsPath = originalSettingsPath;
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for temp test files.
+            }
+        }
     }
 
     private static IReadOnlyList<string> InvokeParseCliModelIds(string helpText)

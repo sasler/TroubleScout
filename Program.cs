@@ -16,6 +16,9 @@ var executionMode = ExecutionMode.Safe;
 var useByokOpenAi = false;
 string? byokOpenAiBaseUrl = null;
 string? byokOpenAiApiKey = null;
+var byokProviderSpecifiedByCli = false;
+var byokBaseUrlSpecifiedByCli = false;
+var byokApiKeySpecifiedByCli = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -79,15 +82,18 @@ for (int i = 0; i < args.Length; i++)
             return 1;
         case "--byok-openai":
             useByokOpenAi = true;
+            byokProviderSpecifiedByCli = true;
             break;
         case "--openai-base-url" when i + 1 < args.Length:
             byokOpenAiBaseUrl = args[++i];
+            byokBaseUrlSpecifiedByCli = true;
             break;
         case "--openai-base-url":
             Console.WriteLine("--openai-base-url requires a value: the base URL of the OpenAI-compatible endpoint.");
             return 1;
         case "--openai-api-key" when i + 1 < args.Length:
             byokOpenAiApiKey = args[++i];
+            byokApiKeySpecifiedByCli = true;
             break;
         case "--openai-api-key":
             Console.WriteLine("--openai-api-key requires a value: the API key for the OpenAI-compatible endpoint.");
@@ -104,10 +110,19 @@ if (args.Length == 0 && IsNonInteractiveLaunch())
 
 var settings = AppSettingsStore.Load();
 
-if (!useByokOpenAi && settings.UseByokOpenAi)
+if (!byokProviderSpecifiedByCli && settings.UseByokOpenAi)
 {
     useByokOpenAi = true;
+}
+
+// Keep BYOK configuration available across restarts even when GitHub is the active provider.
+if (!byokBaseUrlSpecifiedByCli && string.IsNullOrWhiteSpace(byokOpenAiBaseUrl))
+{
     byokOpenAiBaseUrl = settings.ByokOpenAiBaseUrl;
+}
+
+if (!byokApiKeySpecifiedByCli && string.IsNullOrWhiteSpace(byokOpenAiApiKey))
+{
     byokOpenAiApiKey = settings.ByokOpenAiApiKey;
 }
 
