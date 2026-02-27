@@ -23,6 +23,22 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void ShowCliHelp_ShouldNotThrow_WhenVersionIsProvided()
+    {
+        // Act & Assert – should not throw when a version string is given
+        var act = () => ConsoleUI.ShowCliHelp("1.2.3");
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ShowCliHelp_ShouldNotThrow_WhenVersionIsNull()
+    {
+        // Act & Assert – should not throw when version is omitted
+        var act = () => ConsoleUI.ShowCliHelp(null);
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void ParseMarkdownTable_ShouldCreateTableWithColumnsAndRows()
     {
         // Arrange

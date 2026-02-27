@@ -2,6 +2,21 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.3.4] - 2026-02-27
+
+### 🐛 Bug Fixes
+
+- 🐛 Fix `--help` / `-h` to display proper CLI usage (flags, options, examples) instead of the TUI slash-command reference
+- 🐛 Fix `--mode` with missing value to emit a clear error and exit with code 1 instead of silently ignoring
+
+### 📝 Documentation & UX
+
+- 📝 Add `ShowCliHelp()` method with full CLI flag reference and usage examples
+
+### ✅ Testing
+
+- ✅ Add `ShowCliHelp_ShouldNotThrow_WhenVersionIsProvided` and `ShowCliHelp_ShouldNotThrow_WhenVersionIsNull` tests
+
 ## [v1.3.3] - 2026-02-20
 
 ### ✨ Features

@@ -40,8 +40,7 @@ for (int i = 0; i < args.Length; i++)
             disabledSkills.Add(args[++i]);
             break;
         case "--help" or "-h":
-            ConsoleUI.ShowBanner(appVersion);
-            ConsoleUI.ShowHelp();
+            ConsoleUI.ShowCliHelp(appVersion);
             return 0;
         case "--version" or "-v":
             Console.WriteLine($"TroubleScout {appVersion}");
@@ -56,6 +55,9 @@ for (int i = 0; i < args.Length; i++)
                 return 1;
             }
             break;
+        case "--mode":
+            Console.WriteLine("--mode requires a value: safe or yolo.");
+            return 1;
         case "--byok-openai":
             useByokOpenAi = true;
             break;
