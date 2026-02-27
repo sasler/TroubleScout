@@ -71,21 +71,35 @@ public static class ConsoleUI
         bool copilotReady,
         string? model = null,
         ExecutionMode executionMode = ExecutionMode.Safe,
-        IReadOnlyList<(string Label, string Value)>? usageFields = null)
+        IReadOnlyList<(string Label, string Value)>? usageFields = null,
+        IReadOnlyList<string>? additionalTargets = null)
     {
         var grid = new Grid();
         grid.AddColumn(new GridColumn().PadRight(2));
         grid.AddColumn(new GridColumn());
-        
-        var serverStatus = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase) 
-            ? "[green]localhost[/]" 
-            : $"[yellow]{targetServer}[/]";
-        
+
+        if (additionalTargets?.Count > 0)
+        {
+            var allServers = new List<string> { targetServer };
+            allServers.AddRange(additionalTargets);
+            var serverMarkups = allServers.Select(s =>
+                s.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                    ? "[green]localhost[/]"
+                    : $"[yellow]{Markup.Escape(s)}[/]");
+            grid.AddRow("[grey]Target Servers:[/]", string.Join(", ", serverMarkups));
+        }
+        else
+        {
+            var serverStatus = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                ? "[green]localhost[/]"
+                : $"[yellow]{Markup.Escape(targetServer)}[/]";
+            grid.AddRow("[grey]Target Server:[/]", serverStatus);
+        }
+
         var copilotStatus = copilotReady 
             ? "[green]Connected[/]" 
             : "[yellow]Not ready[/]";
-        
-        grid.AddRow("[grey]Target Server:[/]", serverStatus);
+
         grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{connectionMode}[/]");
         grid.AddRow("[grey]Copilot Status:[/]", copilotStatus);
         grid.AddRow("[grey]Execution Mode:[/]", GetExecutionModeMarkup(executionMode));

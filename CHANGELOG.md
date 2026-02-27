@@ -2,6 +2,20 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.4.0] - 2026-02-27
+
+### ✨ Features
+
+- 🖧 Add multi-PSSession support for double-hop avoidance: `connect_server`, `close_server_session` tools and `run_powershell` `sessionName` parameter
+- 🖧 AI agent system message now includes multi-server session guidance to prevent double-hop authentication failures
+- 🖧 Status panel shows all connected target servers when additional sessions are active
+
+### ✅ Testing
+
+- ✅ Add `AllTargetServers_WithNoAdditional_ShouldReturnPrimaryOnly`, `AllTargetServers_WithAdditional_ShouldIncludeAll`, `ConnectAdditionalServer_SameAsPrimary_ShouldSucceedWithoutNewExecutor` session tests
+- ✅ Add `ConnectServer_ShouldCallConnectCallback`, `ConnectServer_WhenCallbackFails_ShouldReturnError`, `CloseServerSession_ShouldCallCloseCallback`, `RunPowerShell_WithSessionName_ShouldUseAlternateExecutor`, `RunPowerShell_WithNullSession_ShouldUsePrimaryExecutor` tool tests
+- ✅ Add `ShowStatusPanel_WithAdditionalTargets_ShouldShowPluralLabel`, `ShowStatusPanel_WithNoAdditional_ShouldShowSingularLabel` UI tests
+
 ## [v1.3.4] - 2026-02-27
 
 ### 🐛 Bug Fixes

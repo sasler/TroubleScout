@@ -40,6 +40,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string _targetServer;
     private PowerShellExecutor _executor;
     private DiagnosticTools _diagnosticTools;
+    private readonly Dictionary<string, PowerShellExecutor> _additionalExecutors = new(StringComparer.OrdinalIgnoreCase);
     private CopilotClient? _copilotClient;
     private CopilotSession? _copilotSession;
     private bool _isInitialized;
@@ -149,6 +150,13 @@ public class TroubleshootingSession : IAsyncDisposable
             - Never suggest commands that could cause data loss without clear warnings
             - Always consider the impact of recommended actions
 
+            ## Multi-Server Sessions & Double-Hop Avoidance
+            - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
+            - If you need data from a different server, use connect_server(serverName) to establish a DIRECT session from this client.
+            - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
+            - Use close_server_session(serverName) when done with a server to clean up resources.
+            - Always indicate which server each piece of data comes from.
+
             Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
             server you're working on.
@@ -184,7 +192,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
+            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
     }
 
     private readonly string? _requestedModel;
@@ -207,6 +216,8 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<string> RuntimeSkills => _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
     public IReadOnlyList<string> ConfigurationWarnings => _configurationWarnings;
     public ExecutionMode CurrentExecutionMode => _executionMode;
+    public IReadOnlyList<string> AllTargetServers =>
+        [_targetServer, .._additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
 
     private sealed record CopilotUsageSnapshot(
         int? PromptTokens,
@@ -1765,7 +1776,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 {
                     Console.Clear();
                     ConsoleUI.ShowBanner();
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
                     ConsoleUI.ShowWelcomeMessage();
                 }
@@ -1779,7 +1790,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 continue;
             }
 
@@ -1940,7 +1951,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/capabilities")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 continue;
             }
 
@@ -1961,7 +1972,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     SetExecutionMode(requestedMode);
                     ConsoleUI.SetExecutionMode(_executionMode);
                     ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 }
 
                 continue;
@@ -2030,7 +2041,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     if (success)
                     {
                         ConsoleUI.ShowSuccess($"Connected to {newServer}");
-                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     }
                 }
                 continue;
@@ -2742,6 +2753,10 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _executor.Dispose();
+
+        foreach (var exec in _additionalExecutors.Values)
+            exec.Dispose();
+        _additionalExecutors.Clear();
         
         GC.SuppressFinalize(this);
     }
@@ -2846,7 +2861,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
+            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
@@ -2875,6 +2891,59 @@ public class TroubleshootingSession : IAsyncDisposable
             }
         }
 
+        return true;
+    }
+
+    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+            return (false, "Server name cannot be empty.");
+
+        if (serverName.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            return (true, null);
+
+        if (_additionalExecutors.ContainsKey(serverName))
+            return (true, null);
+
+        if (_executionMode == ExecutionMode.Safe)
+        {
+            var approved = ConsoleUI.PromptCommandApproval(
+                $"New-PSSession -ComputerName '{serverName}'",
+                $"TroubleScout wants to establish a direct PowerShell session to {serverName}");
+            if (!approved)
+                return (false, $"Connection to {serverName} was denied by user.");
+        }
+
+        var executor = new PowerShellExecutor(serverName);
+        executor.ExecutionMode = _executionMode;
+        var (success, error) = await executor.TestConnectionAsync();
+        if (!success)
+        {
+            executor.Dispose();
+            return (false, error ?? $"Failed to connect to {serverName}");
+        }
+
+        _additionalExecutors[serverName] = executor;
+        return (true, null);
+    }
+
+    private PowerShellExecutor? GetExecutorForServer(string serverName)
+    {
+        if (string.IsNullOrWhiteSpace(serverName) ||
+            serverName.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            return _executor;
+
+        _additionalExecutors.TryGetValue(serverName, out var exec);
+        return exec;
+    }
+
+    private async Task<bool> CloseAdditionalServerSessionAsync(string serverName)
+    {
+        if (!_additionalExecutors.TryGetValue(serverName, out var executor))
+            return false;
+
+        executor.Dispose();
+        _additionalExecutors.Remove(serverName);
         return true;
     }
 

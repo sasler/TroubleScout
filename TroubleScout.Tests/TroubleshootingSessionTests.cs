@@ -1494,4 +1494,70 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var task = (Task<bool>)method!.Invoke(session, [entry, null])!;
         return await task;
     }
+
+    #region Multi-PSSession / AllTargetServers Tests
+
+    [Fact]
+    public void AllTargetServers_WithNoAdditional_ShouldReturnPrimaryOnly()
+    {
+        // Act
+        var servers = _session.AllTargetServers;
+
+        // Assert
+        servers.Should().HaveCount(1);
+        servers[0].Should().Be("localhost");
+    }
+
+    [Fact]
+    public async Task AllTargetServers_WithAdditional_ShouldIncludeAll()
+    {
+        // Arrange – inject entries into the _additionalExecutors dictionary via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalExecutors", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var dict = (Dictionary<string, PowerShellExecutor>)field!.GetValue(_session)!;
+        var execB = new PowerShellExecutor("ServerB");
+        var execA = new PowerShellExecutor("ServerA");
+        dict["ServerB"] = execB;
+        dict["ServerA"] = execA;
+
+        try
+        {
+            // Act
+            var servers = _session.AllTargetServers;
+
+            // Assert – primary first, then alphabetical additional
+            servers.Should().HaveCount(3);
+            servers[0].Should().Be("localhost");
+            servers[1].Should().Be("ServerA");
+            servers[2].Should().Be("ServerB");
+        }
+        finally
+        {
+            dict.Clear();
+            execB.Dispose();
+            execA.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SameAsPrimary_ShouldSucceedWithoutNewExecutor()
+    {
+        // Arrange – invoke the private ConnectAdditionalServerAsync method
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost"])!;
+        var result = await task;
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+        _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
+    }
+
+    #endregion
 }
