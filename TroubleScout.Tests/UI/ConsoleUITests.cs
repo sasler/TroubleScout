@@ -23,19 +23,36 @@ public class ConsoleUITests
     }
 
     [Fact]
-    public void ShowCliHelp_ShouldNotThrow_WhenVersionIsProvided()
+    public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
     {
-        // Act & Assert – should not throw when a version string is given
-        var act = () => ConsoleUI.ShowCliHelp("1.2.3");
-        act.Should().NotThrow();
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCliHelp("1.2.3");
+        var output = AnsiConsole.ExportText();
+
+        // Assert – key CLI help sections and flags must appear
+        output.Should().Contain("USAGE");
+        output.Should().Contain("OPTIONS");
+        output.Should().Contain("--help");
+        output.Should().Contain("--server");
+        output.Should().Contain("--prompt");
+        output.Should().Contain("--model");
+        output.Should().Contain("1.2.3");
     }
 
     [Fact]
-    public void ShowCliHelp_ShouldNotThrow_WhenVersionIsNull()
+    public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsNull()
     {
-        // Act & Assert – should not throw when version is omitted
-        var act = () => ConsoleUI.ShowCliHelp(null);
-        act.Should().NotThrow();
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCliHelp(null);
+        var output = AnsiConsole.ExportText();
+
+        // Assert – key CLI help sections and flags must appear; no version line
+        output.Should().Contain("USAGE");
+        output.Should().Contain("OPTIONS");
+        output.Should().Contain("--help");
+        output.Should().NotContain("Version:");
     }
 
     [Fact]

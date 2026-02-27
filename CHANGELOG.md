@@ -8,6 +8,8 @@ All notable changes to TroubleScout will be documented in this file.
 
 - 🐛 Fix `--help` / `-h` to display proper CLI usage (flags, options, examples) instead of the TUI slash-command reference
 - 🐛 Fix `--mode` with missing value to emit a clear error and exit with code 1 instead of silently ignoring
+- 🐛 Add missing-value error handling for all flags that require values (`--server`, `--prompt`, `--model`, `--mcp-config`, `--skills-dir`, `--disable-skill`, `--openai-base-url`, `--openai-api-key`); `--model` additionally hints to use `/model` interactively
+- 🐛 Remove undocumented `-debug` alias; debug mode is now enabled only via `-d` or `--debug`
 
 ### 📝 Documentation & UX
 
@@ -15,7 +17,7 @@ All notable changes to TroubleScout will be documented in this file.
 
 ### ✅ Testing
 
-- ✅ Add `ShowCliHelp_ShouldNotThrow_WhenVersionIsProvided` and `ShowCliHelp_ShouldNotThrow_WhenVersionIsNull` tests
+- ✅ Add `ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided` and `ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsNull` tests that capture rendered output and assert on key sections/flags
 
 ## [v1.3.3] - 2026-02-20
 
