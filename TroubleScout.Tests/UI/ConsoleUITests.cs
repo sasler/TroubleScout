@@ -7,6 +7,11 @@ using Xunit;
 
 namespace TroubleScout.Tests.UI;
 
+// Spectre AnsiConsole recording uses shared static state; keep this collection sequential.
+[CollectionDefinition("ConsoleUI", DisableParallelization = true)]
+public class ConsoleUICollection { }
+
+[Collection("ConsoleUI")]
 public class ConsoleUITests
 {
     [Fact]
@@ -20,6 +25,39 @@ public class ConsoleUITests
 
         // Assert
         actual.Should().Be("n/a");
+    }
+
+    [Fact]
+    public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCliHelp("1.2.3");
+        var output = AnsiConsole.ExportText();
+
+        // Assert – key CLI help sections and flags must appear
+        output.Should().Contain("USAGE");
+        output.Should().Contain("OPTIONS");
+        output.Should().Contain("--help");
+        output.Should().Contain("--server");
+        output.Should().Contain("--prompt");
+        output.Should().Contain("--model");
+        output.Should().Contain("1.2.3");
+    }
+
+    [Fact]
+    public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsNull()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCliHelp(null);
+        var output = AnsiConsole.ExportText();
+
+        // Assert – key CLI help sections and flags must appear; no version line
+        output.Should().Contain("USAGE");
+        output.Should().Contain("OPTIONS");
+        output.Should().Contain("--help");
+        output.Should().NotContain("Version:");
     }
 
     [Fact]

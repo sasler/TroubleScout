@@ -63,7 +63,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task Constructor_WithModel_ShouldAcceptModelParameter()
     {
         // Arrange & Act
-        await using var session = new TroubleshootingSession("localhost", "gpt-4o");
+        await using var session = new TroubleshootingSession("localhost", "gpt-4.1");
 
         // Assert
         session.TargetServer.Should().Be("localhost");
@@ -871,7 +871,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task ChangeModel_BeforeInitialization_ShouldReturnFalse()
     {
         // Act
-        var result = await _session.ChangeModelAsync("gpt-4o");
+        var result = await _session.ChangeModelAsync("gpt-4.1");
 
         // Assert
         result.Should().BeFalse();

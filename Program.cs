@@ -24,29 +24,47 @@ for (int i = 0; i < args.Length; i++)
         case "--server" or "-s" when i + 1 < args.Length:
             server = args[++i];
             break;
+        case "--server" or "-s":
+            Console.WriteLine("--server (-s) requires a value: hostname or IP address.");
+            return 1;
         case "--prompt" or "-p" when i + 1 < args.Length:
             prompt = args[++i];
             break;
+        case "--prompt" or "-p":
+            Console.WriteLine("--prompt (-p) requires a value: the text prompt to send.");
+            return 1;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
             break;
+        case "--model" or "-m":
+            Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4.1, gpt-5-mini).");
+            Console.WriteLine("Available models can be viewed by running TroubleScout interactively and using /model.");
+            return 1;
         case "--mcp-config" when i + 1 < args.Length:
             mcpConfigPath = args[++i];
             break;
+        case "--mcp-config":
+            Console.WriteLine("--mcp-config requires a value: path to the MCP server config JSON file.");
+            return 1;
         case "--skills-dir" when i + 1 < args.Length:
             skillDirectories.Add(args[++i]);
             break;
+        case "--skills-dir":
+            Console.WriteLine("--skills-dir requires a value: path to a directory containing Copilot skill files.");
+            return 1;
         case "--disable-skill" when i + 1 < args.Length:
             disabledSkills.Add(args[++i]);
             break;
+        case "--disable-skill":
+            Console.WriteLine("--disable-skill requires a value: the name of the skill to disable.");
+            return 1;
         case "--help" or "-h":
-            ConsoleUI.ShowBanner(appVersion);
-            ConsoleUI.ShowHelp();
+            ConsoleUI.ShowCliHelp(appVersion);
             return 0;
         case "--version" or "-v":
             Console.WriteLine($"TroubleScout {appVersion}");
             return 0;
-        case "--debug" or "-debug" or "-d":
+        case "--debug" or "-d":
             debugMode = true;
             break;
         case "--mode" when i + 1 < args.Length:
@@ -56,15 +74,24 @@ for (int i = 0; i < args.Length; i++)
                 return 1;
             }
             break;
+        case "--mode":
+            Console.WriteLine("--mode requires a value: safe or yolo.");
+            return 1;
         case "--byok-openai":
             useByokOpenAi = true;
             break;
         case "--openai-base-url" when i + 1 < args.Length:
             byokOpenAiBaseUrl = args[++i];
             break;
+        case "--openai-base-url":
+            Console.WriteLine("--openai-base-url requires a value: the base URL of the OpenAI-compatible endpoint.");
+            return 1;
         case "--openai-api-key" when i + 1 < args.Length:
             byokOpenAiApiKey = args[++i];
             break;
+        case "--openai-api-key":
+            Console.WriteLine("--openai-api-key requires a value: the API key for the OpenAI-compatible endpoint.");
+            return 1;
     }
 }
 

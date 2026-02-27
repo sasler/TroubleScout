@@ -66,7 +66,7 @@ public class AppSettingsStoreTests : IDisposable
         // Arrange
         var settings = new AppSettings
         {
-            LastModel = "gpt-4o",
+            LastModel = "gpt-4.1",
             UseByokOpenAi = true,
             ByokOpenAiBaseUrl = "https://proxy.example/v1",
             ByokOpenAiApiKey = "sk-test"
@@ -78,7 +78,7 @@ public class AppSettingsStoreTests : IDisposable
 
         // Assert
         loaded.Should().NotBeNull();
-        loaded.LastModel.Should().Be("gpt-4o");
+        loaded.LastModel.Should().Be("gpt-4.1");
         loaded.UseByokOpenAi.Should().BeTrue();
         loaded.ByokOpenAiBaseUrl.Should().Be("https://proxy.example/v1");
         loaded.ByokOpenAiApiKey.Should().Be("sk-test");
@@ -146,7 +146,7 @@ public class AppSettingsStoreTests : IDisposable
     public void Save_MultipleModels_ShouldOverwritePrevious()
     {
         // Arrange
-        var settings1 = new AppSettings { LastModel = "gpt-4o" };
+        var settings1 = new AppSettings { LastModel = "gpt-4.1" };
         var settings2 = new AppSettings { LastModel = "claude-sonnet-4.5" };
 
         // Act
@@ -179,7 +179,7 @@ public class AppSettingsStoreTests : IDisposable
     public void Save_ShouldCreateIndentedJson()
     {
         // Arrange
-        var settings = new AppSettings { LastModel = "gpt-4o" };
+        var settings = new AppSettings { LastModel = "gpt-4.1" };
         var settingsPath = AppSettingsStore.SettingsPath;
 
         // Act

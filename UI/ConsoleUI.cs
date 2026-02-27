@@ -227,6 +227,63 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Display CLI usage help for command-line invocation (--help / -h)
+    /// </summary>
+    public static void ShowCliHelp(string? version = null)
+    {
+        AnsiConsole.MarkupLine("[bold cyan]TroubleScout[/] – AI-Powered Windows Server Troubleshooting Assistant");
+        if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[grey]Version:[/] [cyan]{Markup.Escape(version)}[/]");
+        }
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[bold]USAGE[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] [grey][[options]][/]");
+        AnsiConsole.WriteLine();
+
+        var optionsTable = new Table()
+            .Border(TableBorder.None)
+            .AddColumn(new TableColumn("[bold]Option[/]").NoWrap().Width(38))
+            .AddColumn(new TableColumn("[bold]Description[/]"));
+
+        optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server hostname or IP (default: localhost)");
+        optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
+        optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
+        optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
+        optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
+        optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
+        optionsTable.AddRow("[cyan]--disable-skill[/] [grey]<name>[/]", "Disable a specific skill by name (repeatable)");
+        optionsTable.AddRow("[cyan]--byok-openai[/]", "Enable Bring-Your-Own-Key OpenAI-compatible mode");
+        optionsTable.AddRow("[cyan]--openai-base-url[/] [grey]<url>[/]", "Base URL for BYOK OpenAI-compatible endpoint");
+        optionsTable.AddRow("[cyan]--openai-api-key[/] [grey]<key>[/]", "API key for BYOK OpenAI-compatible endpoint");
+        optionsTable.AddRow("[cyan]-d[/], [cyan]--debug[/]", "Enable debug/diagnostic output");
+        optionsTable.AddRow("[cyan]-v[/], [cyan]--version[/]", "Print version and exit");
+        optionsTable.AddRow("[cyan]-h[/], [cyan]--help[/]", "Show this help and exit");
+
+        AnsiConsole.MarkupLine("[bold]OPTIONS[/]");
+        AnsiConsole.Write(optionsTable);
+        AnsiConsole.WriteLine();
+
+        AnsiConsole.MarkupLine("[bold]EXAMPLES[/]");
+        AnsiConsole.MarkupLine("  [grey]# Launch the interactive TUI against a remote server[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Run a single headless prompt and exit[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01 --prompt [grey]\"Check disk space\"[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with YOLO execution mode[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode yolo");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Use BYOK OpenAI-compatible endpoint[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --byok-openai --openai-api-key $env:MY_KEY");
+        AnsiConsole.WriteLine();
+
+        AnsiConsole.MarkupLine("[grey]Use [cyan]/help[/] inside the interactive session for TUI command reference.[/]");
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
     /// Display full help including categories
     /// </summary>
     public static void ShowHelp()
