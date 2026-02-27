@@ -7,6 +7,11 @@ using Xunit;
 
 namespace TroubleScout.Tests.UI;
 
+// Spectre AnsiConsole recording uses shared static state; keep this collection sequential.
+[CollectionDefinition("ConsoleUI", DisableParallelization = true)]
+public class ConsoleUICollection { }
+
+[Collection("ConsoleUI")]
 public class ConsoleUITests
 {
     [Fact]
