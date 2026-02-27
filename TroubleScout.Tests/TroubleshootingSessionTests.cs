@@ -1163,6 +1163,158 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         models.Should().BeEmpty();
     }
 
+    [Fact]
+    public void GetModelSelectionEntries_DualSourceModel_ShouldProduceTwoEntries()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().HaveCount(2);
+        entries.Select(e => e.DisplayName).Should().Contain(n => n.Contains("GitHub Copilot", StringComparison.Ordinal));
+        entries.Select(e => e.DisplayName).Should().Contain(n => n.Contains("BYOK", StringComparison.Ordinal));
+        entries.Select(e => e.ModelId).Should().AllBe("gpt-5");
+    }
+
+    [Fact]
+    public void GetModelSelectionEntries_SingleSourceByok_ShouldProduceOneEntry()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo>();
+        var byokModels = new List<ModelInfo> { new() { Id = "custom-model", Name = "Custom Model" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().ContainSingle();
+        entries[0].ModelId.Should().Be("custom-model");
+        entries[0].Source.Should().Be("Byok");
+    }
+
+    [Fact]
+    public void GetModelSelectionEntries_SingleSourceGitHub_ShouldProduceOneEntry()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-4.1", Name = "GPT 4.1" } };
+        var byokModels = new List<ModelInfo>();
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().ContainSingle();
+        entries[0].ModelId.Should().Be("gpt-4.1");
+        entries[0].Source.Should().Be("GitHub");
+    }
+
+    [Fact]
+    public void ActiveProviderDisplayName_WhenByok_ShouldReturnByokLabel()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", true);
+
+        // Act
+        var provider = _session.ActiveProviderDisplayName;
+
+        // Assert
+        provider.Should().Be("BYOK (OpenAI)");
+    }
+
+    [Fact]
+    public void ActiveProviderDisplayName_WhenGitHub_ShouldReturnGitHubLabel()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Act
+        var provider = _session.ActiveProviderDisplayName;
+
+        // Assert
+        provider.Should().Be("GitHub Copilot");
+    }
+
+    [Fact]
+    public void GetStatusFields_ShouldIncludeProviderField()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().Contain(f => f.Label == "Provider" && f.Value == "GitHub Copilot");
+    }
+
+    [Fact]
+    public async Task ChangeModelAsync_WithByokEntry_ShouldSetByokProvider()
+    {
+        // Arrange — set up dual-source model
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        SetPrivateField(_session, "_useByokOpenAi", false);
+        SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
+        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
+
+        // Set a non-null _copilotClient to pass the guard check
+        var client = new CopilotClient(new CopilotClientOptions());
+        SetPrivateField(_session, "_copilotClient", client);
+
+        var entries = InvokeGetModelSelectionEntries(_session);
+        var byokEntry = entries.First(e => e.Source == "Byok");
+
+        // Act — will fail at session creation but provider flag should be set first
+        _ = await InvokeChangeModelAsyncWithEntry(_session, byokEntry);
+
+        // Assert — _useByokOpenAi should be set to true
+        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+        useByok.Should().BeTrue();
+
+        // Clean up: detach client from session to avoid double-dispose issues
+        SetPrivateField(_session, "_copilotClient", null);
+        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+    }
+
+    [Fact]
+    public async Task ChangeModelAsync_WithGitHubEntry_ShouldClearByokProvider()
+    {
+        // Arrange — set up dual-source model
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        SetPrivateField(_session, "_useByokOpenAi", true);
+        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
+
+        // Set a non-null _copilotClient to pass the guard check
+        var client = new CopilotClient(new CopilotClientOptions());
+        SetPrivateField(_session, "_copilotClient", client);
+
+        var entries = InvokeGetModelSelectionEntries(_session);
+        var githubEntry = entries.First(e => e.Source == "GitHub");
+
+        // Act — will fail at session creation but provider flag should be set first
+        _ = await InvokeChangeModelAsyncWithEntry(_session, githubEntry);
+
+        // Assert — _useByokOpenAi should be set to false
+        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+        useByok.Should().BeFalse();
+
+        // Clean up: detach client from session to avoid double-dispose issues
+        SetPrivateField(_session, "_copilotClient", null);
+        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+    }
+
     #endregion
 
     #region SessionConfig Tests
@@ -1293,6 +1445,53 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull();
         var task = (Task<List<ModelInfo>>)method!.Invoke(session, [])!;
+        return await task;
+    }
+
+    private record TestModelSelectionEntry(string ModelId, string DisplayName, string Source);
+
+    private static List<TestModelSelectionEntry> InvokeGetModelSelectionEntries(TroubleshootingSession session)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetModelSelectionEntries", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("GetModelSelectionEntries should exist on TroubleshootingSession");
+        var result = method!.Invoke(session, []);
+        result.Should().NotBeNull();
+
+        // Convert via reflection to our test record
+        var list = new List<TestModelSelectionEntry>();
+        foreach (var item in (System.Collections.IEnumerable)result!)
+        {
+            var type = item.GetType();
+            var modelId = (string)type.GetProperty("ModelId")!.GetValue(item)!;
+            var displayName = (string)type.GetProperty("DisplayName")!.GetValue(item)!;
+            var source = type.GetProperty("Source")!.GetValue(item)!.ToString()!;
+            list.Add(new TestModelSelectionEntry(modelId, displayName, source));
+        }
+        return list;
+    }
+
+    private static async Task<bool> InvokeChangeModelAsyncWithEntry(TroubleshootingSession session, TestModelSelectionEntry testEntry)
+    {
+        var entryType = session.GetType().GetNestedType("ModelSelectionEntry", BindingFlags.NonPublic);
+        entryType.Should().NotBeNull("ModelSelectionEntry should exist as a nested type");
+
+        // Parse the source enum value
+        var modelSourceType = session.GetType().GetNestedType("ModelSource", BindingFlags.NonPublic)!;
+        var sourceValue = Enum.Parse(modelSourceType, testEntry.Source, ignoreCase: true);
+
+        // Construct a ModelSelectionEntry instance
+        var entry = Activator.CreateInstance(entryType!, testEntry.ModelId, testEntry.DisplayName, sourceValue);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .FirstOrDefault(m => m.Name == "ChangeModelAsync"
+                && m.GetParameters().Length >= 1
+                && m.GetParameters()[0].ParameterType == entryType);
+
+        method.Should().NotBeNull("ChangeModelAsync(ModelSelectionEntry) overload should exist");
+        var task = (Task<bool>)method!.Invoke(session, [entry, null])!;
         return await task;
     }
 }

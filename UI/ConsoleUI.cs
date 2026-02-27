@@ -1265,6 +1265,47 @@ public static class ConsoleUI
         public bool IsCancel => ReferenceEquals(this, Cancel);
     }
 
+    private sealed record EntryChoice(TroubleshootingSession.ModelSelectionEntry Entry, string DisplayName)
+    {
+        public static EntryChoice Cancel { get; } = new(null!, "Cancel");
+        public bool IsCancel => ReferenceEquals(this, Cancel);
+    }
+
+    internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
+        string currentModel,
+        IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
+    {
+        AnsiConsole.MarkupLine($"[grey]Current Model:[/] [magenta]{Markup.Escape(currentModel)}[/]");
+        AnsiConsole.WriteLine();
+
+        var choices = entries
+            .Select(e =>
+            {
+                var isDefault = e.ModelId.Equals(currentModel, StringComparison.OrdinalIgnoreCase);
+                var name = isDefault ? $"{e.DisplayName} (default)" : e.DisplayName;
+                return new EntryChoice(e, name);
+            })
+            .ToList();
+
+        var maxNameLength = choices.Count == 0 ? 0 : choices.Max(c => c.DisplayName.Length);
+        choices.Add(EntryChoice.Cancel);
+
+        var selection = AnsiConsole.Prompt(
+            new SelectionPrompt<EntryChoice>()
+                .Title("[cyan]Select AI Model:[/]")
+                .PageSize(15)
+                .UseConverter(choice =>
+                {
+                    if (choice.IsCancel)
+                        return "Cancel";
+
+                    return Markup.Escape(choice.DisplayName.PadRight(maxNameLength));
+                })
+                .AddChoices(choices));
+
+        return selection.IsCancel ? null : selection.Entry;
+    }
+
     /// <summary>
     /// Display an error message
     /// </summary>

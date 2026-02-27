@@ -18,12 +18,14 @@ namespace TroubleScout;
 public class TroubleshootingSession : IAsyncDisposable
 {
     [Flags]
-    private enum ModelSource
+    internal enum ModelSource
     {
         None = 0,
         GitHub = 1,
         Byok = 2
     }
+
+    internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSource Source);
 
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
@@ -197,6 +199,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public string ConnectionMode => _executor.GetConnectionMode();
     public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
+    public string ActiveProviderDisplayName => _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot";
     public string CopilotVersion => _copilotVersion ?? "unknown";
     public IReadOnlyList<string> ConfiguredMcpServers => _configuredMcpServers;
     public IReadOnlyList<string> RuntimeMcpServers => _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
@@ -483,6 +486,70 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             if (!await CreateCopilotSessionAsync(newModel, updateStatus))
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConsoleUI.ShowError("Model Change Failed", ex.Message);
+            return false;
+        }
+    }
+
+    internal async Task<bool> ChangeModelAsync(ModelSelectionEntry entry, Action<string>? updateStatus = null)
+    {
+        if (_copilotClient == null)
+        {
+            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.ModelId))
+        {
+            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
+            return false;
+        }
+
+        if (_availableModels.Count == 0 || _availableModels.All(m => !m.Id.Equals(entry.ModelId, StringComparison.OrdinalIgnoreCase)))
+        {
+            ConsoleUI.ShowError("Invalid Model", $"The selected model '{entry.ModelId}' is not available.");
+            return false;
+        }
+
+        if (entry.Source == ModelSource.Byok)
+        {
+            if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+            {
+                ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
+                return false;
+            }
+
+            _useByokOpenAi = true;
+        }
+        else
+        {
+            if (!_isGitHubCopilotAuthenticated)
+            {
+                ConsoleUI.ShowWarning("GitHub Copilot is not authenticated. Run /login to use GitHub models.");
+                return false;
+            }
+
+            _useByokOpenAi = false;
+        }
+
+        try
+        {
+            if (_copilotSession != null)
+            {
+                updateStatus?.Invoke("Closing current session...");
+                await _copilotSession.DisposeAsync();
+                _copilotSession = null;
+            }
+
+            if (!await CreateCopilotSessionAsync(entry.ModelId, updateStatus))
             {
                 return false;
             }
@@ -1025,6 +1092,35 @@ public class TroubleshootingSession : IAsyncDisposable
 
             model.Name = $"{ToModelDisplayName(model.Id)} [{sourceLabel}]";
         }
+    }
+
+    private IReadOnlyList<ModelSelectionEntry> GetModelSelectionEntries()
+    {
+        var entries = new List<ModelSelectionEntry>();
+
+        foreach (var model in _availableModels)
+        {
+            if (!_modelSources.TryGetValue(model.Id, out var source))
+                continue;
+
+            var displayBase = ToModelDisplayName(model.Id);
+
+            if ((source & ModelSource.GitHub) != 0 && (source & ModelSource.Byok) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+            }
+            else if ((source & ModelSource.GitHub) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
+            }
+            else if ((source & ModelSource.Byok) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+            }
+        }
+
+        return entries;
     }
 
     private async Task RefreshAvailableModelsAsync()
@@ -1898,17 +1994,19 @@ public class TroubleshootingSession : IAsyncDisposable
                     continue;
                 }
 
-                var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
-                if (newModel != null && !IsCurrentModel(newModel))
+                var selectionEntries = GetModelSelectionEntries();
+                var selectedEntry = ConsoleUI.PromptModelSelection(SelectedModel, selectionEntries);
+                if (selectedEntry != null && !IsCurrentModel(selectedEntry.ModelId))
                 {
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {newModel}...", async updateStatus =>
+                    var displayName = selectedEntry.DisplayName;
+                    var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
                     {
-                        return await ChangeModelAsync(newModel, updateStatus);
+                        return await ChangeModelAsync(selectedEntry, updateStatus);
                     });
                     
                     if (success)
                     {
-                        ConsoleUI.ShowSuccess($"Now using model: {SelectedModel}");
+                        ConsoleUI.ShowSuccess($"Now using: {SelectedModel} via {ActiveProviderDisplayName}");
                     }
                 }
                 continue;
@@ -2789,6 +2887,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
         var fields = new List<(string Label, string Value)>();
+        fields.Add(("Provider", ActiveProviderDisplayName));
         fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
         fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
