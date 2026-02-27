@@ -1560,4 +1560,105 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     #endregion
+
+    #region Tool Visibility Tests (T4)
+
+    [Fact]
+    public void ToolDescriptions_ShouldContainAllRegisteredToolNames()
+    {
+        // Arrange — get the static ToolDescriptions dictionary via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("ToolDescriptions", BindingFlags.Static | BindingFlags.NonPublic);
+        field.Should().NotBeNull("ToolDescriptions dictionary should exist");
+
+        var dict = field!.GetValue(null) as IDictionary<string, string>;
+        dict.Should().NotBeNull();
+
+        // Assert — all 10 registered tool names should be present
+        var expectedTools = new[]
+        {
+            "run_powershell", "get_system_info", "get_event_logs", "get_services",
+            "get_processes", "get_disk_space", "get_network_info", "get_performance_counters",
+            "connect_server", "close_server_session"
+        };
+
+        foreach (var tool in expectedTools)
+        {
+            dict.Should().ContainKey(tool, $"ToolDescriptions should have an entry for '{tool}'");
+        }
+
+        dict.Should().HaveCount(expectedTools.Length, "ToolDescriptions should have exactly the registered tool count");
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenToolsUsed_ShouldIncludeToolCount()
+    {
+        // Arrange — set _toolInvocationCount > 0 via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("_toolInvocationCount", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_toolInvocationCount field should exist");
+
+        field!.SetValue(_session, 5);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().Contain(f => f.Label == "Tools used" && f.Value == "5");
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenNoToolsUsed_ShouldNotIncludeToolCount()
+    {
+        // Arrange — _toolInvocationCount is 0 by default
+        var field = typeof(TroubleshootingSession)
+            .GetField("_toolInvocationCount", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_toolInvocationCount field should exist");
+
+        field!.SetValue(_session, 0);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().NotContain(f => f.Label == "Tools used");
+    }
+
+    [Fact]
+    public void SystemMessage_ShouldEncourageToolUse()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var config = method!.Invoke(_session, ["test-server"]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Attempt every relevant diagnostic tool",
+            "system message should encourage using all tools before giving up");
+    }
+
+    [Fact]
+    public void SystemMessage_ShouldExplainReadOnlyAlwaysAllowed()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var config = method!.Invoke(_session, ["test-server"]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Read-only diagnostic tools execute automatically in ALL modes",
+            "system message should clarify read-only tools work in all modes");
+    }
+
+    #endregion
 }

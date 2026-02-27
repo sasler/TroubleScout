@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
+using Spectre.Console;
 using TroubleScout.Services;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -66,11 +67,27 @@ public class TroubleshootingSession : IAsyncDisposable
     private int _lastPromptIndex = -1;
     private string _sessionId = "n/a";
     private int _sessionCounter;
+    private int _toolInvocationCount;
     private bool _isGitHubCopilotAuthenticated;
 
     private CopilotUsageSnapshot? _lastUsage;
 
     private SystemMessageConfig _systemMessageConfig;
+
+    private static readonly Dictionary<string, string> ToolDescriptions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["run_powershell"]           = "Running PowerShell",
+            ["get_system_info"]          = "Reading System Info",
+            ["get_event_logs"]           = "Scanning Event Logs",
+            ["get_services"]             = "Checking Services",
+            ["get_processes"]            = "Listing Processes",
+            ["get_disk_space"]           = "Checking Disk Space",
+            ["get_network_info"]         = "Reading Network Config",
+            ["get_performance_counters"] = "Reading Performance Counters",
+            ["connect_server"]           = "Connecting to Server",
+            ["close_server_session"]     = "Closing Server Session",
+        };
 
     private static readonly string[] SlashCommands =
     [
@@ -112,6 +129,10 @@ public class TroubleshootingSession : IAsyncDisposable
             - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
             - Use all available runtime capabilities when relevant, including built-in tools, configured MCP servers, and loaded skills
+            - Always prefer using the available diagnostic tools to gather data rather than stating you cannot retrieve information
+            - Attempt every relevant diagnostic tool before concluding data is unavailable
+            - If a tool call returns an error or times out, retry it once with a slightly different approach before giving up
+            - All read-only tools (get_system_info, get_event_logs, get_services, get_processes, get_disk_space, get_network_info, get_performance_counters) execute automatically without any confirmation required
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
@@ -140,7 +161,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
             ## Safety
             - Only read-only Get-* commands execute automatically
-            - In Safe mode, remediation commands require explicit user approval
+            - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
+            - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
             - In YOLO mode, remediation commands can execute without confirmation
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
             - Never claim a command was executed unless run_powershell returned execution output
@@ -1524,8 +1546,24 @@ public class TroubleshootingSession : IAsyncDisposable
                         {
                             pendingStreamLineBreak = true;
                         }
-                        thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
+                        var toolName = toolStart.Data?.ToolName ?? "tool";
+                        var mcpServer = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
+                        string toolDisplay;
+                        if (!string.IsNullOrWhiteSpace(mcpServer))
+                        {
+                            toolDisplay = $"MCP [{Markup.Escape(mcpServer)}]: {Markup.Escape(toolName)}";
+                        }
+                        else if (ToolDescriptions.TryGetValue(toolName, out var desc))
+                        {
+                            toolDisplay = desc;
+                        }
+                        else
+                        {
+                            toolDisplay = $"Using {toolName}";
+                        }
+                        thinkingIndicator.ShowToolExecution(toolDisplay);
                         RecordMcpToolAction(toolStart);
+                        _toolInvocationCount++;
                         break;
                     
                     case ToolExecutionCompleteEvent:
@@ -2810,6 +2848,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         _sessionId = CreateSessionId();
         _lastUsage = null;
+        _toolInvocationCount = 0;
 
         if (_configurationWarnings.Count > 0)
         {
@@ -2961,6 +3000,11 @@ public class TroubleshootingSession : IAsyncDisposable
         fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
         fields.Add(("Session ID", _sessionId));
+
+        if (_toolInvocationCount > 0)
+        {
+            fields.Add(("Tools used", _toolInvocationCount.ToString()));
+        }
 
         if (_lastUsage != null && _lastUsage.HasAny)
         {
