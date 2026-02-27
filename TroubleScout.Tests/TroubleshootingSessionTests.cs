@@ -118,6 +118,32 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void IsCurrentModelAndSource_SameModelDifferentProvider_ShouldReturnFalse()
+    {
+        // Arrange - session defaults to GitHub (not BYOK)
+        SetPrivateField(_session, "_selectedModel", "gpt-4.1");
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Create a ModelSelectionEntry with Byok source via reflection
+        var entryType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(t => t.Name == "ModelSelectionEntry");
+        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(t => t.Name == "ModelSource");
+        var byokValue = Enum.Parse(sourceType, "Byok");
+        var entry = Activator.CreateInstance(entryType, "gpt-4.1", "GPT-4.1", byokValue)!;
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var result = (bool)method!.Invoke(_session, [entry])!;
+
+        // Assert - same model but different source should return false
+        result.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
     {
         // Arrange & Act
@@ -736,6 +762,27 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         session.Should().NotBeNull();
     }
 
+    [Fact]
+    public void SetExecutionMode_ShouldPropagateToAdditionalExecutors()
+    {
+        // Arrange - add an additional executor via the private field
+        var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(_session, "_additionalExecutors");
+        var altExecutor = new PowerShellExecutor("server2");
+        altExecutor.ExecutionMode = ExecutionMode.Safe;
+        additionalExecutors["server2"] = altExecutor;
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("SetExecutionMode", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        method!.Invoke(_session, [ExecutionMode.Yolo]);
+
+        // Assert
+        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Yolo);
+        altExecutor.Dispose();
+    }
+
     #endregion
 
     #region Error Handling Tests
@@ -1163,7 +1210,250 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         models.Should().BeEmpty();
     }
 
+    [Fact]
+    public void GetModelSelectionEntries_DualSourceModel_ShouldProduceTwoEntries()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().HaveCount(2);
+        entries.Select(e => e.DisplayName).Should().Contain(n => n.Contains("GitHub Copilot", StringComparison.Ordinal));
+        entries.Select(e => e.DisplayName).Should().Contain(n => n.Contains("BYOK", StringComparison.Ordinal));
+        entries.Select(e => e.ModelId).Should().AllBe("gpt-5");
+    }
+
+    [Fact]
+    public void GetModelSelectionEntries_SingleSourceByok_ShouldProduceOneEntry()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo>();
+        var byokModels = new List<ModelInfo> { new() { Id = "custom-model", Name = "Custom Model" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().ContainSingle();
+        entries[0].ModelId.Should().Be("custom-model");
+        entries[0].Source.Should().Be("Byok");
+    }
+
+    [Fact]
+    public void GetModelSelectionEntries_SingleSourceGitHub_ShouldProduceOneEntry()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-4.1", Name = "GPT 4.1" } };
+        var byokModels = new List<ModelInfo>();
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().ContainSingle();
+        entries[0].ModelId.Should().Be("gpt-4.1");
+        entries[0].Source.Should().Be("GitHub");
+    }
+
+    [Fact]
+    public void ActiveProviderDisplayName_WhenByok_ShouldReturnByokLabel()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", true);
+
+        // Act
+        var provider = _session.ActiveProviderDisplayName;
+
+        // Assert
+        provider.Should().Be("BYOK (OpenAI)");
+    }
+
+    [Fact]
+    public void ActiveProviderDisplayName_WhenGitHub_ShouldReturnGitHubLabel()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Act
+        var provider = _session.ActiveProviderDisplayName;
+
+        // Assert
+        provider.Should().Be("GitHub Copilot");
+    }
+
+    [Fact]
+    public void GetStatusFields_ShouldIncludeProviderField()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().Contain(f => f.Label == "Provider" && f.Value == "GitHub Copilot");
+    }
+
+    [Fact]
+    public async Task ChangeModelAsync_WithByokEntry_ShouldSetByokProvider()
+    {
+        // Arrange — set up dual-source model
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        SetPrivateField(_session, "_useByokOpenAi", false);
+        SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
+        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
+
+        // Set a non-null _copilotClient to pass the guard check
+        var client = new CopilotClient(new CopilotClientOptions());
+        SetPrivateField(_session, "_copilotClient", client);
+
+        var entries = InvokeGetModelSelectionEntries(_session);
+        var byokEntry = entries.First(e => e.Source == "Byok");
+
+        // Act — will fail at session creation but provider flag should be set first
+        _ = await InvokeChangeModelAsyncWithEntry(_session, byokEntry);
+
+        // Assert — _useByokOpenAi should be set to true
+        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+        useByok.Should().BeTrue();
+
+        // Clean up: detach client from session to avoid double-dispose issues
+        SetPrivateField(_session, "_copilotClient", null);
+        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+    }
+
+    [Fact]
+    public async Task ChangeModelAsync_WithGitHubEntry_ShouldClearByokProvider()
+    {
+        // Arrange — set up dual-source model
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+
+        SetPrivateField(_session, "_useByokOpenAi", true);
+        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
+
+        // Set a non-null _copilotClient to pass the guard check
+        var client = new CopilotClient(new CopilotClientOptions());
+        SetPrivateField(_session, "_copilotClient", client);
+
+        var entries = InvokeGetModelSelectionEntries(_session);
+        var githubEntry = entries.First(e => e.Source == "GitHub");
+
+        // Act — will fail at session creation but provider flag should be set first
+        _ = await InvokeChangeModelAsyncWithEntry(_session, githubEntry);
+
+        // Assert — _useByokOpenAi should be set to false
+        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+        useByok.Should().BeFalse();
+
+        // Clean up: detach client from session to avoid double-dispose issues
+        SetPrivateField(_session, "_copilotClient", null);
+        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+    }
+
     #endregion
+
+    #region SessionConfig Tests
+
+    [Fact]
+    public void BuildSessionConfig_ShouldIncludeClientName()
+    {
+        // Arrange & Act
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        // Assert
+        config.ClientName.Should().Be("TroubleScout");
+    }
+
+    [Fact]
+    public void BuildSessionConfig_ShouldIncludePermissionRequestHandler()
+    {
+        // Arrange & Act
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        // Assert
+        config.OnPermissionRequest.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task PermissionHandler_FileRead_ShouldApproveInSafeMode()
+    {
+        // Arrange - default session is Safe mode
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "file-read" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_UrlFetch_ShouldApproveInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "url-fetch" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_CustomTool_ShouldApproveInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "custom-tool" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Mcp_InYoloMode_ShouldApprove()
+    {
+        // Arrange - switch to YOLO mode
+        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        var config = InvokeBuildSessionConfig(session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "mcp" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be("approved");
+        await session.DisposeAsync();
+    }
+
+    #endregion
+
+    private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildSessionConfig", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildSessionConfig should be an internal/private method on TroubleshootingSession");
+        return (SessionConfig)method!.Invoke(session, [model])!;
+    }
 
     private static IReadOnlyList<string> InvokeParseCliModelIds(string helpText)
     {
@@ -1248,4 +1538,218 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var task = (Task<List<ModelInfo>>)method!.Invoke(session, [])!;
         return await task;
     }
+
+    private record TestModelSelectionEntry(string ModelId, string DisplayName, string Source);
+
+    private static List<TestModelSelectionEntry> InvokeGetModelSelectionEntries(TroubleshootingSession session)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetModelSelectionEntries", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("GetModelSelectionEntries should exist on TroubleshootingSession");
+        var result = method!.Invoke(session, []);
+        result.Should().NotBeNull();
+
+        // Convert via reflection to our test record
+        var list = new List<TestModelSelectionEntry>();
+        foreach (var item in (System.Collections.IEnumerable)result!)
+        {
+            var type = item.GetType();
+            var modelId = (string)type.GetProperty("ModelId")!.GetValue(item)!;
+            var displayName = (string)type.GetProperty("DisplayName")!.GetValue(item)!;
+            var source = type.GetProperty("Source")!.GetValue(item)!.ToString()!;
+            list.Add(new TestModelSelectionEntry(modelId, displayName, source));
+        }
+        return list;
+    }
+
+    private static async Task<bool> InvokeChangeModelAsyncWithEntry(TroubleshootingSession session, TestModelSelectionEntry testEntry)
+    {
+        var entryType = session.GetType().GetNestedType("ModelSelectionEntry", BindingFlags.NonPublic);
+        entryType.Should().NotBeNull("ModelSelectionEntry should exist as a nested type");
+
+        // Parse the source enum value
+        var modelSourceType = session.GetType().GetNestedType("ModelSource", BindingFlags.NonPublic)!;
+        var sourceValue = Enum.Parse(modelSourceType, testEntry.Source, ignoreCase: true);
+
+        // Construct a ModelSelectionEntry instance
+        var entry = Activator.CreateInstance(entryType!, testEntry.ModelId, testEntry.DisplayName, sourceValue);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .FirstOrDefault(m => m.Name == "ChangeModelAsync"
+                && m.GetParameters().Length >= 1
+                && m.GetParameters()[0].ParameterType == entryType);
+
+        method.Should().NotBeNull("ChangeModelAsync(ModelSelectionEntry) overload should exist");
+        var task = (Task<bool>)method!.Invoke(session, [entry, null])!;
+        return await task;
+    }
+
+    #region Multi-PSSession / AllTargetServers Tests
+
+    [Fact]
+    public void AllTargetServers_WithNoAdditional_ShouldReturnPrimaryOnly()
+    {
+        // Act
+        var servers = _session.AllTargetServers;
+
+        // Assert
+        servers.Should().HaveCount(1);
+        servers[0].Should().Be("localhost");
+    }
+
+    [Fact]
+    public async Task AllTargetServers_WithAdditional_ShouldIncludeAll()
+    {
+        // Arrange – inject entries into the _additionalExecutors dictionary via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalExecutors", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var dict = (Dictionary<string, PowerShellExecutor>)field!.GetValue(_session)!;
+        var execB = new PowerShellExecutor("ServerB");
+        var execA = new PowerShellExecutor("ServerA");
+        dict["ServerB"] = execB;
+        dict["ServerA"] = execA;
+
+        try
+        {
+            // Act
+            var servers = _session.AllTargetServers;
+
+            // Assert – primary first, then alphabetical additional
+            servers.Should().HaveCount(3);
+            servers[0].Should().Be("localhost");
+            servers[1].Should().Be("ServerA");
+            servers[2].Should().Be("ServerB");
+        }
+        finally
+        {
+            dict.Clear();
+            execB.Dispose();
+            execA.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SameAsPrimary_ShouldSucceedWithoutNewExecutor()
+    {
+        // Arrange – invoke the private ConnectAdditionalServerAsync method
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost"])!;
+        var result = await task;
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+        _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
+    }
+
+    #endregion
+
+    #region Tool Visibility Tests (T4)
+
+    [Fact]
+    public void ToolDescriptions_ShouldContainAllRegisteredToolNames()
+    {
+        // Arrange — get the static ToolDescriptions dictionary via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("ToolDescriptions", BindingFlags.Static | BindingFlags.NonPublic);
+        field.Should().NotBeNull("ToolDescriptions dictionary should exist");
+
+        var dict = field!.GetValue(null) as IDictionary<string, string>;
+        dict.Should().NotBeNull();
+
+        // Assert — all 10 registered tool names should be present
+        var expectedTools = new[]
+        {
+            "run_powershell", "get_system_info", "get_event_logs", "get_services",
+            "get_processes", "get_disk_space", "get_network_info", "get_performance_counters",
+            "connect_server", "close_server_session"
+        };
+
+        foreach (var tool in expectedTools)
+        {
+            dict.Should().ContainKey(tool, $"ToolDescriptions should have an entry for '{tool}'");
+        }
+
+        dict.Should().HaveCount(expectedTools.Length, "ToolDescriptions should have exactly the registered tool count");
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenToolsUsed_ShouldIncludeToolCount()
+    {
+        // Arrange — set _toolInvocationCount > 0 via reflection
+        var field = typeof(TroubleshootingSession)
+            .GetField("_toolInvocationCount", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_toolInvocationCount field should exist");
+
+        field!.SetValue(_session, 5);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().Contain(f => f.Label == "Tools used" && f.Value == "5");
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenNoToolsUsed_ShouldNotIncludeToolCount()
+    {
+        // Arrange — _toolInvocationCount is 0 by default
+        var field = typeof(TroubleshootingSession)
+            .GetField("_toolInvocationCount", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_toolInvocationCount field should exist");
+
+        field!.SetValue(_session, 0);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().NotContain(f => f.Label == "Tools used");
+    }
+
+    [Fact]
+    public void SystemMessage_ShouldEncourageToolUse()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var config = method!.Invoke(_session, ["test-server"]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Attempt every relevant diagnostic tool",
+            "system message should encourage using all tools before giving up");
+    }
+
+    [Fact]
+    public void SystemMessage_ShouldExplainReadOnlyAlwaysAllowed()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var config = method!.Invoke(_session, ["test-server"]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Read-only diagnostic tools execute automatically in ALL modes",
+            "system message should clarify read-only tools work in all modes");
+    }
+
+    #endregion
 }

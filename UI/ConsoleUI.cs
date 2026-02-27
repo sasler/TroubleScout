@@ -71,21 +71,35 @@ public static class ConsoleUI
         bool copilotReady,
         string? model = null,
         ExecutionMode executionMode = ExecutionMode.Safe,
-        IReadOnlyList<(string Label, string Value)>? usageFields = null)
+        IReadOnlyList<(string Label, string Value)>? usageFields = null,
+        IReadOnlyList<string>? additionalTargets = null)
     {
         var grid = new Grid();
         grid.AddColumn(new GridColumn().PadRight(2));
         grid.AddColumn(new GridColumn());
-        
-        var serverStatus = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase) 
-            ? "[green]localhost[/]" 
-            : $"[yellow]{targetServer}[/]";
-        
+
+        if (additionalTargets?.Count > 0)
+        {
+            var allServers = new List<string> { targetServer };
+            allServers.AddRange(additionalTargets);
+            var serverMarkups = allServers.Select(s =>
+                s.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                    ? "[green]localhost[/]"
+                    : $"[yellow]{Markup.Escape(s)}[/]");
+            grid.AddRow("[grey]Target Servers:[/]", string.Join(", ", serverMarkups));
+        }
+        else
+        {
+            var serverStatus = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                ? "[green]localhost[/]"
+                : $"[yellow]{Markup.Escape(targetServer)}[/]";
+            grid.AddRow("[grey]Target Server:[/]", serverStatus);
+        }
+
         var copilotStatus = copilotReady 
             ? "[green]Connected[/]" 
             : "[yellow]Not ready[/]";
-        
-        grid.AddRow("[grey]Target Server:[/]", serverStatus);
+
         grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{connectionMode}[/]");
         grid.AddRow("[grey]Copilot Status:[/]", copilotStatus);
         grid.AddRow("[grey]Execution Mode:[/]", GetExecutionModeMarkup(executionMode));
@@ -1263,6 +1277,47 @@ public static class ConsoleUI
     {
         public static ModelChoice Cancel { get; } = new(new ModelInfo(), "Cancel", "");
         public bool IsCancel => ReferenceEquals(this, Cancel);
+    }
+
+    private sealed record EntryChoice(TroubleshootingSession.ModelSelectionEntry Entry, string DisplayName)
+    {
+        public static EntryChoice Cancel { get; } = new(null!, "Cancel");
+        public bool IsCancel => ReferenceEquals(this, Cancel);
+    }
+
+    internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
+        string currentModel,
+        IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
+    {
+        AnsiConsole.MarkupLine($"[grey]Current Model:[/] [magenta]{Markup.Escape(currentModel)}[/]");
+        AnsiConsole.WriteLine();
+
+        var choices = entries
+            .Select(e =>
+            {
+                var isDefault = e.ModelId.Equals(currentModel, StringComparison.OrdinalIgnoreCase);
+                var name = isDefault ? $"{e.DisplayName} (default)" : e.DisplayName;
+                return new EntryChoice(e, name);
+            })
+            .ToList();
+
+        var maxNameLength = choices.Count == 0 ? 0 : choices.Max(c => c.DisplayName.Length);
+        choices.Add(EntryChoice.Cancel);
+
+        var selection = AnsiConsole.Prompt(
+            new SelectionPrompt<EntryChoice>()
+                .Title("[cyan]Select AI Model:[/]")
+                .PageSize(15)
+                .UseConverter(choice =>
+                {
+                    if (choice.IsCancel)
+                        return "Cancel";
+
+                    return Markup.Escape(choice.DisplayName.PadRight(maxNameLength));
+                })
+                .AddChoices(choices));
+
+        return selection.IsCancel ? null : selection.Entry;
     }
 
     /// <summary>

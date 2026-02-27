@@ -77,3 +77,4 @@ TroubleScout.sln
 
 # Release packages
 *.zip
+TestResults/

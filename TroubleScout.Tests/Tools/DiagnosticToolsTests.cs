@@ -416,4 +416,246 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     #endregion
+
+    #region Multi-PSSession Tool Tests
+
+    [Fact]
+    public async Task ConnectServer_ShouldCallConnectCallback()
+    {
+        // Arrange
+        var callbackCalled = false;
+        string? callbackServer = null;
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = server =>
+        {
+            callbackCalled = true;
+            callbackServer = server;
+            return Task.FromResult<(bool, string?)>((true, null));
+        };
+        Func<string, PowerShellExecutor?> getExecutorCallback = _ => null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var connectTool = tools.GetTools().First(t => t.Name == "connect_server");
+
+        // Act
+        await connectTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["serverName"] = "ServerB"
+        });
+
+        // Assert
+        callbackCalled.Should().BeTrue();
+        callbackServer.Should().Be("ServerB");
+    }
+
+    [Fact]
+    public async Task ConnectServer_WhenCallbackFails_ShouldReturnError()
+    {
+        // Arrange
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = server =>
+            Task.FromResult<(bool, string?)>((false, "Connection refused"));
+        Func<string, PowerShellExecutor?> getExecutorCallback = _ => null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var connectTool = tools.GetTools().First(t => t.Name == "connect_server");
+
+        // Act
+        var result = await connectTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["serverName"] = "ServerB"
+        });
+
+        // Assert
+        var resultStr = result?.ToString();
+        resultStr.Should().Contain("ERROR");
+        resultStr.Should().Contain("Connection refused");
+    }
+
+    [Fact]
+    public async Task CloseServerSession_ShouldCallCloseCallback()
+    {
+        // Arrange
+        var closeCalled = false;
+        string? closedServer = null;
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = _ =>
+            Task.FromResult<(bool, string?)>((true, null));
+        Func<string, PowerShellExecutor?> getExecutorCallback = _ => null;
+        Func<string, Task<bool>> closeCallback = server =>
+        {
+            closeCalled = true;
+            closedServer = server;
+            return Task.FromResult(true);
+        };
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var closeTool = tools.GetTools().First(t => t.Name == "close_server_session");
+
+        // Act
+        await closeTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["serverName"] = "ServerB"
+        });
+
+        // Assert
+        closeCalled.Should().BeTrue();
+        closedServer.Should().Be("ServerB");
+    }
+
+    [Fact]
+    public async Task RunPowerShell_WithSessionName_ShouldUseAlternateExecutor()
+    {
+        // Arrange
+        var altExecutor = new Mock<PowerShellExecutor>("ServerB");
+        altExecutor.Setup(x => x.ActualComputerName).Returns("ServerB");
+        altExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        altExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "alt-output"));
+
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = _ =>
+            Task.FromResult<(bool, string?)>((true, null));
+        Func<string, PowerShellExecutor?> getExecutorCallback = name =>
+            name.Equals("ServerB", StringComparison.OrdinalIgnoreCase) ? altExecutor.Object : null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var runTool = tools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act
+        var result = await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Get-Service",
+            ["sessionName"] = "ServerB"
+        });
+
+        // Assert
+        var resultStr = result?.ToString();
+        resultStr.Should().Contain("[ServerB]");
+        resultStr.Should().Contain("alt-output");
+        altExecutor.Object.Dispose();
+    }
+
+    [Fact]
+    public async Task RunPowerShell_WithSessionName_WithoutMultiSessionSupport_ShouldReturnError()
+    {
+        // Arrange
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "primary-output"));
+
+        var runTool = _diagnosticTools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act
+        var result = await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Get-Service",
+            ["sessionName"] = "ServerB"
+        });
+
+        // Assert
+        var resultStr = result?.ToString();
+        resultStr.Should().Contain("does not support multiple sessions");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunPowerShell_WithNullSession_ShouldUsePrimaryExecutor()
+    {
+        // Arrange
+        _mockExecutor.Setup(x => x.ActualComputerName).Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "primary-output"));
+
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = _ =>
+            Task.FromResult<(bool, string?)>((true, null));
+        Func<string, PowerShellExecutor?> getExecutorCallback = _ => null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var runTool = tools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act
+        var result = await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Get-Service"
+        });
+
+        // Assert
+        var resultStr = result?.ToString();
+        resultStr.Should().NotContain("[ServerB]");
+        resultStr.Should().Contain("primary-output");
+    }
+
+    #endregion
+
+    #region PendingCommand Session Context Tests
+
+    [Fact]
+    public async Task RunPowerShell_WithSessionName_PendingCommand_ShouldUseCorrectExecutor()
+    {
+        // Arrange
+        var altExecutor = new Mock<PowerShellExecutor>("ServerB");
+        altExecutor.Setup(x => x.ActualComputerName).Returns("ServerB");
+        altExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        altExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "alt-approved-output"));
+
+        _mockExecutor.Setup(x => x.ActualComputerName).Returns("PrimaryServer");
+
+        Func<string, Task<(bool Success, string? Error)>> connectCallback = _ =>
+            Task.FromResult<(bool, string?)>((true, null));
+        Func<string, PowerShellExecutor?> getExecutorCallback = name =>
+            name.Equals("ServerB", StringComparison.OrdinalIgnoreCase) ? altExecutor.Object : null;
+        Func<string, Task<bool>> closeCallback = _ => Task.FromResult(true);
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, null,
+            connectCallback, getExecutorCallback, closeCallback);
+
+        var runTool = tools.GetTools().First(t => t.Name == "run_powershell");
+
+        // Act - run a command that requires approval on an alternate server
+        await runTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["command"] = "Stop-Service -Name wuauserv",
+            ["sessionName"] = "ServerB"
+        });
+
+        // Assert - the pending command should carry the alternate executor and server name
+        tools.PendingCommands.Should().HaveCount(1);
+        var pending = tools.PendingCommands[0];
+        pending.Executor.Should().BeSameAs(altExecutor.Object);
+        pending.ServerName.Should().Be("ServerB");
+
+        // Act - execute the approved command
+        var result = await tools.ExecuteApprovedCommandAsync(pending);
+
+        // Assert - should have used the alternate executor, not the primary
+        result.Should().Contain("[ServerB]");
+        result.Should().Contain("alt-approved-output");
+        altExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+        altExecutor.Object.Dispose();
+    }
+
+    #endregion
 }

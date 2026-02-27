@@ -2,6 +2,7 @@ using FluentAssertions;
 using System.Reflection;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
+using TroubleScout.Services;
 using TroubleScout.UI;
 using Xunit;
 
@@ -124,4 +125,42 @@ public class ConsoleUITests
         method.Should().NotBeNull();
         return method!.Invoke(null, [model]) as string ?? string.Empty;
     }
+
+    #region ShowStatusPanel Multi-Server Tests
+
+    [Fact]
+    public void ShowStatusPanel_WithAdditionalTargets_ShouldShowPluralLabel()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowStatusPanel(
+            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Safe, null,
+            additionalTargets: new[] { "ServerA", "ServerB" });
+        var output = AnsiConsole.ExportText();
+
+        // Assert
+        output.Should().Contain("Target Servers:");
+        output.Should().Contain("PrimaryServer");
+        output.Should().Contain("ServerA");
+        output.Should().Contain("ServerB");
+    }
+
+    [Fact]
+    public void ShowStatusPanel_WithNoAdditional_ShouldShowSingularLabel()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowStatusPanel(
+            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Safe, null,
+            additionalTargets: null);
+        var output = AnsiConsole.ExportText();
+
+        // Assert – look for singular label, ensuring no plural variant on the same line
+        output.Should().Contain("Target Server:");
+        // The plural form "Target Servers:" should not appear without the "WithAdditional" test
+        var lines = output.Split('\n');
+        lines.Should().Contain(line => line.Contains("Target Server:") && !line.Contains("Target Servers:"));
+    }
+
+    #endregion
 }

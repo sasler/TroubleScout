@@ -16,6 +16,8 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
 - **Local or Remote**: Works with localhost or remote servers via WinRM
 - **Comprehensive Diagnostics**: Analyzes event logs, services, processes, disk space, network, and performance counters
+- **Multi-Server Sessions**: Connect to additional servers with `connect_server` to avoid PowerShell double-hop issues; run commands on any connected server via `run_powershell` with `sessionName`
+- **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
 ## Prerequisites

@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
+using Spectre.Console;
 using TroubleScout.Services;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -18,12 +19,14 @@ namespace TroubleScout;
 public class TroubleshootingSession : IAsyncDisposable
 {
     [Flags]
-    private enum ModelSource
+    internal enum ModelSource
     {
         None = 0,
         GitHub = 1,
         Byok = 2
     }
+
+    internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSource Source);
 
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
@@ -38,6 +41,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string _targetServer;
     private PowerShellExecutor _executor;
     private DiagnosticTools _diagnosticTools;
+    private readonly Dictionary<string, PowerShellExecutor> _additionalExecutors = new(StringComparer.OrdinalIgnoreCase);
     private CopilotClient? _copilotClient;
     private CopilotSession? _copilotSession;
     private bool _isInitialized;
@@ -63,11 +67,27 @@ public class TroubleshootingSession : IAsyncDisposable
     private int _lastPromptIndex = -1;
     private string _sessionId = "n/a";
     private int _sessionCounter;
+    private int _toolInvocationCount;
     private bool _isGitHubCopilotAuthenticated;
 
     private CopilotUsageSnapshot? _lastUsage;
 
     private SystemMessageConfig _systemMessageConfig;
+
+    private static readonly Dictionary<string, string> ToolDescriptions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["run_powershell"]           = "Running PowerShell",
+            ["get_system_info"]          = "Reading System Info",
+            ["get_event_logs"]           = "Scanning Event Logs",
+            ["get_services"]             = "Checking Services",
+            ["get_processes"]            = "Listing Processes",
+            ["get_disk_space"]           = "Checking Disk Space",
+            ["get_network_info"]         = "Reading Network Config",
+            ["get_performance_counters"] = "Reading Performance Counters",
+            ["connect_server"]           = "Connecting to Server",
+            ["close_server_session"]     = "Closing Server Session",
+        };
 
     private static readonly string[] SlashCommands =
     [
@@ -109,6 +129,10 @@ public class TroubleshootingSession : IAsyncDisposable
             - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
             - Use all available runtime capabilities when relevant, including built-in tools, configured MCP servers, and loaded skills
+            - Always prefer using the available diagnostic tools to gather data rather than stating you cannot retrieve information
+            - Attempt every relevant diagnostic tool before concluding data is unavailable
+            - If a tool call returns an error or times out, retry it once with a slightly different approach before giving up
+            - All read-only tools (get_system_info, get_event_logs, get_services, get_processes, get_disk_space, get_network_info, get_performance_counters) execute automatically without any confirmation required
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
@@ -137,7 +161,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
             ## Safety
             - Only read-only Get-* commands execute automatically
-            - In Safe mode, remediation commands require explicit user approval
+            - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
+            - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
             - In YOLO mode, remediation commands can execute without confirmation
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
             - Never claim a command was executed unless run_powershell returned execution output
@@ -146,6 +171,13 @@ public class TroubleshootingSession : IAsyncDisposable
             - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
             - Never suggest commands that could cause data loss without clear warnings
             - Always consider the impact of recommended actions
+
+            ## Multi-Server Sessions & Double-Hop Avoidance
+            - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
+            - If you need data from a different server, use connect_server(serverName) to establish a DIRECT session from this client.
+            - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
+            - Use close_server_session(serverName) when done with a server to clean up resources.
+            - Always indicate which server each piece of data comes from.
 
             Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
@@ -182,7 +214,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
+            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
     }
 
     private readonly string? _requestedModel;
@@ -197,6 +230,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public string ConnectionMode => _executor.GetConnectionMode();
     public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
+    public string ActiveProviderDisplayName => _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot";
     public string CopilotVersion => _copilotVersion ?? "unknown";
     public IReadOnlyList<string> ConfiguredMcpServers => _configuredMcpServers;
     public IReadOnlyList<string> RuntimeMcpServers => _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
@@ -204,6 +238,8 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<string> RuntimeSkills => _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
     public IReadOnlyList<string> ConfigurationWarnings => _configurationWarnings;
     public ExecutionMode CurrentExecutionMode => _executionMode;
+    public IReadOnlyList<string> AllTargetServers =>
+        [_targetServer, .._additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
 
     private sealed record CopilotUsageSnapshot(
         int? PromptTokens,
@@ -483,6 +519,70 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             if (!await CreateCopilotSessionAsync(newModel, updateStatus))
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConsoleUI.ShowError("Model Change Failed", ex.Message);
+            return false;
+        }
+    }
+
+    internal async Task<bool> ChangeModelAsync(ModelSelectionEntry entry, Action<string>? updateStatus = null)
+    {
+        if (_copilotClient == null)
+        {
+            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.ModelId))
+        {
+            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
+            return false;
+        }
+
+        if (_availableModels.Count == 0 || _availableModels.All(m => !m.Id.Equals(entry.ModelId, StringComparison.OrdinalIgnoreCase)))
+        {
+            ConsoleUI.ShowError("Invalid Model", $"The selected model '{entry.ModelId}' is not available.");
+            return false;
+        }
+
+        if (entry.Source == ModelSource.Byok)
+        {
+            if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+            {
+                ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
+                return false;
+            }
+
+            _useByokOpenAi = true;
+        }
+        else
+        {
+            if (!_isGitHubCopilotAuthenticated)
+            {
+                ConsoleUI.ShowWarning("GitHub Copilot is not authenticated. Run /login to use GitHub models.");
+                return false;
+            }
+
+            _useByokOpenAi = false;
+        }
+
+        try
+        {
+            if (_copilotSession != null)
+            {
+                updateStatus?.Invoke("Closing current session...");
+                await _copilotSession.DisposeAsync();
+                _copilotSession = null;
+            }
+
+            if (!await CreateCopilotSessionAsync(entry.ModelId, updateStatus))
             {
                 return false;
             }
@@ -1027,6 +1127,35 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
+    private IReadOnlyList<ModelSelectionEntry> GetModelSelectionEntries()
+    {
+        var entries = new List<ModelSelectionEntry>();
+
+        foreach (var model in _availableModels)
+        {
+            if (!_modelSources.TryGetValue(model.Id, out var source))
+                continue;
+
+            var displayBase = ToModelDisplayName(model.Id);
+
+            if ((source & ModelSource.GitHub) != 0 && (source & ModelSource.Byok) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+            }
+            else if ((source & ModelSource.GitHub) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
+            }
+            else if ((source & ModelSource.Byok) != 0)
+            {
+                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+            }
+        }
+
+        return entries;
+    }
+
     private async Task RefreshAvailableModelsAsync()
     {
         var githubModels = await TryGetGitHubProviderModelsAsync();
@@ -1417,8 +1546,24 @@ public class TroubleshootingSession : IAsyncDisposable
                         {
                             pendingStreamLineBreak = true;
                         }
-                        thinkingIndicator.ShowToolExecution(toolStart.Data?.ToolName ?? "diagnostic");
+                        var toolName = toolStart.Data?.ToolName ?? "tool";
+                        var mcpServer = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
+                        string toolDisplay;
+                        if (!string.IsNullOrWhiteSpace(mcpServer))
+                        {
+                            toolDisplay = $"MCP [{Markup.Escape(mcpServer)}]: {Markup.Escape(toolName)}";
+                        }
+                        else if (ToolDescriptions.TryGetValue(toolName, out var desc))
+                        {
+                            toolDisplay = desc;
+                        }
+                        else
+                        {
+                            toolDisplay = $"Using {toolName}";
+                        }
+                        thinkingIndicator.ShowToolExecution(toolDisplay);
                         RecordMcpToolAction(toolStart);
+                        _toolInvocationCount++;
                         break;
                     
                     case ToolExecutionCompleteEvent:
@@ -1669,7 +1814,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 {
                     Console.Clear();
                     ConsoleUI.ShowBanner();
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
                     ConsoleUI.ShowWelcomeMessage();
                 }
@@ -1683,7 +1828,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 continue;
             }
 
@@ -1844,7 +1989,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/capabilities")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 continue;
             }
 
@@ -1865,7 +2010,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     SetExecutionMode(requestedMode);
                     ConsoleUI.SetExecutionMode(_executionMode);
                     ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                 }
 
                 continue;
@@ -1898,17 +2043,19 @@ public class TroubleshootingSession : IAsyncDisposable
                     continue;
                 }
 
-                var newModel = ConsoleUI.PromptModelSelection(SelectedModel, _availableModels);
-                if (newModel != null && !IsCurrentModel(newModel))
+                var selectionEntries = GetModelSelectionEntries();
+                var selectedEntry = ConsoleUI.PromptModelSelection(SelectedModel, selectionEntries);
+                if (selectedEntry != null && !IsCurrentModelAndSource(selectedEntry))
                 {
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {newModel}...", async updateStatus =>
+                    var displayName = selectedEntry.DisplayName;
+                    var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
                     {
-                        return await ChangeModelAsync(newModel, updateStatus);
+                        return await ChangeModelAsync(selectedEntry, updateStatus);
                     });
                     
                     if (success)
                     {
-                        ConsoleUI.ShowSuccess($"Now using model: {SelectedModel}");
+                        ConsoleUI.ShowSuccess($"Now using: {SelectedModel} via {ActiveProviderDisplayName}");
                     }
                 }
                 continue;
@@ -1932,7 +2079,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     if (success)
                     {
                         ConsoleUI.ShowSuccess($"Connected to {newServer}");
-                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields());
+                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     }
                 }
                 continue;
@@ -1961,6 +2108,16 @@ public class TroubleshootingSession : IAsyncDisposable
 
         return selectedByName != null
             && selectedByName.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsCurrentModelAndSource(ModelSelectionEntry entry)
+    {
+        if (!IsCurrentModel(entry.ModelId))
+            return false;
+
+        // Same model — check if provider also matches
+        var currentSource = _useByokOpenAi ? ModelSource.Byok : ModelSource.GitHub;
+        return currentSource == entry.Source;
     }
 
     private static string GetFirstInputToken(string input)
@@ -2644,6 +2801,19 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _executor.Dispose();
+
+        foreach (var exec in _additionalExecutors.Values)
+        {
+            try { exec.Dispose(); }
+            catch (Exception ex)
+            {
+                if (_debugMode)
+                {
+                    ConsoleUI.ShowWarning($"Additional session cleanup warning: {TrimSingleLine(ex.Message)}");
+                }
+            }
+        }
+        _additionalExecutors.Clear();
         
         GC.SuppressFinalize(this);
     }
@@ -2667,13 +2837,7 @@ public class TroubleshootingSession : IAsyncDisposable
             _configuredMcpServers.Add(serverName);
         }
 
-        var config = new SessionConfig
-        {
-            Model = model,
-            SystemMessage = _systemMessageConfig,
-            Streaming = true,
-            Tools = _diagnosticTools.GetTools().ToList()
-        };
+        var config = BuildSessionConfig(model);
 
         if (_useByokOpenAi)
         {
@@ -2703,6 +2867,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         _sessionId = CreateSessionId();
         _lastUsage = null;
+        _toolInvocationCount = 0;
 
         if (_configurationWarnings.Count > 0)
         {
@@ -2716,6 +2881,45 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return true;
+    }
+
+    internal SessionConfig BuildSessionConfig(string? model)
+    {
+        return new SessionConfig
+        {
+            Model = model,
+            SystemMessage = _systemMessageConfig,
+            Streaming = true,
+            Tools = _diagnosticTools.GetTools().ToList(),
+            ClientName = "TroubleScout",
+            OnPermissionRequest = (req, inv) =>
+            {
+                // Read-only operations and our own custom tools are always auto-approved
+                var kind = req.Kind ?? string.Empty;
+                if (kind is "file-read" or "url-fetch" or "custom-tool")
+                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+
+                // In YOLO mode, approve everything (read live value so /mode changes take effect)
+                if (_executionMode == ExecutionMode.Yolo)
+                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+
+                // In Safe mode: MCP, shell, file-write require user approval
+                var description = kind switch
+                {
+                    "mcp"        => "An MCP tool is requesting permission to execute",
+                    "shell"      => "An external shell command is requesting permission",
+                    "file-write" => "A tool is requesting permission to write files",
+                    _            => $"A tool operation ({Markup.Escape(kind)}) is requesting permission"
+                };
+                var approved = ConsoleUI.PromptCommandApproval(
+                    description,
+                    $"Allow this in Safe mode? (kind: {Markup.Escape(kind)})");
+                return Task.FromResult(new PermissionRequestResult
+                {
+                    Kind = approved ? "approved" : "denied-interactively-by-user"
+                });
+            }
+        };
     }
 
     private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)
@@ -2741,7 +2945,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction);
+        _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
+            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
@@ -2773,19 +2978,81 @@ public class TroubleshootingSession : IAsyncDisposable
         return true;
     }
 
+    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+            return (false, "Server name cannot be empty.");
+
+        if (serverName.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            return (true, null);
+
+        if (_additionalExecutors.ContainsKey(serverName))
+            return (true, null);
+
+        if (_executionMode == ExecutionMode.Safe)
+        {
+            var approved = ConsoleUI.PromptCommandApproval(
+                $"New-PSSession -ComputerName '{serverName}'",
+                $"TroubleScout wants to establish a direct PowerShell session to {serverName}");
+            if (!approved)
+                return (false, $"Connection to {serverName} was denied by user.");
+        }
+
+        var executor = new PowerShellExecutor(serverName);
+        executor.ExecutionMode = _executionMode;
+        var (success, error) = await executor.TestConnectionAsync();
+        if (!success)
+        {
+            executor.Dispose();
+            return (false, error ?? $"Failed to connect to {serverName}");
+        }
+
+        _additionalExecutors[serverName] = executor;
+        return (true, null);
+    }
+
+    private PowerShellExecutor? GetExecutorForServer(string serverName)
+    {
+        if (string.IsNullOrWhiteSpace(serverName) ||
+            serverName.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            return _executor;
+
+        _additionalExecutors.TryGetValue(serverName, out var exec);
+        return exec;
+    }
+
+    private Task<bool> CloseAdditionalServerSessionAsync(string serverName)
+    {
+        if (!_additionalExecutors.TryGetValue(serverName, out var executor))
+            return Task.FromResult(false);
+
+        _additionalExecutors.Remove(serverName); // remove first
+        try { executor.Dispose(); }
+        catch { /* swallow - best effort disposal */ }
+        return Task.FromResult(true);
+    }
+
     private void SetExecutionMode(ExecutionMode mode)
     {
         _executionMode = mode;
         _executor.ExecutionMode = mode;
+        foreach (var exec in _additionalExecutors.Values)
+            exec.ExecutionMode = mode;
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
         var fields = new List<(string Label, string Value)>();
+        fields.Add(("Provider", ActiveProviderDisplayName));
         fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
         fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
         fields.Add(("Session ID", _sessionId));
+
+        if (_toolInvocationCount > 0)
+        {
+            fields.Add(("Tools used", _toolInvocationCount.ToString()));
+        }
 
         if (_lastUsage != null && _lastUsage.HasAny)
         {

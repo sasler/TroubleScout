@@ -2,6 +2,26 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.4.0] - 2026-02-27
+
+✨ **Features**
+
+- 🖧 **Multi-server PSSession support** — Use `connect_server` and `close_server_session` tools to establish direct connections to multiple servers, avoiding PowerShell Remoting double-hop authentication issues. Run commands on any connected server via `run_powershell` with an optional `sessionName` parameter.
+- 🔀 **Accurate provider/model switching** — Dual-source models (available via both GitHub Copilot and BYOK) now appear as separate entries in `/model`, making it explicit which provider will be used. Post-switch confirmation shows both model and provider.
+- 🔧 **Richer tool/MCP usage display** — Tool invocations show human-readable descriptions (e.g., "Scanning Event Logs" instead of "get_event_logs"). MCP tool calls show the server name. Tool invocation count tracked in `/status`.
+
+🛡️ **Reliability & Safety Improvements**
+
+- ⬆️ **GitHub.Copilot.SDK updated to v0.1.28** — addresses breaking change requiring permission handler; read-only tool operations auto-approved in all modes; mutating MCP/shell operations prompt for approval in Safe mode.
+- 🔒 **Execution mode changes apply live** — switching `/mode safe` or `/mode yolo` now immediately affects permission decisions, including for active multi-server sessions.
+- 🛡️ **Multi-session command routing** — Approved commands for alternate server sessions now execute on the correct server, with proper target verification.
+- 🔁 **Session executor robustness** — Additional PSSession executors are safely disposed even if one fails; execution mode propagates to all active sessions.
+
+📝 **Documentation & UX**
+
+- 💬 **Clearer AI guidance** — System message now explicitly encourages tool use, explains read-only tools auto-execute in all modes, and includes double-hop avoidance instructions.
+- 📊 **Provider row in status** — `/status` and `/capabilities` now show the active provider (GitHub Copilot or BYOK) as a dedicated row alongside the AI model.
+
 ## [v1.3.4] - 2026-02-27
 
 ### 🐛 Bug Fixes

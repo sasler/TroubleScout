@@ -16,6 +16,9 @@ public class DiagnosticTools
     private readonly List<PendingCommand> _pendingCommands = [];
     private readonly string _targetServer;
     private readonly Action<CommandActionLog>? _actionLogger;
+    private readonly Func<string, Task<(bool Success, string? Error)>>? _connectServerCallback;
+    private readonly Func<string, PowerShellExecutor?>? _getExecutorCallback;
+    private readonly Func<string, Task<bool>>? _closeSessionCallback;
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
@@ -23,12 +26,18 @@ public class DiagnosticTools
         PowerShellExecutor executor,
         Func<string, string, Task<bool>> approvalCallback,
         string targetServer,
-        Action<CommandActionLog>? actionLogger = null)
+        Action<CommandActionLog>? actionLogger = null,
+        Func<string, Task<(bool Success, string? Error)>>? connectServerCallback = null,
+        Func<string, PowerShellExecutor?>? getExecutorCallback = null,
+        Func<string, Task<bool>>? closeSessionCallback = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
         _targetServer = targetServer;
         _actionLogger = actionLogger;
+        _connectServerCallback = connectServerCallback;
+        _getExecutorCallback = getExecutorCallback;
+        _closeSessionCallback = closeSessionCallback;
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -87,20 +96,50 @@ public class DiagnosticTools
         yield return AIFunctionFactory.Create(GetPerformanceCountersAsync,
             "get_performance_counters",
             "Get performance counter values for CPU, memory, disk, and network metrics.");
+
+        yield return AIFunctionFactory.Create(ConnectServerAsync, "connect_server",
+            "Establish a direct PowerShell remoting session to a target server. " +
+            "Use this to avoid double-hop authentication issues when you need to run commands on " +
+            "a server that is different from the current primary target. Each session runs commands " +
+            "directly on that server without going through an intermediate hop.");
+
+        yield return AIFunctionFactory.Create(CloseServerSessionAsync, "close_server_session",
+            "Close and dispose a named PowerShell session previously created with connect_server. " +
+            "Call this when you no longer need to run commands on that server.");
     }
 
     /// <summary>
     /// Run an arbitrary PowerShell command with validation
     /// </summary>
     private async Task<string> RunPowerShellCommandAsync(
-        [Description("The PowerShell command to execute")] string command)
+        [Description("The PowerShell command to execute")] string command,
+        [Description("Optional: the server name to run the command on. If omitted, runs on the primary target server. Must match a server name established with connect_server.")] string? sessionName = null)
     {
+        // Resolve the executor for the given session name
+        var executor = _executor;
         var target = _executor.ActualComputerName ?? _targetServer;
-        var validation = _executor.ValidateCommand(command);
+        var isAlternate = false;
+
+        if (!string.IsNullOrWhiteSpace(sessionName) && _getExecutorCallback == null)
+        {
+            return $"[ERROR] This tool instance does not support multiple sessions. Cannot target server '{sessionName}'.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionName) && _getExecutorCallback != null)
+        {
+            var altExecutor = _getExecutorCallback(sessionName);
+            if (altExecutor == null)
+                return $"[ERROR] No session found for server '{sessionName}'. Use connect_server first.";
+            executor = altExecutor;
+            target = executor.ActualComputerName ?? sessionName;
+            isAlternate = true;
+        }
+
+        var validation = executor.ValidateCommand(command);
 
         if (!validation.IsAllowed && !validation.RequiresApproval)
         {
-            _executor.AddHistoryEntry($"[BLOCKED] {command}");
+            executor.AddHistoryEntry($"[BLOCKED] {command}");
             _actionLogger?.Invoke(new CommandActionLog(
                 DateTimeOffset.Now,
                 target,
@@ -112,9 +151,10 @@ public class DiagnosticTools
 
         if (validation.RequiresApproval)
         {
-            _executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
+            executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
-            var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval");
+            var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval",
+                isAlternate ? executor : null, isAlternate ? sessionName : null);
             _pendingCommands.Add(pending);
             _actionLogger?.Invoke(new CommandActionLog(
                 DateTimeOffset.Now,
@@ -129,10 +169,10 @@ public class DiagnosticTools
         }
 
         // Safe command - execute directly with target verification
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
-        _executor.AddHistoryEntry($"[EXECUTED] {command}");
-        ConsoleUI.ShowCommandExecution(command, _targetServer);
-        var result = await _executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
+        var wrappedCommand = WrapCommandWithTargetVerification(command, executor, isAlternate ? sessionName : null);
+        executor.AddHistoryEntry($"[EXECUTED] {command}");
+        ConsoleUI.ShowCommandExecution(command, isAlternate ? sessionName! : _targetServer);
+        var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
 
         if (!result.Success)
         {
@@ -141,8 +181,9 @@ public class DiagnosticTools
                 target,
                 command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                _executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
-            return $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+                executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+            var errorOutput = $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+            return isAlternate ? $"[{sessionName}] {errorOutput}" : errorOutput;
         }
 
         var output = string.IsNullOrWhiteSpace(result.Output)
@@ -154,18 +195,52 @@ public class DiagnosticTools
             target,
             command,
             output,
-            _executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+            executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
 
-        return output;
+        return isAlternate ? $"[{sessionName}] {output}" : output;
+    }
+
+    /// <summary>
+    /// Establish a direct PowerShell session to a target server
+    /// </summary>
+    private async Task<string> ConnectServerAsync(
+        [Description("The server name to connect to")] string serverName)
+    {
+        if (_connectServerCallback == null)
+            return "[ERROR] Multi-server sessions are not supported in this configuration.";
+
+        var (success, error) = await _connectServerCallback(serverName);
+        if (!success)
+            return $"[ERROR] {error ?? $"Failed to connect to {serverName}"}";
+
+        return $"[OK] Connected to {serverName}. Use run_powershell with sessionName: \"{serverName}\" to execute commands.";
+    }
+
+    /// <summary>
+    /// Close a named PowerShell session
+    /// </summary>
+    private async Task<string> CloseServerSessionAsync(
+        [Description("The server name of the session to close")] string serverName)
+    {
+        if (_closeSessionCallback == null)
+            return "[ERROR] Multi-server sessions are not supported in this configuration.";
+
+        var closed = await _closeSessionCallback(serverName);
+        if (!closed)
+            return $"[ERROR] No active session found for server '{serverName}'.";
+
+        return $"[OK] Session to {serverName} closed.";
     }
 
     /// <summary>
     /// Wrap a command to include target server verification
     /// </summary>
-    private string WrapCommandWithTargetVerification(string command)
+    private string WrapCommandWithTargetVerification(string command, PowerShellExecutor? executor = null, string? serverLabel = null)
     {
+        var exec = executor ?? _executor;
+        var label = serverLabel ?? _targetServer;
         // Get the verified computer name from the executor
-        var expectedComputer = _executor.ActualComputerName ?? _targetServer.Split('.')[0];
+        var expectedComputer = exec.ActualComputerName ?? label.Split('.')[0];
         
         // Prepend a verification that checks computer name and FAILS if wrong target
         // This prevents silently running commands on the wrong server
@@ -614,12 +689,16 @@ public class DiagnosticTools
     /// </summary>
     public async Task<string> ExecuteApprovedCommandAsync(PendingCommand command)
     {
-        var wrappedCommand = WrapCommandWithTargetVerification(command.Command);
-        _executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
-        ConsoleUI.ShowCommandExecution(command.Command, _targetServer);
-        var result = await _executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
+        var executor = command.Executor ?? _executor;
+        var serverName = command.ServerName;
+        var wrappedCommand = WrapCommandWithTargetVerification(command.Command, executor, serverName);
+        executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
+        var displayTarget = serverName ?? _targetServer;
+        ConsoleUI.ShowCommandExecution(command.Command, displayTarget);
+        var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
         _pendingCommands.Remove(command);
-        var target = _executor.ActualComputerName ?? _targetServer;
+        var target = executor.ActualComputerName ?? displayTarget;
+        var prefix = serverName != null ? $"[{serverName}] " : string.Empty;
 
         if (!result.Success)
         {
@@ -629,7 +708,7 @@ public class DiagnosticTools
                 command.Command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
                 CommandApprovalState.ApprovedByUser));
-            return $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+            return $"{prefix}[ERROR] {result.Error ?? "Unknown error occurred"}";
         }
 
         var output = string.IsNullOrWhiteSpace(result.Output)
@@ -643,7 +722,7 @@ public class DiagnosticTools
             output,
             CommandApprovalState.ApprovedByUser));
 
-        return output;
+        return $"{prefix}{output}";
     }
 
     public void LogDeniedCommand(PendingCommand command)
@@ -660,7 +739,7 @@ public class DiagnosticTools
 /// <summary>
 /// Represents a command pending user approval
 /// </summary>
-public record PendingCommand(string Command, string Reason);
+public sealed record PendingCommand(string Command, string Reason, PowerShellExecutor? Executor = null, string? ServerName = null);
 
 public enum CommandApprovalState
 {
