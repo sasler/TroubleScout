@@ -261,7 +261,7 @@ public static class ConsoleUI
             .AddColumn(new TableColumn("[bold]Option[/]").NoWrap().Width(38))
             .AddColumn(new TableColumn("[bold]Description[/]"));
 
-        optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server hostname or IP (default: localhost)");
+        optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server(s) hostname or IP. Repeat for multiple: -s srv1 -s srv2 (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
@@ -282,6 +282,9 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine("[bold]EXAMPLES[/]");
         AnsiConsole.MarkupLine("  [grey]# Launch the interactive TUI against a remote server[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Connect to multiple servers at startup[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] -s web01 -s web02 -s db01");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Run a single headless prompt and exit[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01 --prompt [grey]\"Check disk space\"[/]");

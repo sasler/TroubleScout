@@ -4,7 +4,7 @@ using TroubleScout.Services;
 using TroubleScout.UI;
 
 // Parse command line arguments manually for simplicity
-var server = "localhost";
+var servers = new List<string> { "localhost" };
 string? prompt = null;
 string? model = null;
 string? mcpConfigPath = null;
@@ -25,10 +25,16 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--server" or "-s" when i + 1 < args.Length:
-            server = args[++i];
+            var serverArg = args[++i];
+            var parsed = serverArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (servers.Count == 1 && servers[0] == "localhost")
+                servers.Clear();
+            servers.AddRange(parsed);
+            if (servers.Count == 0)
+                servers.Add("localhost");
             break;
         case "--server" or "-s":
-            Console.WriteLine("--server (-s) requires a value: hostname or IP address.");
+            Console.WriteLine("--server (-s) requires a value: hostname or IP address. Repeat for multiple: -s srv1 -s srv2");
             return 1;
         case "--prompt" or "-p" when i + 1 < args.Length:
             prompt = args[++i];
@@ -168,12 +174,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
 }
 
 return Environment.ExitCode;
@@ -247,7 +253,7 @@ static string GetAppVersion()
 /// Run in interactive mode with full TUI
 /// </summary>
 static async Task RunInteractiveModeAsync(
-    string server,
+    IReadOnlyList<string> servers,
     string? model,
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
@@ -262,8 +268,11 @@ static async Task RunInteractiveModeAsync(
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
+    var primary = servers[0];
+    var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
+
     await using var session = new TroubleshootingSession(
-        server,
+        primary,
         model,
         mcpConfigPath,
         skillDirectories,
@@ -272,7 +281,8 @@ static async Task RunInteractiveModeAsync(
         executionMode,
         useByokOpenAi,
         byokOpenAiBaseUrl,
-        byokOpenAiApiKey);
+        byokOpenAiApiKey,
+        additional);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -287,7 +297,10 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields());
+    var additionalTargets = session.AllTargetServers.Count > 1
+        ? session.AllTargetServers.Skip(1).ToList()
+        : null;
+    ConsoleUI.ShowStatusPanel(primary, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets);
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -302,7 +315,7 @@ static async Task RunInteractiveModeAsync(
 /// Run in headless mode for scripting/automation
 /// </summary>
 static async Task RunHeadlessModeAsync(
-    string server,
+    IReadOnlyList<string> servers,
     string prompt,
     string? model,
     string? mcpConfigPath,
@@ -314,8 +327,11 @@ static async Task RunHeadlessModeAsync(
     string? byokOpenAiBaseUrl,
     string? byokOpenAiApiKey)
 {
+    var primary = servers[0];
+    var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
+
     await using var session = new TroubleshootingSession(
-        server,
+        primary,
         model,
         mcpConfigPath,
         skillDirectories,
@@ -324,7 +340,8 @@ static async Task RunHeadlessModeAsync(
         executionMode,
         useByokOpenAi,
         byokOpenAiBaseUrl,
-        byokOpenAiApiKey);
+        byokOpenAiApiKey,
+        additional);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -343,7 +360,8 @@ static async Task RunHeadlessModeAsync(
         return;
     }
 
-    ConsoleUI.ShowInfo($"Target: {server} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
+    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    ConsoleUI.ShowInfo($"Target: {serverDisplay} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
     ConsoleUI.ShowRule();
     ConsoleUI.ShowInfo($"Processing: {prompt}");
     Console.WriteLine();
@@ -351,4 +369,35 @@ static async Task RunHeadlessModeAsync(
     var result = await session.SendMessageAsync(prompt);
     
     Environment.ExitCode = result ? 0 : 1;
+}
+
+namespace TroubleScout
+{
+    /// <summary>
+    /// Partial class to expose testable CLI parsing helpers.
+    /// </summary>
+    public partial class Program
+    {
+        /// <summary>
+        /// Parse --server / -s flags from CLI args, supporting repeated flags and comma-separated values.
+        /// </summary>
+        public static List<string> ParseServers(string[] args)
+        {
+            var servers = new List<string> { "localhost" };
+            for (int i = 0; i < args.Length; i++)
+            {
+                if ((args[i] == "--server" || args[i] == "-s") && i + 1 < args.Length)
+                {
+                    var serverArg = args[++i];
+                    var parsed = serverArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (servers.Count == 1 && servers[0] == "localhost")
+                        servers.Clear();
+                    servers.AddRange(parsed);
+                }
+            }
+            if (servers.Count == 0)
+                servers = new List<string> { "localhost" };
+            return servers;
+        }
+    }
 }

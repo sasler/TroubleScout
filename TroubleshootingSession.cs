@@ -57,6 +57,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _runtimeMcpServers = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _configurationWarnings = new();
+    private readonly IReadOnlyList<string> _additionalInitialServers;
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
     private bool _useByokOpenAi;
@@ -196,9 +197,14 @@ public class TroubleshootingSession : IAsyncDisposable
         ExecutionMode executionMode = ExecutionMode.Safe,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
-        string? byokOpenAiApiKey = null)
+        string? byokOpenAiApiKey = null,
+        IReadOnlyList<string>? additionalInitialServers = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
+        _additionalInitialServers = (additionalInitialServers ?? Array.Empty<string>())
+            .Where(s => !string.IsNullOrWhiteSpace(s) && !s.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         _requestedModel = model;
         _mcpConfigPath = mcpConfigPath;
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
@@ -216,6 +222,35 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
+    }
+
+    /// <summary>
+    /// Convenience constructor: servers[0] is primary, the rest are additional initial servers.
+    /// </summary>
+    public TroubleshootingSession(
+        IReadOnlyList<string> servers,
+        string? model = null,
+        string? mcpConfigPath = null,
+        IReadOnlyList<string>? skillDirectories = null,
+        IReadOnlyList<string>? disabledSkills = null,
+        bool debugMode = false,
+        ExecutionMode executionMode = ExecutionMode.Safe,
+        bool useByokOpenAi = false,
+        string? byokOpenAiBaseUrl = null,
+        string? byokOpenAiApiKey = null)
+        : this(
+            servers.Count > 0 ? servers[0] : "localhost",
+            model,
+            mcpConfigPath,
+            skillDirectories,
+            disabledSkills,
+            debugMode,
+            executionMode,
+            useByokOpenAi,
+            byokOpenAiBaseUrl,
+            byokOpenAiApiKey,
+            servers.Count > 1 ? servers.Skip(1).ToList() : null)
+    {
     }
 
     private readonly string? _requestedModel;
@@ -316,6 +351,24 @@ public class TroubleshootingSession : IAsyncDisposable
 
             // Show verified connection
             updateStatus?.Invoke($"Connected to {_executor.ActualComputerName}...");
+
+            // Connect additional initial servers (non-fatal)
+            foreach (var additionalServer in _additionalInitialServers)
+            {
+                if (additionalServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                updateStatus?.Invoke($"Connecting to {additionalServer}...");
+                var (addSuccess, addError) = await ConnectAdditionalServerAsync(additionalServer);
+                if (!addSuccess)
+                {
+                    _configurationWarnings.Add($"Could not connect to additional server '{additionalServer}': {addError}");
+                    if (_debugMode)
+                    {
+                        ConsoleUI.ShowWarning($"Additional server '{additionalServer}' failed: {addError}");
+                    }
+                }
+            }
 
             await WarnIfPowerShellVersionIsOldAsync();
 

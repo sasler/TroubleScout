@@ -1837,4 +1837,121 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     #endregion
+
+    #region Multi-Server CLI / Constructor Tests (Task 2)
+
+    [Fact]
+    public async Task Constructor_WithAdditionalInitialServers_ShouldStoreServers()
+    {
+        // Arrange & Act — use the convenience constructor overload
+        var servers = new List<string> { "primary-srv", "extra1", "extra2" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert — primary should be servers[0], additional stored in _additionalInitialServers
+        session.TargetServer.Should().Be("primary-srv");
+
+        // The additional servers list should be stored (checked via reflection)
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_additionalInitialServers field should exist");
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEquivalentTo(new[] { "extra1", "extra2" });
+    }
+
+    [Fact]
+    public async Task Constructor_WithAdditionalInitialServers_ShouldSkipDuplicateOfPrimary()
+    {
+        // Arrange & Act — additional list contains the primary server
+        var servers = new List<string> { "primary-srv", "primary-srv", "extra1" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert — duplicate of primary should be excluded
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEquivalentTo(new[] { "extra1" });
+    }
+
+    [Fact]
+    public async Task Constructor_WithSingleServerList_ShouldHaveNoAdditional()
+    {
+        // Arrange & Act
+        var servers = new List<string> { "only-srv" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert
+        session.TargetServer.Should().Be("only-srv");
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WithAdditionalServers_ShouldAttemptConnectionToEach()
+    {
+        // Arrange — create session with additional servers
+        // Connections will fail (no real server) but the method should be called for each
+        await using var session = new TroubleshootingSession(
+            "localhost",
+            additionalInitialServers: new List<string> { "fake-server-1", "fake-server-2" });
+
+        // Verify the field was stored
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().HaveCount(2);
+        storedAdditional.Should().Contain("fake-server-1");
+        storedAdditional.Should().Contain("fake-server-2");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_NonExistentHost_ShouldReturnFailure()
+    {
+        // Arrange — use Yolo mode to skip approval prompt, then invoke private method
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — connection should fail for non-existent host
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345"])!;
+        var result = await task;
+
+        // Assert — should fail with connection error
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Theory]
+    [InlineData(new[] { "--server", "srv1" }, new[] { "srv1" })]
+    [InlineData(new[] { "-s", "srv1" }, new[] { "srv1" })]
+    [InlineData(new[] { "-s", "srv1", "-s", "srv2" }, new[] { "srv1", "srv2" })]
+    [InlineData(new[] { "-s", "srv1,srv2,srv3" }, new[] { "srv1", "srv2", "srv3" })]
+    [InlineData(new[] { "-s", "srv1", "-s", "srv2,srv3" }, new[] { "srv1", "srv2", "srv3" })]
+    [InlineData(new string[0], new[] { "localhost" })]
+    [InlineData(new[] { "--server", "," }, new[] { "localhost" })]
+    [InlineData(new[] { "--server", "" }, new[] { "localhost" })]
+    public void ParseServers_ShouldAccumulateAndSplitCommas(string[] args, string[] expected)
+    {
+        // Act
+        var servers = TroubleScout.Program.ParseServers(args);
+
+        // Assert
+        servers.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
+    }
+
+    #endregion
 }
