@@ -453,23 +453,35 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey))
                 {
-                    await ShowCopilotInitializationFailureAsync(
-                        $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
-                        includeDiagnostics: false);
-                    return false;
+                    if (!allowInteractiveSetup)
+                    {
+                        await ShowCopilotInitializationFailureAsync(
+                            $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
+                            includeDiagnostics: false);
+                        return false;
+                    }
+
+                    // Interactive mode: silently fall back to GitHub Copilot so the app opens.
+                    ConsoleUI.ShowWarning(
+                        "BYOK is enabled in saved settings but no API key is available. Falling back to GitHub Copilot.\n" +
+                        "Use /byok to configure OpenAI-compatible mode, or /model to switch provider.");
+                    _useByokOpenAi = false;
+                    // fall through to GitHub Copilot path below
                 }
-
-                var byokModel = !string.IsNullOrWhiteSpace(_requestedModel) ? _requestedModel : _selectedModel;
-
-                if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
+                else
                 {
-                    return false;
+                    var byokModel = !string.IsNullOrWhiteSpace(_requestedModel) ? _requestedModel : _selectedModel;
+
+                    if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
+                    {
+                        return false;
+                    }
+
+                    await RefreshAvailableModelsAsync();
+
+                    _isInitialized = true;
+                    return true;
                 }
-
-                await RefreshAvailableModelsAsync();
-
-                _isInitialized = true;
-                return true;
             }
 
             if (!_isGitHubCopilotAuthenticated)
@@ -499,13 +511,22 @@ public class TroubleshootingSession : IAsyncDisposable
                 return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(_requestedModel) && _availableModels.All(m => m.Id != _requestedModel))
+            string? effectiveModel = _requestedModel;
+            if (!string.IsNullOrWhiteSpace(effectiveModel) && _availableModels.All(m => m.Id != effectiveModel))
             {
-                ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available.");
-                return false;
+                if (!allowInteractiveSetup)
+                {
+                    ConsoleUI.ShowError("Invalid Model", $"The requested model '{effectiveModel}' is not available.");
+                    return false;
+                }
+
+                // Saved model is not available (e.g. a BYOK-only model after switching to GitHub).
+                // Warn and fall back to the SDK default rather than refusing to start.
+                ConsoleUI.ShowWarning($"Saved model '{effectiveModel}' is not available with the current provider. Using the default model.\nUse /model to select a different one.");
+                effectiveModel = null;
             }
 
-            if (!await CreateCopilotSessionAsync(_requestedModel, updateStatus))
+            if (!await CreateCopilotSessionAsync(effectiveModel, updateStatus))
             {
                 if (allowInteractiveSetup)
                 {
@@ -2276,7 +2297,7 @@ public class TroubleshootingSession : IAsyncDisposable
                             await _copilotSession.DisposeAsync();
                             _copilotSession = null;
                             await CreateCopilotSessionAsync(
-                                !string.IsNullOrWhiteSpace(_selectedModel) ? _selectedModel : _requestedModel,
+                                string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
                                 null);
                         }
 
@@ -3200,9 +3221,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotSession = null;
             }
 
-            var modelToUse = !string.IsNullOrWhiteSpace(_selectedModel)
-                ? _selectedModel
-                : _requestedModel;
+            var modelToUse = string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel;
 
             if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
             {
