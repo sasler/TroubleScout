@@ -1726,7 +1726,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost"])!;
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost", false])!;
         var result = await task;
 
         // Assert
@@ -1927,7 +1927,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act — connection should fail for non-existent host
-        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345"])!;
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", false])!;
         var result = await task;
 
         // Assert — should fail with connection error
@@ -2026,6 +2026,94 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert – returns false because session is not initialized
         result.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region Reasoning Delta Streaming Tests
+
+    [Fact]
+    public void SDK_AssistantReasoningDeltaEvent_ShouldExist()
+    {
+        // Assert — the SDK exposes the delta event type used for streaming reasoning
+        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaEvent);
+        type.Should().NotBeNull();
+        type.Name.Should().Be("AssistantReasoningDeltaEvent");
+    }
+
+    [Fact]
+    public void SDK_AssistantReasoningDeltaData_ShouldHaveDeltaContentProperty()
+    {
+        // Assert — DeltaContent property exists for incremental reasoning text
+        var prop = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaData)
+            .GetProperty("DeltaContent");
+        prop.Should().NotBeNull("AssistantReasoningDeltaData should have a DeltaContent property");
+    }
+
+    [Fact]
+    public void SDK_AssistantReasoningEvent_ShouldStillExistAsFallback()
+    {
+        // Assert — the full (non-streaming) reasoning event should remain in the SDK
+        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningEvent);
+        type.Should().NotBeNull();
+    }
+
+    #endregion
+
+    #region ConnectAdditionalServerAsync SkipApproval Tests
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SkipApproval_ShouldBypassApprovalInSafeMode()
+    {
+        // Arrange — session in Safe mode; invoke with skipApproval=true via reflection
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Safe);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — calling with skipApproval: true should NOT prompt (would throw in test if it did)
+        // Use a non-existent host so it fails at connection, proving it got past approval
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-skipapproval-test", true])!;
+        var result = await task;
+
+        // Assert — should fail due to connection error, NOT due to approval denial
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrWhiteSpace();
+        result.Error.Should().NotContain("denied", "skipApproval=true should bypass approval prompt");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SameAsPrimary_WithSkipApproval_ShouldSucceed()
+    {
+        // Arrange — same-as-primary should short-circuit regardless of skipApproval
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost", true])!;
+        var result = await task;
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public void ConnectAdditionalServerAsync_ShouldAcceptSkipApprovalParameter()
+    {
+        // Assert — method signature must include the optional bool parameter
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var parameters = method!.GetParameters();
+        parameters.Should().HaveCount(2, "ConnectAdditionalServerAsync should have (string, bool) parameters");
+        parameters[0].ParameterType.Should().Be(typeof(string));
+        parameters[1].ParameterType.Should().Be(typeof(bool));
+        parameters[1].HasDefaultValue.Should().BeTrue("skipApproval should have a default value");
+        parameters[1].DefaultValue.Should().Be(false, "skipApproval default should be false");
     }
 
     #endregion

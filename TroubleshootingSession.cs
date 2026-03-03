@@ -221,7 +221,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
     }
 
     /// <summary>
@@ -1613,7 +1613,22 @@ public class TroubleshootingSession : IAsyncDisposable
                         thinkingIndicator.UpdateStatus("Analyzing");
                         break;
                     
+                    case AssistantReasoningDeltaEvent reasoningDelta:
+                        var reasoningDeltaText = reasoningDelta.Data?.DeltaContent ?? "";
+                        if (!string.IsNullOrEmpty(reasoningDeltaText))
+                        {
+                            if (!hasStartedReasoning)
+                            {
+                                hasStartedReasoning = true;
+                                thinkingIndicator?.StopForResponse();
+                                ConsoleUI.StartReasoningBlock();
+                            }
+                            ConsoleUI.WriteReasoningText(reasoningDeltaText);
+                        }
+                        break;
+
                     case AssistantReasoningEvent reasoning:
+                        // Fallback for non-streaming reasoning (full content)
                         var reasoningText = reasoning.Data?.Content ?? "";
                         if (!string.IsNullOrEmpty(reasoningText))
                         {
@@ -2198,9 +2213,22 @@ public class TroubleshootingSession : IAsyncDisposable
 
                         foreach (var srv in additionalServers)
                         {
+                            // Approval must happen OUTSIDE the spinner (Spectre exclusivity constraint)
+                            if (_executionMode == ExecutionMode.Safe)
+                            {
+                                var approved = ConsoleUI.PromptCommandApproval(
+                                    $"New-PSSession -ComputerName '{Markup.Escape(srv)}'",
+                                    $"TroubleScout wants to establish a direct PowerShell session to {srv}");
+                                if (!approved)
+                                {
+                                    ConsoleUI.ShowWarning($"Connection to {srv} was denied.");
+                                    continue;
+                                }
+                            }
+
                             var addSuccess = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {srv}...", async _ =>
                             {
-                                var (s, e) = await ConnectAdditionalServerAsync(srv);
+                                var (s, e) = await ConnectAdditionalServerAsync(srv, skipApproval: true);
                                 if (!s) ConsoleUI.ShowWarning($"Could not connect to {srv}: {e}");
                                 return s;
                             });
@@ -3107,7 +3135,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
@@ -3139,7 +3167,7 @@ public class TroubleshootingSession : IAsyncDisposable
         return true;
     }
 
-    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName)
+    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName, bool skipApproval = false)
     {
         if (string.IsNullOrWhiteSpace(serverName))
             return (false, "Server name cannot be empty.");
@@ -3150,7 +3178,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (_additionalExecutors.ContainsKey(serverName))
             return (true, null);
 
-        if (_executionMode == ExecutionMode.Safe)
+        if (!skipApproval && _executionMode == ExecutionMode.Safe)
         {
             var approved = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}'",
