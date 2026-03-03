@@ -17,6 +17,8 @@ public static class ConsoleUI
     private static int _lastSuggestionRowCount;
     private static int _lastSuggestionRowOffset = 1;
     private const int MaxPromptInputLength = 4000;
+    private static readonly List<string> _promptHistory = new();
+    private const int MaxPromptHistorySize = 100;
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -366,6 +368,7 @@ public static class ConsoleUI
         var buffer = new StringBuilder();
         var completionIndex = -1;
         List<string>? matches = null;
+        var historyIndex = -1;
         _lastInputRowCount = 1;
         _lastSuggestionRowCount = 0;
 
@@ -388,7 +391,54 @@ public static class ConsoleUI
                 ClearSuggestions();
                 Console.WriteLine();
                 _lastInputRowCount = 1;
+                historyIndex = -1;
                 return buffer.ToString();
+            }
+
+            if (key.Key == ConsoleKey.Escape)
+            {
+                buffer.Clear();
+                completionIndex = -1;
+                matches = null;
+                historyIndex = -1;
+                RedrawInputLine(string.Empty);
+                ClearSuggestions();
+                continue;
+            }
+
+            if (key.Key == ConsoleKey.UpArrow)
+            {
+                if (_promptHistory.Count == 0) continue;
+                if (historyIndex == -1) historyIndex = _promptHistory.Count;
+                historyIndex = Math.Max(0, historyIndex - 1);
+                buffer.Clear();
+                buffer.Append(_promptHistory[historyIndex]);
+                completionIndex = -1;
+                matches = null;
+                RedrawInputLine(buffer.ToString());
+                ClearSuggestions();
+                continue;
+            }
+
+            if (key.Key == ConsoleKey.DownArrow)
+            {
+                if (historyIndex == -1) continue;
+                historyIndex++;
+                if (historyIndex >= _promptHistory.Count)
+                {
+                    historyIndex = -1;
+                    buffer.Clear();
+                }
+                else
+                {
+                    buffer.Clear();
+                    buffer.Append(_promptHistory[historyIndex]);
+                }
+                completionIndex = -1;
+                matches = null;
+                RedrawInputLine(buffer.ToString());
+                ClearSuggestions();
+                continue;
             }
 
             if (key.Key == ConsoleKey.Backspace)
@@ -449,6 +499,15 @@ public static class ConsoleUI
                 UpdateSuggestions(buffer.ToString(), slashCommands);
             }
         }
+    }
+
+    public static void AddPromptHistory(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return;
+        if (_promptHistory.Count > 0 && _promptHistory[^1] == input) return;
+        _promptHistory.Add(input);
+        if (_promptHistory.Count > MaxPromptHistorySize)
+            _promptHistory.RemoveAt(0);
     }
 
     private static void RedrawInputLine(string text)

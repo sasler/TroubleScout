@@ -1549,6 +1549,8 @@ public class TroubleshootingSession : IAsyncDisposable
             return false;
         }
 
+        IDisposable? subscription = null;
+        LiveThinkingIndicator? thinkingIndicator = null;
         try
         {
             var done = new TaskCompletionSource<bool>();
@@ -1573,11 +1575,11 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             
             // Create a live thinking indicator (manually disposed before recursive calls)
-            var thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
+            thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
-            var subscription = _copilotSession.On(evt =>
+            subscription = _copilotSession.On(evt =>
             {
                 CaptureCapabilityUsage(evt);
 
@@ -1709,8 +1711,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
             var prompt = BuildPromptForExecutionSafety(userMessage);
 
-            // Send the message
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt });
+            // Send the message (pass cancellationToken so the SDK can cancel the in-flight RPC)
+            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt }, cancellationToken);
             
             // Wait for completion
             await done.Task;
@@ -1718,6 +1720,7 @@ public class TroubleshootingSession : IAsyncDisposable
             // Explicitly dispose subscription BEFORE processing approvals
             // This prevents duplicate event handling when SendMessageAsync is called recursively
             subscription.Dispose();
+            subscription = null;
 
             if (hasStartedStreaming)
             {
@@ -1728,6 +1731,7 @@ public class TroubleshootingSession : IAsyncDisposable
             if (wasCancelled)
             {
                 thinkingIndicator.Dispose();
+                thinkingIndicator = null;
                 ConsoleUI.ShowCancelled();
                 return false;
             }
@@ -1736,20 +1740,32 @@ public class TroubleshootingSession : IAsyncDisposable
             
             // Dispose thinking indicator before processing approvals
             thinkingIndicator.Dispose();
+            thinkingIndicator = null;
 
             // Handle any pending approval commands (may call SendMessageAsync recursively)
-            if (!hasError)
+            if (!hasError && !wasCancelled)
             {
                 await ProcessPendingApprovalsAsync();
             }
 
-            return !hasError;
+            return !hasError && !wasCancelled;
+        }
+        catch (OperationCanceledException)
+        {
+            ConsoleUI.EndAIResponse();
+            ConsoleUI.ShowCancelled();
+            return false;
         }
         catch (Exception ex)
         {
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
             return false;
+        }
+        finally
+        {
+            subscription?.Dispose();
+            thinkingIndicator?.Dispose();
         }
     }
 
@@ -1863,6 +1879,9 @@ public class TroubleshootingSession : IAsyncDisposable
         while (true)
         {
             var input = ConsoleUI.GetUserInput(SlashCommands).Trim();
+
+            if (!string.IsNullOrEmpty(input))
+                ConsoleUI.AddPromptHistory(input);
 
             if (string.IsNullOrWhiteSpace(input))
                 continue;
@@ -2198,26 +2217,13 @@ public class TroubleshootingSession : IAsyncDisposable
                     }
                 }, CancellationToken.None);
 
-                var wasEscCancelled = false;
-
                 await SendMessageAsync(input, escCts.Token);
-
-                if (escCts.IsCancellationRequested)
-                {
-                    wasEscCancelled = true;
-                    // Reset session to clean up any partial/in-flight AI turn
-                    _ = await ResetConversationAsync();
-                }
 
                 // Stop ESC polling if AI finished before ESC was pressed
                 escCts.Cancel();
+                // (no ResetConversationAsync needed - SDK cancellation is clean)
                 try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
                 catch (TimeoutException) { /* ignore */ }
-
-                if (wasEscCancelled)
-                {
-                    ConsoleUI.ShowInfo("Session reset to clear any in-flight response.");
-                }
             }
             finally
             {

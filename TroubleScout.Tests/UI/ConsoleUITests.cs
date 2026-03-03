@@ -302,4 +302,88 @@ public class ConsoleUITests
     }
 
     #endregion
+
+    #region Prompt History Tests
+
+    /// <summary>
+    /// Helper to access the private _promptHistory field via reflection.
+    /// </summary>
+    private static List<string> GetPromptHistoryField()
+    {
+        var field = typeof(ConsoleUI).GetField("_promptHistory", BindingFlags.Static | BindingFlags.NonPublic);
+        field.Should().NotBeNull("ConsoleUI should have a _promptHistory field");
+        return (List<string>)field!.GetValue(null)!;
+    }
+
+    /// <summary>
+    /// Helper to clear prompt history between tests.
+    /// </summary>
+    private static void ClearPromptHistory()
+    {
+        GetPromptHistoryField().Clear();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldAddEntry()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("test command");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().ContainSingle().Which.Should().Be("test command");
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldNotAddDuplicate()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("duplicate");
+        ConsoleUI.AddPromptHistory("duplicate");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldNotAddWhitespace()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("");
+        ConsoleUI.AddPromptHistory("   ");
+        ConsoleUI.AddPromptHistory(null!);
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldCapAt100Entries()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        for (int i = 0; i < 101; i++)
+            ConsoleUI.AddPromptHistory($"entry-{i}");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().HaveCount(100);
+        history[0].Should().Be("entry-1", "oldest entry (entry-0) should have been removed");
+        history[^1].Should().Be("entry-100");
+    }
+
+    #endregion
 }
