@@ -97,7 +97,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/clear",
         "/model",
         "/mode",
-        "/connect",
+        "/server",
         "/capabilities",
         "/history",
         "/report",
@@ -2115,24 +2115,37 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (IsSlashCommandInvocation(lowerInput, "/connect"))
+            if (IsSlashCommandInvocation(lowerInput, "/server"))
             {
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                var parts = input.Split(new char[]{' ', ','}, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2)
                 {
-                    ConsoleUI.ShowWarning("Usage: /connect <server>");
+                    ConsoleUI.ShowWarning("Usage: /server <server1>[,server2,...]");
                 }
                 else
                 {
-                    var newServer = parts[1];
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {newServer}...", async updateStatus =>
+                    var primaryServer = parts[1];
+                    var additionalServers = parts.Skip(2).ToList();
+
+                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {primaryServer}...", async updateStatus =>
                     {
-                        return await ReconnectAsync(newServer, updateStatus);
+                        return await ReconnectAsync(primaryServer, updateStatus);
                     });
 
                     if (success)
                     {
-                        ConsoleUI.ShowSuccess($"Connected to {newServer}");
+                        ConsoleUI.ShowSuccess($"Connected to {primaryServer}");
+
+                        foreach (var srv in additionalServers)
+                        {
+                            var addSuccess = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {srv}...", async _ =>
+                            {
+                                var (s, e) = await ConnectAdditionalServerAsync(srv);
+                                if (!s) ConsoleUI.ShowWarning($"Could not connect to {srv}: {e}");
+                                return s;
+                            });
+                        }
+
                         ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     }
                 }

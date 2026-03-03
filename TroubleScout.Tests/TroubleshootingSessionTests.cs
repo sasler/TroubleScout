@@ -174,8 +174,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [InlineData("/mode safe", "/mode", true)]
     [InlineData("/model", "/mode", false)]
     [InlineData("/modeX", "/mode", false)]
-    [InlineData("/connect srv01", "/connect", true)]
-    [InlineData("/connectX", "/connect", false)]
+    [InlineData("/server srv01", "/server", true)]
+    [InlineData("/serverX", "/server", false)]
     public void IsSlashCommandInvocation_ShouldMatchOnlyExactCommandOrCommandWithArguments(
         string input,
         string command,
@@ -1951,6 +1951,50 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         servers.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void IsSlashCommandInvocation_Server_ShouldMatchServerCommand()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsSlashCommandInvocation", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var result = (bool)method!.Invoke(null, ["/server srv01", "/server"])!;
+
+        // Assert
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsSlashCommandInvocation_Connect_ShouldNotMatchAfterRename()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsSlashCommandInvocation", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var result = (bool)method!.Invoke(null, ["/connect srv01", "/server"])!;
+
+        // Assert
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldContainServer_NotConnect()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/server");
+        commands.Should().NotContain("/connect");
     }
 
     #endregion
