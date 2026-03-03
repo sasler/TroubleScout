@@ -7,8 +7,7 @@
     <Nullable>enable</Nullable>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <CopilotCliDownloadTimeout>600000</CopilotCliDownloadTimeout>
-    <CopilotSkipCliDownload Condition="'$(Configuration)' != 'Release'">true</CopilotSkipCliDownload>
-    <CopilotSkipCliDownload Condition="'$(Configuration)' == 'Release'">false</CopilotSkipCliDownload>
+    <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
     <Version>1.5.0</Version>
     <AssemblyVersion>1.5.0.0</AssemblyVersion>
     <FileVersion>1.5.0.0</FileVersion>
