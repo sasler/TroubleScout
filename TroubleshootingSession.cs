@@ -120,10 +120,11 @@ public class TroubleshootingSession : IAsyncDisposable
             sessionLines.AppendLine();
             sessionLines.AppendLine("## Connected PSSessions");
             sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Use run_powershell with sessionName to target each:");
-            sessionLines.AppendLine($"- Primary (default): {targetServer} — use run_powershell without sessionName");
+            sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} — use run_powershell without sessionName");
             foreach (var server in additionalServerNames)
             {
-                sessionLines.AppendLine($"- {server} — use run_powershell(command, sessionName: \"{server}\")");
+                var safe = SanitizeServerNameForPrompt(server);
+                sessionLines.AppendLine($"- {safe} — use run_powershell(command, sessionName: \"{safe}\")");
             }
             sessionLines.AppendLine();
             sessionLines.AppendLine("When the user asks about multiple servers, gather data from ALL of them using run_powershell with the appropriate sessionName. Do NOT call connect_server for these — they are already connected.");
@@ -203,6 +204,13 @@ public class TroubleshootingSession : IAsyncDisposable
             """
         };
     }
+
+    /// <summary>
+    /// Sanitizes a server name for safe embedding in the system prompt.
+    /// Only keeps characters valid in hostnames/FQDNs: alphanumerics, hyphens, dots, underscores.
+    /// </summary>
+    private static string SanitizeServerNameForPrompt(string serverName) =>
+        Regex.Replace(serverName, @"[^a-zA-Z0-9\-\._]", "");
 
     public TroubleshootingSession(
         string targetServer,
@@ -3232,6 +3240,8 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _additionalExecutors[serverName] = executor;
+        // Refresh system message so the agent immediately knows about the new session
+        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         return (true, null);
     }
 
