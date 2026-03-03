@@ -19,17 +19,13 @@ All notable changes to TroubleScout will be documented in this file.
 ### 🐛 Bug Fixes
 
 - 🐛 **Fix PSSession approval dialog** — The `LiveThinkingIndicator` background spinner was overwriting `AnsiConsole.Confirm` prompts for `connect_server` approval. The indicator now pauses during approval dialogs and resumes after.
+- 🐛 **Fix `/byok clear` memory state** — `/byok clear` now resets in-memory BYOK state so a subsequent `/model` switch does not re-save `UseByokOpenAi=true` to disk.
+- 🐛 **Fix multi-server agent awareness** — Agent system message now lists all active PSSessions so the AI knows which servers are connected without needing to ask the user.
+- 🐛 **Fix reasoning display** — Reasoning tokens now stream incrementally via `AssistantReasoningDeltaEvent` instead of appearing all at once.
 
+### ✨ Additions
 
-
-### 🐛 Bug Fixes
-
-- 🐛 Fix provider/model restart mismatch by persisting selected model and active provider mode together after successful model switches
-- 🐛 Fix BYOK settings visibility after restart by always restoring saved BYOK base URL/API key from profile settings, even when GitHub is the active provider
-
-### ✅ Testing
-
-- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+- ✨ **`--no-byok` CLI flag** — Forces the GitHub Copilot provider at startup, ignoring any saved BYOK provider selection.
 
 ## [v1.4.0] - 2026-02-27
 
