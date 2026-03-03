@@ -1164,22 +1164,30 @@ public static class ConsoleUI
     /// </summary>
     public static bool PromptCommandApproval(string command, string reason)
     {
-        AnsiConsole.WriteLine();
-        
-        var panel = new Panel(new Rows(
-            new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
-            new Markup(""),
-            new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
-            new Markup(""),
-            new Markup("[red]This command can modify system state.[/]")
-        ))
-        .Header("[bold yellow] Approval Required [/]")
-        .Border(BoxBorder.Heavy)
-        .BorderColor(Color.Yellow);
-        
-        AnsiConsole.Write(panel);
-        
-        return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            AnsiConsole.WriteLine();
+            
+            var panel = new Panel(new Rows(
+                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
+                new Markup(""),
+                new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
+                new Markup(""),
+                new Markup("[red]This command can modify system state.[/]")
+            ))
+            .Header("[bold yellow] Approval Required [/]")
+            .Border(BoxBorder.Heavy)
+            .BorderColor(Color.Yellow);
+            
+            AnsiConsole.Write(panel);
+            
+            return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
     }
 
     /// <summary>
@@ -1187,41 +1195,49 @@ public static class ConsoleUI
     /// </summary>
     public static List<int> PromptBatchApproval(IReadOnlyList<(string Command, string Reason)> commands)
     {
-        AnsiConsole.WriteLine();
-        
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Color.Yellow)
-            .AddColumn(new TableColumn("[bold]#[/]").Centered())
-            .AddColumn(new TableColumn("[bold]Command[/]"))
-            .AddColumn(new TableColumn("[bold]Reason[/]"));
-
-        for (int i = 0; i < commands.Count; i++)
+        LiveThinkingIndicator.PauseForApproval();
+        try
         {
-            table.AddRow(
-                $"[cyan]{i + 1}[/]",
-                Markup.Escape(commands[i].Command),
-                Markup.Escape(commands[i].Reason));
+            AnsiConsole.WriteLine();
+            
+            var table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Yellow)
+                .AddColumn(new TableColumn("[bold]#[/]").Centered())
+                .AddColumn(new TableColumn("[bold]Command[/]"))
+                .AddColumn(new TableColumn("[bold]Reason[/]"));
+
+            for (int i = 0; i < commands.Count; i++)
+            {
+                table.AddRow(
+                    $"[cyan]{i + 1}[/]",
+                    Markup.Escape(commands[i].Command),
+                    Markup.Escape(commands[i].Reason));
+            }
+
+            var panel = new Panel(table)
+                .Header("[bold yellow] Commands Requiring Approval [/]")
+                .Border(BoxBorder.Heavy)
+                .BorderColor(Color.Yellow);
+            
+            AnsiConsole.Write(panel);
+            AnsiConsole.WriteLine();
+
+            var approved = AnsiConsole.Prompt(
+                new MultiSelectionPrompt<int>()
+                    .Title("[yellow]Select commands to approve:[/]")
+                    .NotRequired()
+                    .PageSize(10)
+                    .MoreChoicesText("[grey](Move up and down to reveal more commands)[/]")
+                    .InstructionsText("[grey](Press [cyan]<space>[/] to toggle, [green]<enter>[/] to accept)[/]")
+                    .AddChoices(Enumerable.Range(1, commands.Count)));
+
+            return approved;
         }
-
-        var panel = new Panel(table)
-            .Header("[bold yellow] Commands Requiring Approval [/]")
-            .Border(BoxBorder.Heavy)
-            .BorderColor(Color.Yellow);
-        
-        AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
-
-        var approved = AnsiConsole.Prompt(
-            new MultiSelectionPrompt<int>()
-                .Title("[yellow]Select commands to approve:[/]")
-                .NotRequired()
-                .PageSize(10)
-                .MoreChoicesText("[grey](Move up and down to reveal more commands)[/]")
-                .InstructionsText("[grey](Press [cyan]<space>[/] to toggle, [green]<enter>[/] to accept)[/]")
-                .AddChoices(Enumerable.Range(1, commands.Count)));
-
-        return approved;
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
     }
 
     /// <summary>
@@ -1499,6 +1515,17 @@ public class LiveThinkingIndicator : IDisposable
     private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
     private int _spinnerIndex;
 
+    private static volatile bool _approvalInProgress;
+
+    /// <summary>Whether an approval dialog is currently suppressing spinner output.</summary>
+    public static bool IsApprovalInProgress => _approvalInProgress;
+
+    /// <summary>Pause spinner output while an approval dialog is visible.</summary>
+    public static void PauseForApproval() => _approvalInProgress = true;
+
+    /// <summary>Resume spinner output after an approval dialog completes.</summary>
+    public static void ResumeAfterApproval() => _approvalInProgress = false;
+
     public void Start()
     {
         lock (_lock)
@@ -1517,10 +1544,13 @@ public class LiveThinkingIndicator : IDisposable
                     lock (_lock)
                     {
                         if (_hasStartedResponse) break;
-                        
-                        // Clear the current line and write status
-                        Console.Write($"\r\x1b[K[cyan]{_currentStatus}{SpinnerFrames[_spinnerIndex]}[/]".Replace("[cyan]", "\u001b[36m").Replace("[/]", "\u001b[0m"));
-                        _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+
+                        if (!_approvalInProgress)
+                        {
+                            // Clear the current line and write status
+                            Console.Write($"\r\x1b[K[cyan]{_currentStatus}{SpinnerFrames[_spinnerIndex]}[/]".Replace("[cyan]", "\u001b[36m").Replace("[/]", "\u001b[0m"));
+                            _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+                        }
                     }
                     await Task.Delay(200, _cts.Token);
                 }

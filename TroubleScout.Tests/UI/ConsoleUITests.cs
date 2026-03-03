@@ -163,4 +163,98 @@ public class ConsoleUITests
     }
 
     #endregion
+
+    #region LiveThinkingIndicator Pause/Resume Tests
+
+    [Fact]
+    public void LiveThinkingIndicator_PauseForApproval_ShouldSuppressSpinnerWrites()
+    {
+        // Arrange – capture console output
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            using var indicator = new LiveThinkingIndicator();
+            indicator.Start();
+
+            // Let the spinner run briefly to confirm it writes
+            Thread.Sleep(350);
+            var beforePause = sw.ToString();
+            beforePause.Should().NotBeEmpty("spinner should have written output before pause");
+
+            // Act – pause
+            LiveThinkingIndicator.PauseForApproval();
+            sw.GetStringBuilder().Clear();
+
+            // Wait and verify no new writes
+            Thread.Sleep(350);
+            var afterPause = sw.ToString();
+            afterPause.Should().BeEmpty("spinner should not write while paused for approval");
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_ResumeAfterApproval_ShouldReEnableSpinnerWrites()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            using var indicator = new LiveThinkingIndicator();
+            indicator.Start();
+            Thread.Sleep(300);
+
+            // Pause then resume
+            LiveThinkingIndicator.PauseForApproval();
+            Thread.Sleep(300);
+            sw.GetStringBuilder().Clear();
+            LiveThinkingIndicator.ResumeAfterApproval();
+
+            // Act – wait for spinner to write again
+            Thread.Sleep(350);
+            var afterResume = sw.ToString();
+
+            // Assert
+            afterResume.Should().NotBeEmpty("spinner should resume writing after ResumeAfterApproval");
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void PromptCommandApproval_ShouldPauseAndResumeIndicator()
+    {
+        // This test verifies the static _approvalInProgress flag is set/cleared
+        // by checking the public Pause/Resume methods work correctly in isolation,
+        // since PromptCommandApproval uses interactive console prompts.
+
+        // Arrange – ensure clean state
+        LiveThinkingIndicator.ResumeAfterApproval();
+
+        // Act – simulate what PromptCommandApproval does internally
+        LiveThinkingIndicator.PauseForApproval();
+        var pausedState = LiveThinkingIndicator.IsApprovalInProgress;
+
+        LiveThinkingIndicator.ResumeAfterApproval();
+        var resumedState = LiveThinkingIndicator.IsApprovalInProgress;
+
+        // Assert
+        pausedState.Should().BeTrue("PauseForApproval should set the approval flag");
+        resumedState.Should().BeFalse("ResumeAfterApproval should clear the approval flag");
+    }
+
+    #endregion
 }
