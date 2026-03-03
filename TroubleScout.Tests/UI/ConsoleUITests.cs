@@ -386,4 +386,71 @@ public class ConsoleUITests
     }
 
     #endregion
+
+    #region Reasoning Text Tests
+
+    [Fact]
+    public void WriteReasoningText_ShouldOutputText()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            // Act
+            ConsoleUI.WriteReasoningText("thinking...");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var output = sw.ToString();
+
+        // Assert — text content always written; ANSI codes only on non-redirected terminals
+        output.Should().Contain("thinking...");
+    }
+
+    [Fact]
+    public void WriteReasoningText_ShouldNotOutput_WhenTextIsEmpty()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            // Act
+            ConsoleUI.WriteReasoningText("");
+            ConsoleUI.WriteReasoningText(null!);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        // Assert — nothing should be written
+        sw.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StartReasoningBlock_ShouldNotThrow()
+    {
+        // Act & Assert — should not throw regardless of terminal capability
+        var act = () => ConsoleUI.StartReasoningBlock();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EndReasoningBlock_ShouldNotThrow()
+    {
+        // Act & Assert — should not throw
+        var act = () => ConsoleUI.EndReasoningBlock();
+        act.Should().NotThrow();
+    }
+
+    #endregion
 }

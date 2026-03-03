@@ -1564,6 +1564,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 done.TrySetResult(false);
             });
             var hasStartedStreaming = false;
+            var hasStartedReasoning = false;
             var pendingStreamLineBreak = false;
             var currentStreamMessageId = string.Empty;
             var processedDeltaIds = new HashSet<string>();
@@ -1601,6 +1602,20 @@ public class TroubleshootingSession : IAsyncDisposable
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Analyzing");
+                        break;
+                    
+                    case AssistantReasoningEvent reasoning:
+                        var reasoningText = reasoning.Data?.Content ?? "";
+                        if (!string.IsNullOrEmpty(reasoningText))
+                        {
+                            if (!hasStartedReasoning)
+                            {
+                                hasStartedReasoning = true;
+                                thinkingIndicator?.StopForResponse();
+                                ConsoleUI.StartReasoningBlock();
+                            }
+                            ConsoleUI.WriteReasoningText(reasoningText);
+                        }
                         break;
                     
                     case ToolExecutionStartEvent toolStart:
@@ -1660,6 +1675,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         if (!hasStartedStreaming)
                         {
                             hasStartedStreaming = true;
+                            if (hasStartedReasoning) ConsoleUI.EndReasoningBlock();
                             thinkingIndicator.StopForResponse();
                             ConsoleUI.StartAIResponse();
                         }
