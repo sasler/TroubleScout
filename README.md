@@ -15,8 +15,11 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval
 - **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
 - **Local or Remote**: Works with localhost or remote servers via WinRM
-- **Comprehensive Diagnostics**: Analyzes event logs, services, processes, disk space, network, and performance counters
-- **Multi-Server Sessions**: Connect to additional servers with `connect_server` to avoid PowerShell double-hop issues; run commands on any connected server via `run_powershell` with `sessionName`
+- **Multi-Server at Startup**: Connect to multiple servers with `--server srv1 --server srv2` (or `--server srv1,srv2`); all sessions are established at launch
+- **Multi-Server Sessions**: Connect to additional servers at runtime with `/server <name>` or via `connect_server` tool to avoid PowerShell double-hop issues
+- **ESC Cancellation**: Press ESC at any time to cancel the current AI turn; spinner shows `(ESC to stop)` as a persistent hint
+- **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
+- **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
@@ -101,6 +104,11 @@ dotnet run
 TroubleScout.exe --server myserver.domain.com
 # or
 dotnet run -- --server myserver.domain.com
+
+# Connect to multiple servers at startup
+TroubleScout.exe --server srv1 --server srv2 --server srv3
+# or comma-separated
+TroubleScout.exe --server srv1,srv2,srv3
 ```
 
 ### Headless Mode
@@ -115,13 +123,13 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 
 ### Command Line Options
 
-- `--server` (`-s`): Target server name or IP (default: localhost)
+- `--server` (`-s`): Target server name or IP (default: localhost); **repeatable** or comma-separated for multi-server (e.g., `--server srv1 --server srv2` or `--server srv1,srv2`)
 - `--model` (`-m`): AI model to use (e.g., gpt-4.1, claude-sonnet-4.6)
 - `--prompt` (`-p`): Initial prompt for headless mode
 - `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
 - `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)
 - `--disable-skill`: Disable a loaded skill by name (repeatable)
-- `--debug` (`-d` or `-debug`): Show technical diagnostics and exception details
+- `--debug` (`-d`): Show technical diagnostics and exception details
 - `--byok-openai`: Use BYOK mode with OpenAI provider instead of GitHub auth
 - `--openai-base-url`: Override OpenAI base URL (default: `https://api.openai.com/v1`)
 - `--openai-api-key`: Provide OpenAI API key directly (or use `OPENAI_API_KEY`)
