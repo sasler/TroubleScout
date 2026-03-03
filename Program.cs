@@ -7,6 +7,7 @@ using TroubleScout.UI;
 var servers = new List<string> { "localhost" };
 string? prompt = null;
 string? model = null;
+bool modelSpecifiedByCli = false;
 string? mcpConfigPath = null;
 var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
@@ -44,6 +45,7 @@ for (int i = 0; i < args.Length; i++)
             return 1;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
+            modelSpecifiedByCli = true;
             break;
         case "--model" or "-m":
             Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4.1, gpt-5-mini).");
@@ -178,12 +180,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
 }
 
 return Environment.ExitCode;
@@ -267,7 +269,9 @@ static async Task RunInteractiveModeAsync(
     ExecutionMode executionMode,
     bool useByokOpenAi,
     string? byokOpenAiBaseUrl,
-    string? byokOpenAiApiKey)
+    string? byokOpenAiApiKey,
+    bool byokExplicitlyRequested = false,
+    bool modelExplicitlyRequested = false)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
@@ -286,6 +290,8 @@ static async Task RunInteractiveModeAsync(
         useByokOpenAi,
         byokOpenAiBaseUrl,
         byokOpenAiApiKey,
+        byokExplicitlyRequested: byokExplicitlyRequested,
+        modelExplicitlyRequested: modelExplicitlyRequested,
         additional);
     
     // Initialize with animated spinner
@@ -329,7 +335,9 @@ static async Task RunHeadlessModeAsync(
     ExecutionMode executionMode,
     bool useByokOpenAi,
     string? byokOpenAiBaseUrl,
-    string? byokOpenAiApiKey)
+    string? byokOpenAiApiKey,
+    bool byokExplicitlyRequested = false,
+    bool modelExplicitlyRequested = false)
 {
     var primary = servers[0];
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
@@ -345,6 +353,8 @@ static async Task RunHeadlessModeAsync(
         useByokOpenAi,
         byokOpenAiBaseUrl,
         byokOpenAiApiKey,
+        byokExplicitlyRequested: byokExplicitlyRequested,
+        modelExplicitlyRequested: modelExplicitlyRequested,
         additional);
 
     // Initialize with animated spinner

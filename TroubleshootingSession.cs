@@ -61,6 +61,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
     private bool _useByokOpenAi;
+    private bool _byokExplicitlyRequested;
+    private bool _modelExplicitlyRequested;
     private string _byokOpenAiBaseUrl;
     private string? _byokOpenAiApiKey;
     private readonly List<ReportPromptEntry> _reportPrompts = [];
@@ -223,6 +225,8 @@ public class TroubleshootingSession : IAsyncDisposable
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
         string? byokOpenAiApiKey = null,
+        bool byokExplicitlyRequested = false,
+        bool modelExplicitlyRequested = false,
         IReadOnlyList<string>? additionalInitialServers = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
@@ -237,6 +241,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _debugMode = debugMode;
         _executionMode = executionMode;
         _useByokOpenAi = useByokOpenAi;
+        _byokExplicitlyRequested = byokExplicitlyRequested;
+        _modelExplicitlyRequested = modelExplicitlyRequested;
         _byokOpenAiBaseUrl = string.IsNullOrWhiteSpace(byokOpenAiBaseUrl) ? DefaultOpenAiBaseUrl : byokOpenAiBaseUrl.Trim();
         _byokOpenAiApiKey = string.IsNullOrWhiteSpace(byokOpenAiApiKey)
             ? Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
@@ -274,7 +280,7 @@ public class TroubleshootingSession : IAsyncDisposable
             useByokOpenAi,
             byokOpenAiBaseUrl,
             byokOpenAiApiKey,
-            servers.Count > 1 ? servers.Skip(1).ToList() : null)
+            additionalInitialServers: servers.Count > 1 ? servers.Skip(1).ToList() : null)
     {
     }
 
@@ -453,15 +459,17 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey))
                 {
-                    if (!allowInteractiveSetup)
+                    if (_byokExplicitlyRequested)
                     {
+                        // User explicitly passed --byok-openai: fail with a clear error.
                         await ShowCopilotInitializationFailureAsync(
                             $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
                             includeDiagnostics: false);
                         return false;
                     }
 
-                    // Interactive mode: silently fall back to GitHub Copilot so the app opens.
+                    // BYOK was loaded from saved settings but no key is available.
+                    // Fall back to GitHub Copilot so the app can still open.
                     ConsoleUI.ShowWarning(
                         "BYOK is enabled in saved settings but no API key is available. Falling back to GitHub Copilot.\n" +
                         "Use /byok to configure OpenAI-compatible mode, or /model to switch provider.");
@@ -470,7 +478,12 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
                 else
                 {
-                    var byokModel = !string.IsNullOrWhiteSpace(_requestedModel) ? _requestedModel : _selectedModel;
+                    // Use requested model only when it was explicitly specified via CLI.
+                    // Otherwise pass null so the BYOK endpoint uses its default model,
+                    // avoiding failures from a stale saved model that may not be supported.
+                    var byokModel = _modelExplicitlyRequested
+                        ? _requestedModel
+                        : (!string.IsNullOrWhiteSpace(_selectedModel) ? _selectedModel : _requestedModel);
 
                     if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
                     {
@@ -514,13 +527,14 @@ public class TroubleshootingSession : IAsyncDisposable
             string? effectiveModel = _requestedModel;
             if (!string.IsNullOrWhiteSpace(effectiveModel) && _availableModels.All(m => m.Id != effectiveModel))
             {
-                if (!allowInteractiveSetup)
+                if (_modelExplicitlyRequested)
                 {
+                    // User explicitly passed --model: fail with a clear error.
                     ConsoleUI.ShowError("Invalid Model", $"The requested model '{effectiveModel}' is not available.");
                     return false;
                 }
 
-                // Saved model is not available (e.g. a BYOK-only model after switching to GitHub).
+                // Model from saved settings is not available (e.g. a BYOK-only model after switching to GitHub).
                 // Warn and fall back to the SDK default rather than refusing to start.
                 ConsoleUI.ShowWarning($"Saved model '{effectiveModel}' is not available with the current provider. Using the default model.\nUse /model to select a different one.");
                 effectiveModel = null;
