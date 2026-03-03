@@ -4,7 +4,8 @@ using TroubleScout.Services;
 using TroubleScout.UI;
 
 // Parse command line arguments manually for simplicity
-var servers = new List<string> { "localhost" };
+// Server list is pre-populated by ParseServers; the switch only handles the missing-value error case.
+var servers = TroubleScout.Program.ParseServers(args);
 string? prompt = null;
 string? model = null;
 bool modelSpecifiedByCli = false;
@@ -26,13 +27,7 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--server" or "-s" when i + 1 < args.Length:
-            var serverArg = args[++i];
-            var parsed = serverArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (servers.Count == 1 && servers[0] == "localhost")
-                servers.Clear();
-            servers.AddRange(parsed);
-            if (servers.Count == 0)
-                servers.Add("localhost");
+            i++; // value already consumed by ParseServers; advance past it
             break;
         case "--server" or "-s":
             Console.WriteLine("--server (-s) requires a value: hostname or IP address. Repeat for multiple: -s srv1 -s srv2");

@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <CopilotCliDownloadTimeout>600000</CopilotCliDownloadTimeout>
+    <!-- CopilotSkipCliDownload must remain false for all configurations.
+         The npm JS wrapper (@github/copilot) does not support the headless flag that SDK v0.1.29+
+         always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
+         downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
     <Version>1.5.0</Version>
     <AssemblyVersion>1.5.0.0</AssemblyVersion>

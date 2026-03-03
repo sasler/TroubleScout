@@ -208,11 +208,12 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sanitizes a server name for safe embedding in the system prompt.
-    /// Only keeps characters valid in hostnames/FQDNs: alphanumerics, hyphens, dots, underscores.
+    /// Escapes a server name for safe embedding in the system prompt without changing its identity.
+    /// Preserves the exact server identifier (including IPv6 colons, brackets, etc.) and only
+    /// escapes characters that could break prompt syntax (backslashes and double-quotes).
     /// </summary>
     private static string SanitizeServerNameForPrompt(string serverName) =>
-        Regex.Replace(serverName, @"[^a-zA-Z0-9\-\._]", "");
+        serverName.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     public TroubleshootingSession(
         string targetServer,
@@ -1628,7 +1629,7 @@ public class TroubleshootingSession : IAsyncDisposable
         LiveThinkingIndicator? thinkingIndicator = null;
         try
         {
-            var done = new TaskCompletionSource<bool>();
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var hasError = false;
             var wasCancelled = false;
 
@@ -2286,7 +2287,7 @@ public class TroubleshootingSession : IAsyncDisposable
                             if (_executionMode == ExecutionMode.Safe)
                             {
                                 var approved = ConsoleUI.PromptCommandApproval(
-                                    $"New-PSSession -ComputerName '{Markup.Escape(srv)}'",
+                                    $"New-PSSession -ComputerName '{srv}'",
                                     $"TroubleScout wants to establish a direct PowerShell session to {srv}");
                                 if (!approved)
                                 {
@@ -3276,7 +3277,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _additionalExecutors[serverName] = executor;
-        // Refresh system message so the agent immediately knows about the new session
+        // Update system message configuration so future Copilot sessions include this additional server
         _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         return (true, null);
     }
