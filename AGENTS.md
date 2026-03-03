@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.1.28`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`0.1.29`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 

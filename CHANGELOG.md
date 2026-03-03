@@ -12,6 +12,10 @@ All notable changes to TroubleScout will be documented in this file.
 - ⌨️ **Prompt history** — Up/Down arrow keys recall previous inputs during the interactive prompt. ESC clears the current input buffer.
 - 💭 **Reasoning display** — When a model emits reasoning/thinking tokens (`AssistantReasoningEvent`), they are streamed in dark grey with a 💭 prefix before the main response, giving visibility into the model's thought process.
 
+### ⬆️ Dependencies
+
+- ⬆️ **GitHub.Copilot.SDK upgraded to v0.1.29** — Removes the `--headless` flag that caused startup crashes with Copilot CLI v0.0.420. Adds defensive error handling around SDK startup to surface clean diagnostics on failure.
+
 ### 🐛 Bug Fixes
 
 - 🐛 **Fix PSSession approval dialog** — The `LiveThinkingIndicator` background spinner was overwriting `AnsiConsole.Confirm` prompts for `connect_server` approval. The indicator now pauses during approval dialogs and resumes after.

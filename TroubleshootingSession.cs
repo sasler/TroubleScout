@@ -406,6 +406,15 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotClient = null;
                 return false;
             }
+            catch (Exception)
+            {
+                // CLI startup failed (e.g. unsupported --headless flag on older CLI versions).
+                // Dispose and null out the client so guard-checks see it as unavailable,
+                // then re-throw so the outer handler can show actionable diagnostics.
+                try { await _copilotClient.DisposeAsync(); } catch { /* best-effort */ }
+                _copilotClient = null;
+                throw;
+            }
 
             _isGitHubCopilotAuthenticated = await IsGitHubAuthenticatedAsync();
 
@@ -2935,10 +2944,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                if (_debugMode)
-                {
-                    ConsoleUI.ShowWarning($"Session cleanup warning: {TrimSingleLine(ex.Message)}");
-                }
+                ConsoleUI.ShowWarning($"Session cleanup warning: {TrimSingleLine(ex.Message)}");
             }
         }
 
@@ -2950,10 +2956,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                if (_debugMode)
-                {
-                    ConsoleUI.ShowWarning($"Copilot cleanup warning: {TrimSingleLine(ex.Message)}");
-                }
+                ConsoleUI.ShowWarning($"Copilot cleanup warning: {TrimSingleLine(ex.Message)}");
             }
         }
 
