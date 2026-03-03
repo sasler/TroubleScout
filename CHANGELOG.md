@@ -2,16 +2,30 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
-## [v1.4.1] - 2026-02-27
+## [v1.5.0] - 2026-03-03
+
+### ✨ Features
+
+- 🔌 **Multi-server `--server` flag** — Pass `--server` multiple times or use comma-separated values to connect to several servers at startup (e.g., `--server srv1 --server srv2` or `--server srv1,srv2`). CLI help updated to reflect multi-server syntax.
+- 🖥️ **`/server` slash command** (replaces `/connect`) — Consistent with the CLI flag. Accepts multiple servers in a single call: `/server srv1 srv2` or `/server srv1,srv2`. Both space- and comma-separated syntax work.
+- ⏹️ **ESC cancels the in-progress agent turn** — Press ESC while the AI is thinking to cancel the current turn at the SDK level. The spinner now shows `(ESC to stop)` at all times as a visible hint. On cancellation a clear `[Cancelled]` indicator is shown.
+- ⌨️ **Prompt history** — Up/Down arrow keys recall previous inputs during the interactive prompt. ESC clears the current input buffer.
+- 💭 **Reasoning display** — When a model emits reasoning/thinking tokens (`AssistantReasoningEvent`), they are streamed in dark grey with a 💭 prefix before the main response, giving visibility into the model's thought process.
+
+### ⬆️ Dependencies
+
+- ⬆️ **GitHub.Copilot.SDK upgraded to v0.1.29** — Removes the `--headless` flag that caused startup crashes with Copilot CLI v0.0.420. Adds defensive error handling around SDK startup to surface clean diagnostics on failure.
 
 ### 🐛 Bug Fixes
 
-- 🐛 Fix provider/model restart mismatch by persisting selected model and active provider mode together after successful model switches
-- 🐛 Fix BYOK settings visibility after restart by always restoring saved BYOK base URL/API key from profile settings, even when GitHub is the active provider
+- 🐛 **Fix PSSession approval dialog** — The `LiveThinkingIndicator` background spinner was overwriting `AnsiConsole.Confirm` prompts for `connect_server` approval. The indicator now pauses during approval dialogs and resumes after.
+- 🐛 **Fix `/byok clear` memory state** — `/byok clear` now resets in-memory BYOK state so a subsequent `/model` switch does not re-save `UseByokOpenAi=true` to disk.
+- 🐛 **Fix multi-server agent awareness** — Agent system message now lists all active PSSessions so the AI knows which servers are connected without needing to ask the user.
+- 🐛 **Fix reasoning display** — Reasoning tokens now stream incrementally via `AssistantReasoningDeltaEvent` instead of appearing all at once.
 
-### ✅ Testing
+### ✨ Additions
 
-- ✅ Re-validate with `dotnet build`, `dotnet test`, and smoke run (`dotnet run -- --server localhost --prompt "how is this computer doing?"`)
+- ✨ **`--no-byok` CLI flag** — Forces the GitHub Copilot provider at startup, ignoring any saved BYOK provider selection.
 
 ## [v1.4.0] - 2026-02-27
 

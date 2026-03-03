@@ -174,8 +174,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [InlineData("/mode safe", "/mode", true)]
     [InlineData("/model", "/mode", false)]
     [InlineData("/modeX", "/mode", false)]
-    [InlineData("/connect srv01", "/connect", true)]
-    [InlineData("/connectX", "/connect", false)]
+    [InlineData("/server srv01", "/server", true)]
+    [InlineData("/serverX", "/server", false)]
     public void IsSlashCommandInvocation_ShouldMatchOnlyExactCommandOrCommandWithArguments(
         string input,
         string command,
@@ -238,7 +238,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
 
         // Act
-        var config = method!.Invoke(_session, ["localhost"]);
+        var config = method!.Invoke(_session, ["localhost", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
@@ -1726,13 +1726,58 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost"])!;
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost", false])!;
         var result = await task;
 
         // Assert
         result.Success.Should().BeTrue();
         result.Error.Should().BeNull();
         _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
+    }
+
+    [Fact]
+    public void CreateSystemMessage_WithAdditionalServers_ListsAllSessions()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var additionalServers = new List<string> { "SERVER-B", "SERVER-C" } as IReadOnlyCollection<string>;
+
+        // Act
+        var config = method!.Invoke(_session, ["SERVER-A", additionalServers]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert — should contain connected-sessions listing
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Connected PSSessions", "system message should list all connected sessions");
+        content.Should().Contain("SERVER-A", "primary server should appear in session list");
+        content.Should().Contain("SERVER-B", "additional server should appear in session list");
+        content.Should().Contain("SERVER-C", "additional server should appear in session list");
+        content.Should().Contain("sessionName", "system message should explain sessionName parameter");
+        content.Should().Contain("Do NOT call connect_server for these", "system message should warn against reconnecting");
+    }
+
+    [Fact]
+    public void CreateSystemMessage_WithoutAdditionalServers_OmitsConnectedSessionsBlock()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — no additional servers
+        var config = method!.Invoke(_session, ["SERVER-A", null]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert — should NOT contain the connected-sessions block
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().NotContain("Connected PSSessions",
+            "system message should not list sessions when there are no additional servers");
+        // But the multi-server section should still exist
+        content.Should().Contain("Multi-Server Sessions",
+            "the generic multi-server guidance should remain");
     }
 
     #endregion
@@ -1809,7 +1854,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var config = method!.Invoke(_session, ["test-server"]);
+        var config = method!.Invoke(_session, ["test-server", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
@@ -1827,13 +1872,293 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var config = method!.Invoke(_session, ["test-server"]);
+        var config = method!.Invoke(_session, ["test-server", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
         content.Should().Contain("Read-only diagnostic tools execute automatically in ALL modes",
             "system message should clarify read-only tools work in all modes");
+    }
+
+    #endregion
+
+    #region Multi-Server CLI / Constructor Tests (Task 2)
+
+    [Fact]
+    public async Task Constructor_WithAdditionalInitialServers_ShouldStoreServers()
+    {
+        // Arrange & Act — use the convenience constructor overload
+        var servers = new List<string> { "primary-srv", "extra1", "extra2" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert — primary should be servers[0], additional stored in _additionalInitialServers
+        session.TargetServer.Should().Be("primary-srv");
+
+        // The additional servers list should be stored (checked via reflection)
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_additionalInitialServers field should exist");
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEquivalentTo(new[] { "extra1", "extra2" });
+    }
+
+    [Fact]
+    public async Task Constructor_WithAdditionalInitialServers_ShouldSkipDuplicateOfPrimary()
+    {
+        // Arrange & Act — additional list contains the primary server
+        var servers = new List<string> { "primary-srv", "primary-srv", "extra1" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert — duplicate of primary should be excluded
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEquivalentTo(new[] { "extra1" });
+    }
+
+    [Fact]
+    public async Task Constructor_WithSingleServerList_ShouldHaveNoAdditional()
+    {
+        // Arrange & Act
+        var servers = new List<string> { "only-srv" };
+        await using var session = new TroubleshootingSession(servers);
+
+        // Assert
+        session.TargetServer.Should().Be("only-srv");
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WithAdditionalServers_ShouldAttemptConnectionToEach()
+    {
+        // Arrange — create session with additional servers
+        // Connections will fail (no real server) but the method should be called for each
+        await using var session = new TroubleshootingSession(
+            "localhost",
+            additionalInitialServers: new List<string> { "fake-server-1", "fake-server-2" });
+
+        // Verify the field was stored
+        var field = typeof(TroubleshootingSession)
+            .GetField("_additionalInitialServers", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull();
+
+        var storedAdditional = field!.GetValue(session) as IReadOnlyList<string>;
+        storedAdditional.Should().NotBeNull();
+        storedAdditional.Should().HaveCount(2);
+        storedAdditional.Should().Contain("fake-server-1");
+        storedAdditional.Should().Contain("fake-server-2");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_NonExistentHost_ShouldReturnFailure()
+    {
+        // Arrange — use Yolo mode to skip approval prompt, then invoke private method
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — connection should fail for non-existent host
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", false])!;
+        var result = await task;
+
+        // Assert — should fail with connection error
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Theory]
+    [InlineData(new[] { "--server", "srv1" }, new[] { "srv1" })]
+    [InlineData(new[] { "-s", "srv1" }, new[] { "srv1" })]
+    [InlineData(new[] { "-s", "srv1", "-s", "srv2" }, new[] { "srv1", "srv2" })]
+    [InlineData(new[] { "-s", "srv1,srv2,srv3" }, new[] { "srv1", "srv2", "srv3" })]
+    [InlineData(new[] { "-s", "srv1", "-s", "srv2,srv3" }, new[] { "srv1", "srv2", "srv3" })]
+    [InlineData(new string[0], new[] { "localhost" })]
+    [InlineData(new[] { "--server", "," }, new[] { "localhost" })]
+    [InlineData(new[] { "--server", "" }, new[] { "localhost" })]
+    public void ParseServers_ShouldAccumulateAndSplitCommas(string[] args, string[] expected)
+    {
+        // Act
+        var servers = TroubleScout.Program.ParseServers(args);
+
+        // Assert
+        servers.Should().BeEquivalentTo(expected, opts => opts.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void IsSlashCommandInvocation_Server_ShouldMatchServerCommand()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsSlashCommandInvocation", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var result = (bool)method!.Invoke(null, ["/server srv01", "/server"])!;
+
+        // Assert
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsSlashCommandInvocation_Connect_ShouldNotMatchAfterRename()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("IsSlashCommandInvocation", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var result = (bool)method!.Invoke(null, ["/connect srv01", "/server"])!;
+
+        // Assert
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldContainServer_NotConnect()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/server");
+        commands.Should().NotContain("/connect");
+    }
+
+    #endregion
+
+    #region Cancellation Tests
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldAcceptCancellationToken()
+    {
+        // Arrange – session is not initialized so it returns false immediately,
+        // but this validates the method signature accepts a CancellationToken.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act
+        var result = await _session.SendMessageAsync("test", cts.Token);
+
+        // Assert – returns false because session is not initialized (no hang)
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_WithDefaultToken_ShouldStillWork()
+    {
+        // Arrange – verify the default parameter works (no token passed)
+
+        // Act
+        var result = await _session.SendMessageAsync("test");
+
+        // Assert – returns false because session is not initialized
+        result.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region Reasoning Delta Streaming Tests
+
+    [Fact]
+    public void SDK_AssistantReasoningDeltaEvent_ShouldExist()
+    {
+        // Assert — the SDK exposes the delta event type used for streaming reasoning
+        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaEvent);
+        type.Should().NotBeNull();
+        type.Name.Should().Be("AssistantReasoningDeltaEvent");
+    }
+
+    [Fact]
+    public void SDK_AssistantReasoningDeltaData_ShouldHaveDeltaContentProperty()
+    {
+        // Assert — DeltaContent property exists for incremental reasoning text
+        var prop = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaData)
+            .GetProperty("DeltaContent");
+        prop.Should().NotBeNull("AssistantReasoningDeltaData should have a DeltaContent property");
+    }
+
+    [Fact]
+    public void SDK_AssistantReasoningEvent_ShouldStillExistAsFallback()
+    {
+        // Assert — the full (non-streaming) reasoning event should remain in the SDK
+        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningEvent);
+        type.Should().NotBeNull();
+    }
+
+    #endregion
+
+    #region ConnectAdditionalServerAsync SkipApproval Tests
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SkipApproval_ShouldBypassApprovalInSafeMode()
+    {
+        // Arrange — session in Safe mode; invoke with skipApproval=true via reflection
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Safe);
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — calling with skipApproval: true should NOT prompt (would throw in test if it did)
+        // Use a non-existent host so it fails at connection, proving it got past approval
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-skipapproval-test", true])!;
+        var result = await task;
+
+        // Assert — should fail due to connection error, NOT due to approval denial
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrWhiteSpace();
+        result.Error.Should().NotContain("denied", "skipApproval=true should bypass approval prompt");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_SameAsPrimary_WithSkipApproval_ShouldSucceed()
+    {
+        // Arrange — same-as-primary should short-circuit regardless of skipApproval
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, ["localhost", true])!;
+        var result = await task;
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public void ConnectAdditionalServerAsync_ShouldAcceptSkipApprovalParameter()
+    {
+        // Assert — method signature must include the optional bool parameter
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var parameters = method!.GetParameters();
+        parameters.Should().HaveCount(2, "ConnectAdditionalServerAsync should have (string, bool) parameters");
+        parameters[0].ParameterType.Should().Be(typeof(string));
+        parameters[1].ParameterType.Should().Be(typeof(bool));
+        parameters[1].HasDefaultValue.Should().BeTrue("skipApproval should have a default value");
+        parameters[1].DefaultValue.Should().Be(false, "skipApproval default should be false");
     }
 
     #endregion

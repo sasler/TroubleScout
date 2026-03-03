@@ -57,9 +57,12 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _runtimeMcpServers = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _configurationWarnings = new();
+    private readonly IReadOnlyList<string> _additionalInitialServers;
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
     private bool _useByokOpenAi;
+    private bool _byokExplicitlyRequested;
+    private bool _modelExplicitlyRequested;
     private string _byokOpenAiBaseUrl;
     private string? _byokOpenAiApiKey;
     private readonly List<ReportPromptEntry> _reportPrompts = [];
@@ -96,7 +99,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/clear",
         "/model",
         "/mode",
-        "/connect",
+        "/server",
         "/capabilities",
         "/history",
         "/report",
@@ -106,11 +109,29 @@ public class TroubleshootingSession : IAsyncDisposable
         "/quit"
     ];
 
-    private SystemMessageConfig CreateSystemMessage(string targetServer)
+    private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
     {
         var targetInfo = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? "the local machine (localhost)"
             : $"the remote server: {targetServer}";
+
+        var connectedSessionsBlock = "";
+        if (additionalServerNames is { Count: > 0 })
+        {
+            var sessionLines = new System.Text.StringBuilder();
+            sessionLines.AppendLine();
+            sessionLines.AppendLine("## Connected PSSessions");
+            sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Use run_powershell with sessionName to target each:");
+            sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} — use run_powershell without sessionName");
+            foreach (var server in additionalServerNames)
+            {
+                var safe = SanitizeServerNameForPrompt(server);
+                sessionLines.AppendLine($"- {safe} — use run_powershell(command, sessionName: \"{safe}\")");
+            }
+            sessionLines.AppendLine();
+            sessionLines.AppendLine("When the user asks about multiple servers, gather data from ALL of them using run_powershell with the appropriate sessionName. Do NOT call connect_server for these — they are already connected.");
+            connectedSessionsBlock = sessionLines.ToString();
+        }
 
         return new SystemMessageConfig
         {
@@ -178,13 +199,21 @@ public class TroubleshootingSession : IAsyncDisposable
             - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
             - Use close_server_session(serverName) when done with a server to clean up resources.
             - Always indicate which server each piece of data comes from.
-
+            {connectedSessionsBlock}
             Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
             server you're working on.
             """
         };
     }
+
+    /// <summary>
+    /// Escapes a server name for safe embedding in the system prompt without changing its identity.
+    /// Preserves the exact server identifier (including IPv6 colons, brackets, etc.) and only
+    /// escapes characters that could break prompt syntax (backslashes and double-quotes).
+    /// </summary>
+    private static string SanitizeServerNameForPrompt(string serverName) =>
+        serverName.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     public TroubleshootingSession(
         string targetServer,
@@ -196,9 +225,16 @@ public class TroubleshootingSession : IAsyncDisposable
         ExecutionMode executionMode = ExecutionMode.Safe,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
-        string? byokOpenAiApiKey = null)
+        string? byokOpenAiApiKey = null,
+        bool byokExplicitlyRequested = false,
+        bool modelExplicitlyRequested = false,
+        IReadOnlyList<string>? additionalInitialServers = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
+        _additionalInitialServers = (additionalInitialServers ?? Array.Empty<string>())
+            .Where(s => !string.IsNullOrWhiteSpace(s) && !s.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         _requestedModel = model;
         _mcpConfigPath = mcpConfigPath;
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
@@ -206,6 +242,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _debugMode = debugMode;
         _executionMode = executionMode;
         _useByokOpenAi = useByokOpenAi;
+        _byokExplicitlyRequested = byokExplicitlyRequested;
+        _modelExplicitlyRequested = modelExplicitlyRequested;
         _byokOpenAiBaseUrl = string.IsNullOrWhiteSpace(byokOpenAiBaseUrl) ? DefaultOpenAiBaseUrl : byokOpenAiBaseUrl.Trim();
         _byokOpenAiApiKey = string.IsNullOrWhiteSpace(byokOpenAiApiKey)
             ? Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
@@ -215,7 +253,36 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
+    }
+
+    /// <summary>
+    /// Convenience constructor: servers[0] is primary, the rest are additional initial servers.
+    /// </summary>
+    public TroubleshootingSession(
+        IReadOnlyList<string> servers,
+        string? model = null,
+        string? mcpConfigPath = null,
+        IReadOnlyList<string>? skillDirectories = null,
+        IReadOnlyList<string>? disabledSkills = null,
+        bool debugMode = false,
+        ExecutionMode executionMode = ExecutionMode.Safe,
+        bool useByokOpenAi = false,
+        string? byokOpenAiBaseUrl = null,
+        string? byokOpenAiApiKey = null)
+        : this(
+            servers.Count > 0 ? servers[0] : "localhost",
+            model,
+            mcpConfigPath,
+            skillDirectories,
+            disabledSkills,
+            debugMode,
+            executionMode,
+            useByokOpenAi,
+            byokOpenAiBaseUrl,
+            byokOpenAiApiKey,
+            additionalInitialServers: servers.Count > 1 ? servers.Skip(1).ToList() : null)
+    {
     }
 
     private readonly string? _requestedModel;
@@ -317,6 +384,30 @@ public class TroubleshootingSession : IAsyncDisposable
             // Show verified connection
             updateStatus?.Invoke($"Connected to {_executor.ActualComputerName}...");
 
+            // Connect additional initial servers (non-fatal)
+            foreach (var additionalServer in _additionalInitialServers)
+            {
+                if (additionalServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                updateStatus?.Invoke($"Connecting to {additionalServer}...");
+                var (addSuccess, addError) = await ConnectAdditionalServerAsync(additionalServer, skipApproval: true);
+                if (!addSuccess)
+                {
+                    _configurationWarnings.Add($"Could not connect to additional server '{additionalServer}': {addError}");
+                    if (_debugMode)
+                    {
+                        ConsoleUI.ShowWarning($"Additional server '{additionalServer}' failed: {addError}");
+                    }
+                }
+            }
+
+            // Regenerate system message to include successfully connected additional servers
+            if (_additionalExecutors.Count > 0)
+            {
+                _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+            }
+
             await WarnIfPowerShellVersionIsOldAsync();
 
             // Initialize Copilot client
@@ -353,6 +444,15 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotClient = null;
                 return false;
             }
+            catch (Exception)
+            {
+                // CLI startup failed (e.g. unsupported --headless flag on older CLI versions).
+                // Dispose and null out the client so guard-checks see it as unavailable,
+                // then re-throw so the outer handler can show actionable diagnostics.
+                try { await _copilotClient.DisposeAsync(); } catch { /* best-effort */ }
+                _copilotClient = null;
+                throw;
+            }
 
             _isGitHubCopilotAuthenticated = await IsGitHubAuthenticatedAsync();
 
@@ -360,23 +460,42 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey))
                 {
-                    await ShowCopilotInitializationFailureAsync(
-                        $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
-                        includeDiagnostics: false);
-                    return false;
+                    if (_byokExplicitlyRequested)
+                    {
+                        // User explicitly passed --byok-openai: fail with a clear error.
+                        await ShowCopilotInitializationFailureAsync(
+                            $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
+                            includeDiagnostics: false);
+                        return false;
+                    }
+
+                    // BYOK was loaded from saved settings but no key is available.
+                    // Fall back to GitHub Copilot so the app can still open.
+                    ConsoleUI.ShowWarning(
+                        "BYOK is enabled in saved settings but no API key is available. Falling back to GitHub Copilot.\n" +
+                        "Use /byok to configure OpenAI-compatible mode, or /model to switch provider.");
+                    _useByokOpenAi = false;
+                    // fall through to GitHub Copilot path below
                 }
-
-                var byokModel = !string.IsNullOrWhiteSpace(_requestedModel) ? _requestedModel : _selectedModel;
-
-                if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
+                else
                 {
-                    return false;
+                    // Use requested model only when it was explicitly specified via CLI.
+                    // Otherwise pass null so the BYOK endpoint uses its default model,
+                    // avoiding failures from a stale saved model that may not be supported.
+                    var byokModel = _modelExplicitlyRequested
+                        ? _requestedModel
+                        : (!string.IsNullOrWhiteSpace(_selectedModel) ? _selectedModel : _requestedModel);
+
+                    if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
+                    {
+                        return false;
+                    }
+
+                    await RefreshAvailableModelsAsync();
+
+                    _isInitialized = true;
+                    return true;
                 }
-
-                await RefreshAvailableModelsAsync();
-
-                _isInitialized = true;
-                return true;
             }
 
             if (!_isGitHubCopilotAuthenticated)
@@ -406,13 +525,23 @@ public class TroubleshootingSession : IAsyncDisposable
                 return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(_requestedModel) && _availableModels.All(m => m.Id != _requestedModel))
+            string? effectiveModel = _requestedModel;
+            if (!string.IsNullOrWhiteSpace(effectiveModel) && _availableModels.All(m => m.Id != effectiveModel))
             {
-                ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available.");
-                return false;
+                if (_modelExplicitlyRequested)
+                {
+                    // User explicitly passed --model: fail with a clear error.
+                    ConsoleUI.ShowError("Invalid Model", $"The requested model '{effectiveModel}' is not available.");
+                    return false;
+                }
+
+                // Model from saved settings is not available (e.g. a BYOK-only model after switching to GitHub).
+                // Warn and fall back to the SDK default rather than refusing to start.
+                ConsoleUI.ShowWarning($"Saved model '{effectiveModel}' is not available with the current provider. Using the default model.\nUse /model to select a different one.");
+                effectiveModel = null;
             }
 
-            if (!await CreateCopilotSessionAsync(_requestedModel, updateStatus))
+            if (!await CreateCopilotSessionAsync(effectiveModel, updateStatus))
             {
                 if (allowInteractiveSetup)
                 {
@@ -1488,7 +1617,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// <summary>
     /// Send a message and process the response with streaming
     /// </summary>
-    public async Task<bool> SendMessageAsync(string userMessage)
+    public async Task<bool> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default)
     {
         if (_copilotSession == null)
         {
@@ -1496,11 +1625,22 @@ public class TroubleshootingSession : IAsyncDisposable
             return false;
         }
 
+        IDisposable? subscription = null;
+        LiveThinkingIndicator? thinkingIndicator = null;
         try
         {
-            var done = new TaskCompletionSource<bool>();
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var hasError = false;
+            var wasCancelled = false;
+
+            // Register cancellation callback to unblock the done TCS
+            using var cancelReg = cancellationToken.Register(() =>
+            {
+                wasCancelled = true;
+                done.TrySetResult(false);
+            });
             var hasStartedStreaming = false;
+            var hasStartedReasoning = false;
             var pendingStreamLineBreak = false;
             var currentStreamMessageId = string.Empty;
             var processedDeltaIds = new HashSet<string>();
@@ -1512,11 +1652,11 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             
             // Create a live thinking indicator (manually disposed before recursive calls)
-            var thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
+            thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
-            var subscription = _copilotSession.On(evt =>
+            subscription = _copilotSession.On(evt =>
             {
                 CaptureCapabilityUsage(evt);
 
@@ -1538,6 +1678,35 @@ public class TroubleshootingSession : IAsyncDisposable
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Analyzing");
+                        break;
+                    
+                    case AssistantReasoningDeltaEvent reasoningDelta:
+                        var reasoningDeltaText = reasoningDelta.Data?.DeltaContent ?? "";
+                        if (!string.IsNullOrEmpty(reasoningDeltaText))
+                        {
+                            if (!hasStartedReasoning)
+                            {
+                                hasStartedReasoning = true;
+                                thinkingIndicator?.StopForResponse();
+                                ConsoleUI.StartReasoningBlock();
+                            }
+                            ConsoleUI.WriteReasoningText(reasoningDeltaText);
+                        }
+                        break;
+
+                    case AssistantReasoningEvent reasoning:
+                        // Fallback for non-streaming reasoning (full content)
+                        var reasoningText = reasoning.Data?.Content ?? "";
+                        if (!string.IsNullOrEmpty(reasoningText))
+                        {
+                            if (!hasStartedReasoning)
+                            {
+                                hasStartedReasoning = true;
+                                thinkingIndicator?.StopForResponse();
+                                ConsoleUI.StartReasoningBlock();
+                            }
+                            ConsoleUI.WriteReasoningText(reasoningText);
+                        }
                         break;
                     
                     case ToolExecutionStartEvent toolStart:
@@ -1597,6 +1766,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         if (!hasStartedStreaming)
                         {
                             hasStartedStreaming = true;
+                            if (hasStartedReasoning) ConsoleUI.EndReasoningBlock();
                             thinkingIndicator.StopForResponse();
                             ConsoleUI.StartAIResponse();
                         }
@@ -1648,8 +1818,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
             var prompt = BuildPromptForExecutionSafety(userMessage);
 
-            // Send the message
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt });
+            // Send the message (pass cancellationToken so the SDK can cancel the in-flight RPC)
+            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt }, cancellationToken);
             
             // Wait for completion
             await done.Task;
@@ -1657,30 +1827,52 @@ public class TroubleshootingSession : IAsyncDisposable
             // Explicitly dispose subscription BEFORE processing approvals
             // This prevents duplicate event handling when SendMessageAsync is called recursively
             subscription.Dispose();
+            subscription = null;
 
             if (hasStartedStreaming)
             {
                 ConsoleUI.EndAIResponse();
             }
 
+            // Handle cancellation
+            if (wasCancelled)
+            {
+                thinkingIndicator.Dispose();
+                thinkingIndicator = null;
+                ConsoleUI.ShowCancelled();
+                return false;
+            }
+
             SetPromptReply(promptIndex, responseBuffer.ToString());
             
             // Dispose thinking indicator before processing approvals
             thinkingIndicator.Dispose();
+            thinkingIndicator = null;
 
             // Handle any pending approval commands (may call SendMessageAsync recursively)
-            if (!hasError)
+            if (!hasError && !wasCancelled)
             {
                 await ProcessPendingApprovalsAsync();
             }
 
-            return !hasError;
+            return !hasError && !wasCancelled;
+        }
+        catch (OperationCanceledException)
+        {
+            ConsoleUI.EndAIResponse();
+            ConsoleUI.ShowCancelled();
+            return false;
         }
         catch (Exception ex)
         {
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
             return false;
+        }
+        finally
+        {
+            subscription?.Dispose();
+            thinkingIndicator?.Dispose();
         }
     }
 
@@ -1795,6 +1987,9 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             var input = ConsoleUI.GetUserInput(SlashCommands).Trim();
 
+            if (!string.IsNullOrEmpty(input))
+                ConsoleUI.AddPromptHistory(input);
+
             if (string.IsNullOrWhiteSpace(input))
                 continue;
 
@@ -1858,6 +2053,9 @@ public class TroubleshootingSession : IAsyncDisposable
                      || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
                 {
                     SaveByokSettings(false, null, null);
+                    // Also update in-memory state so a subsequent /model switch doesn't re-save BYOK=true
+                    _useByokOpenAi = false;
+                    _byokOpenAiApiKey = null;
                     ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
                     ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
                     ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
@@ -2062,24 +2260,62 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (IsSlashCommandInvocation(lowerInput, "/connect"))
+            if (IsSlashCommandInvocation(lowerInput, "/server"))
             {
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                var parts = input.Split(new char[]{' ', ','}, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2)
                 {
-                    ConsoleUI.ShowWarning("Usage: /connect <server>");
+                    ConsoleUI.ShowWarning("Usage: /server <server1>[,server2,...]");
                 }
                 else
                 {
-                    var newServer = parts[1];
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {newServer}...", async updateStatus =>
+                    var primaryServer = parts[1];
+                    var additionalServers = parts.Skip(2).ToList();
+
+                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {primaryServer}...", async updateStatus =>
                     {
-                        return await ReconnectAsync(newServer, updateStatus);
+                        return await ReconnectAsync(primaryServer, updateStatus);
                     });
 
                     if (success)
                     {
-                        ConsoleUI.ShowSuccess($"Connected to {newServer}");
+                        ConsoleUI.ShowSuccess($"Connected to {primaryServer}");
+
+                        foreach (var srv in additionalServers)
+                        {
+                            // Approval must happen OUTSIDE the spinner (Spectre exclusivity constraint)
+                            if (_executionMode == ExecutionMode.Safe)
+                            {
+                                var approved = ConsoleUI.PromptCommandApproval(
+                                    $"New-PSSession -ComputerName '{srv}'",
+                                    $"TroubleScout wants to establish a direct PowerShell session to {srv}");
+                                if (!approved)
+                                {
+                                    ConsoleUI.ShowWarning($"Connection to {srv} was denied.");
+                                    continue;
+                                }
+                            }
+
+                            var addSuccess = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {srv}...", async _ =>
+                            {
+                                var (s, e) = await ConnectAdditionalServerAsync(srv, skipApproval: true);
+                                if (!s) ConsoleUI.ShowWarning($"Could not connect to {srv}: {e}");
+                                return s;
+                            });
+                        }
+
+                        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+
+                        // Recreate the Copilot session so the updated system message (with connected sessions) takes effect
+                        if (_copilotClient != null && _copilotSession != null && additionalServers.Count > 0)
+                        {
+                            await _copilotSession.DisposeAsync();
+                            _copilotSession = null;
+                            await CreateCopilotSessionAsync(
+                                string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
+                                null);
+                        }
+
                         ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     }
                 }
@@ -2088,7 +2324,46 @@ public class TroubleshootingSession : IAsyncDisposable
 
             // Send message to Copilot
             RecordPrompt(input);
-            await SendMessageAsync(input);
+
+            var escCts = new CancellationTokenSource();
+            try
+            {
+                var escTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!escCts.Token.IsCancellationRequested)
+                        {
+                            if (Console.KeyAvailable && !LiveThinkingIndicator.IsApprovalInProgress)
+                            {
+                                var k = Console.ReadKey(intercept: true);
+                                if (k.Key == ConsoleKey.Escape)
+                                {
+                                    escCts.Cancel();
+                                    break;
+                                }
+                            }
+                            await Task.Delay(50, escCts.Token).ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected when AI finishes before ESC
+                    }
+                }, CancellationToken.None);
+
+                await SendMessageAsync(input, escCts.Token);
+
+                // Stop ESC polling if AI finished before ESC was pressed
+                escCts.Cancel();
+                // (no ResetConversationAsync needed - SDK cancellation is clean)
+                try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
+                catch (TimeoutException) { /* ignore */ }
+            }
+            finally
+            {
+                escCts.Dispose();
+            }
         }
     }
 
@@ -2779,10 +3054,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                if (_debugMode)
-                {
-                    ConsoleUI.ShowWarning($"Session cleanup warning: {TrimSingleLine(ex.Message)}");
-                }
+                ConsoleUI.ShowWarning($"Session cleanup warning: {TrimSingleLine(ex.Message)}");
             }
         }
 
@@ -2794,10 +3066,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                if (_debugMode)
-                {
-                    ConsoleUI.ShowWarning($"Copilot cleanup warning: {TrimSingleLine(ex.Message)}");
-                }
+                ConsoleUI.ShowWarning($"Copilot cleanup warning: {TrimSingleLine(ex.Message)}");
             }
         }
 
@@ -2944,11 +3213,11 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.Dispose();
 
         _targetServer = newServer;
-        _systemMessageConfig = CreateSystemMessage(_targetServer);
+        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            ConnectAdditionalServerAsync, GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
@@ -2967,9 +3236,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotSession = null;
             }
 
-            var modelToUse = !string.IsNullOrWhiteSpace(_selectedModel)
-                ? _selectedModel
-                : _requestedModel;
+            var modelToUse = string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel;
 
             if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
             {
@@ -2980,7 +3247,7 @@ public class TroubleshootingSession : IAsyncDisposable
         return true;
     }
 
-    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName)
+    private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName, bool skipApproval = false)
     {
         if (string.IsNullOrWhiteSpace(serverName))
             return (false, "Server name cannot be empty.");
@@ -2991,7 +3258,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (_additionalExecutors.ContainsKey(serverName))
             return (true, null);
 
-        if (_executionMode == ExecutionMode.Safe)
+        if (!skipApproval && _executionMode == ExecutionMode.Safe)
         {
             var approved = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}'",
@@ -3010,6 +3277,8 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _additionalExecutors[serverName] = executor;
+        // Update system message configuration so future Copilot sessions include this additional server
+        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         return (true, null);
     }
 

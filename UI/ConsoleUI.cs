@@ -17,6 +17,8 @@ public static class ConsoleUI
     private static int _lastSuggestionRowCount;
     private static int _lastSuggestionRowOffset = 1;
     private const int MaxPromptInputLength = 4000;
+    private static readonly List<string> _promptHistory = new();
+    private const int MaxPromptHistorySize = 100;
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -215,7 +217,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/status[/]", "Show current status");
         commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
-        commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Connect to server");
+        commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers");
         commandTable.AddRow("[cyan]/login[/]", "Start in-app GitHub Copilot login flow");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Configure OpenAI-compatible BYOK for this session");
         commandTable.AddRow("[cyan]/byok clear[/]", "Remove saved BYOK settings for this profile");
@@ -261,7 +263,7 @@ public static class ConsoleUI
             .AddColumn(new TableColumn("[bold]Option[/]").NoWrap().Width(38))
             .AddColumn(new TableColumn("[bold]Description[/]"));
 
-        optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server hostname or IP (default: localhost)");
+        optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server(s) hostname or IP. Repeat for multiple: -s srv1 -s srv2 (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
@@ -269,6 +271,7 @@ public static class ConsoleUI
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
         optionsTable.AddRow("[cyan]--disable-skill[/] [grey]<name>[/]", "Disable a specific skill by name (repeatable)");
         optionsTable.AddRow("[cyan]--byok-openai[/]", "Enable Bring-Your-Own-Key OpenAI-compatible mode");
+        optionsTable.AddRow("[cyan]--no-byok[/]", "Force GitHub Copilot provider (ignores saved BYOK provider selection)");
         optionsTable.AddRow("[cyan]--openai-base-url[/] [grey]<url>[/]", "Base URL for BYOK OpenAI-compatible endpoint");
         optionsTable.AddRow("[cyan]--openai-api-key[/] [grey]<key>[/]", "API key for BYOK OpenAI-compatible endpoint");
         optionsTable.AddRow("[cyan]-d[/], [cyan]--debug[/]", "Enable debug/diagnostic output");
@@ -282,6 +285,9 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine("[bold]EXAMPLES[/]");
         AnsiConsole.MarkupLine("  [grey]# Launch the interactive TUI against a remote server[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Connect to multiple servers at startup[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] -s web01 -s web02 -s db01");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Run a single headless prompt and exit[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01 --prompt [grey]\"Check disk space\"[/]");
@@ -313,7 +319,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
-        commandTable.AddRow("[cyan]/connect[/] [grey]<server>[/]", "Reconnect to a different target server");
+        commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
         commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
         commandTable.AddRow("[cyan]/byok clear[/]", "Clear saved BYOK settings for this profile");
@@ -363,6 +369,7 @@ public static class ConsoleUI
         var buffer = new StringBuilder();
         var completionIndex = -1;
         List<string>? matches = null;
+        var historyIndex = -1;
         _lastInputRowCount = 1;
         _lastSuggestionRowCount = 0;
 
@@ -385,7 +392,54 @@ public static class ConsoleUI
                 ClearSuggestions();
                 Console.WriteLine();
                 _lastInputRowCount = 1;
+                historyIndex = -1;
                 return buffer.ToString();
+            }
+
+            if (key.Key == ConsoleKey.Escape)
+            {
+                buffer.Clear();
+                completionIndex = -1;
+                matches = null;
+                historyIndex = -1;
+                RedrawInputLine(string.Empty);
+                ClearSuggestions();
+                continue;
+            }
+
+            if (key.Key == ConsoleKey.UpArrow)
+            {
+                if (_promptHistory.Count == 0) continue;
+                if (historyIndex == -1) historyIndex = _promptHistory.Count;
+                historyIndex = Math.Max(0, historyIndex - 1);
+                buffer.Clear();
+                buffer.Append(_promptHistory[historyIndex]);
+                completionIndex = -1;
+                matches = null;
+                RedrawInputLine(buffer.ToString());
+                ClearSuggestions();
+                continue;
+            }
+
+            if (key.Key == ConsoleKey.DownArrow)
+            {
+                if (historyIndex == -1) continue;
+                historyIndex++;
+                if (historyIndex >= _promptHistory.Count)
+                {
+                    historyIndex = -1;
+                    buffer.Clear();
+                }
+                else
+                {
+                    buffer.Clear();
+                    buffer.Append(_promptHistory[historyIndex]);
+                }
+                completionIndex = -1;
+                matches = null;
+                RedrawInputLine(buffer.ToString());
+                ClearSuggestions();
+                continue;
             }
 
             if (key.Key == ConsoleKey.Backspace)
@@ -446,6 +500,15 @@ public static class ConsoleUI
                 UpdateSuggestions(buffer.ToString(), slashCommands);
             }
         }
+    }
+
+    public static void AddPromptHistory(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return;
+        if (_promptHistory.Count > 0 && _promptHistory[^1] == input) return;
+        _promptHistory.Add(input);
+        if (_promptHistory.Count > MaxPromptHistorySize)
+            _promptHistory.RemoveAt(0);
     }
 
     private static void RedrawInputLine(string text)
@@ -1164,22 +1227,30 @@ public static class ConsoleUI
     /// </summary>
     public static bool PromptCommandApproval(string command, string reason)
     {
-        AnsiConsole.WriteLine();
-        
-        var panel = new Panel(new Rows(
-            new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
-            new Markup(""),
-            new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
-            new Markup(""),
-            new Markup("[red]This command can modify system state.[/]")
-        ))
-        .Header("[bold yellow] Approval Required [/]")
-        .Border(BoxBorder.Heavy)
-        .BorderColor(Color.Yellow);
-        
-        AnsiConsole.Write(panel);
-        
-        return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            AnsiConsole.WriteLine();
+            
+            var panel = new Panel(new Rows(
+                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
+                new Markup(""),
+                new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
+                new Markup(""),
+                new Markup("[red]This command can modify system state.[/]")
+            ))
+            .Header("[bold yellow] Approval Required [/]")
+            .Border(BoxBorder.Heavy)
+            .BorderColor(Color.Yellow);
+            
+            AnsiConsole.Write(panel);
+            
+            return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
     }
 
     /// <summary>
@@ -1187,41 +1258,49 @@ public static class ConsoleUI
     /// </summary>
     public static List<int> PromptBatchApproval(IReadOnlyList<(string Command, string Reason)> commands)
     {
-        AnsiConsole.WriteLine();
-        
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Color.Yellow)
-            .AddColumn(new TableColumn("[bold]#[/]").Centered())
-            .AddColumn(new TableColumn("[bold]Command[/]"))
-            .AddColumn(new TableColumn("[bold]Reason[/]"));
-
-        for (int i = 0; i < commands.Count; i++)
+        LiveThinkingIndicator.PauseForApproval();
+        try
         {
-            table.AddRow(
-                $"[cyan]{i + 1}[/]",
-                Markup.Escape(commands[i].Command),
-                Markup.Escape(commands[i].Reason));
+            AnsiConsole.WriteLine();
+            
+            var table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Yellow)
+                .AddColumn(new TableColumn("[bold]#[/]").Centered())
+                .AddColumn(new TableColumn("[bold]Command[/]"))
+                .AddColumn(new TableColumn("[bold]Reason[/]"));
+
+            for (int i = 0; i < commands.Count; i++)
+            {
+                table.AddRow(
+                    $"[cyan]{i + 1}[/]",
+                    Markup.Escape(commands[i].Command),
+                    Markup.Escape(commands[i].Reason));
+            }
+
+            var panel = new Panel(table)
+                .Header("[bold yellow] Commands Requiring Approval [/]")
+                .Border(BoxBorder.Heavy)
+                .BorderColor(Color.Yellow);
+            
+            AnsiConsole.Write(panel);
+            AnsiConsole.WriteLine();
+
+            var approved = AnsiConsole.Prompt(
+                new MultiSelectionPrompt<int>()
+                    .Title("[yellow]Select commands to approve:[/]")
+                    .NotRequired()
+                    .PageSize(10)
+                    .MoreChoicesText("[grey](Move up and down to reveal more commands)[/]")
+                    .InstructionsText("[grey](Press [cyan]<space>[/] to toggle, [green]<enter>[/] to accept)[/]")
+                    .AddChoices(Enumerable.Range(1, commands.Count)));
+
+            return approved;
         }
-
-        var panel = new Panel(table)
-            .Header("[bold yellow] Commands Requiring Approval [/]")
-            .Border(BoxBorder.Heavy)
-            .BorderColor(Color.Yellow);
-        
-        AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
-
-        var approved = AnsiConsole.Prompt(
-            new MultiSelectionPrompt<int>()
-                .Title("[yellow]Select commands to approve:[/]")
-                .NotRequired()
-                .PageSize(10)
-                .MoreChoicesText("[grey](Move up and down to reveal more commands)[/]")
-                .InstructionsText("[grey](Press [cyan]<space>[/] to toggle, [green]<enter>[/] to accept)[/]")
-                .AddChoices(Enumerable.Range(1, commands.Count)));
-
-        return approved;
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
     }
 
     /// <summary>
@@ -1441,6 +1520,51 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Display a cancellation message when the user presses ESC during an agent turn.
+    /// </summary>
+    public static void ShowCancelled()
+    {
+        EnsureLineBreak();
+        AnsiConsole.MarkupLine("[grey]⊘ Cancelled[/]");
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Display reasoning/thinking text in a visually muted dark color
+    /// </summary>
+    public static void WriteReasoningText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        if (Console.IsOutputRedirected)
+        {
+            Console.Write(text);
+        }
+        else
+        {
+            // ANSI dark grey (color 238 on 256-color palette) — clearly dimmer than normal output
+            Console.Write($"\x1b[38;5;238m{text}\x1b[0m");
+        }
+    }
+
+    /// <summary>
+    /// Start a reasoning/thinking block with a muted prefix label
+    /// </summary>
+    public static void StartReasoningBlock()
+    {
+        EnsureLineBreak();
+        if (!Console.IsOutputRedirected)
+            Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
+    }
+
+    /// <summary>
+    /// End a reasoning/thinking block
+    /// </summary>
+    public static void EndReasoningBlock()
+    {
+        EnsureLineBreak();
+    }
+
+    /// <summary>
     /// Context manager for the thinking indicator
     /// </summary>
     private class ThinkingContext : IDisposable
@@ -1499,6 +1623,17 @@ public class LiveThinkingIndicator : IDisposable
     private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
     private int _spinnerIndex;
 
+    private static volatile bool _approvalInProgress;
+
+    /// <summary>Whether an approval dialog is currently suppressing spinner output.</summary>
+    public static bool IsApprovalInProgress => _approvalInProgress;
+
+    /// <summary>Pause spinner output while an approval dialog is visible.</summary>
+    public static void PauseForApproval() => _approvalInProgress = true;
+
+    /// <summary>Resume spinner output after an approval dialog completes.</summary>
+    public static void ResumeAfterApproval() => _approvalInProgress = false;
+
     public void Start()
     {
         lock (_lock)
@@ -1517,10 +1652,13 @@ public class LiveThinkingIndicator : IDisposable
                     lock (_lock)
                     {
                         if (_hasStartedResponse) break;
-                        
-                        // Clear the current line and write status
-                        Console.Write($"\r\x1b[K[cyan]{_currentStatus}{SpinnerFrames[_spinnerIndex]}[/]".Replace("[cyan]", "\u001b[36m").Replace("[/]", "\u001b[0m"));
-                        _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+
+                        if (!_approvalInProgress)
+                        {
+                            // Clear the current line and write status
+                            Console.Write($"\r\x1b[K\u001b[36m{_currentStatus}{SpinnerFrames[_spinnerIndex]}\u001b[0m  \u001b[90m(ESC to stop)\u001b[0m");
+                            _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+                        }
                     }
                     await Task.Delay(200, _cts.Token);
                 }

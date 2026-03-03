@@ -163,4 +163,294 @@ public class ConsoleUITests
     }
 
     #endregion
+
+    #region LiveThinkingIndicator Pause/Resume Tests
+
+    [Fact]
+    public void LiveThinkingIndicator_PauseForApproval_ShouldSuppressSpinnerWrites()
+    {
+        // Arrange – capture console output
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            using var indicator = new LiveThinkingIndicator();
+            indicator.Start();
+
+            // Let the spinner run briefly to confirm it writes
+            Thread.Sleep(350);
+            var beforePause = sw.ToString();
+            beforePause.Should().NotBeEmpty("spinner should have written output before pause");
+
+            // Act – pause
+            LiveThinkingIndicator.PauseForApproval();
+            sw.GetStringBuilder().Clear();
+
+            // Wait and verify no new writes
+            Thread.Sleep(350);
+            var afterPause = sw.ToString();
+            afterPause.Should().BeEmpty("spinner should not write while paused for approval");
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_ResumeAfterApproval_ShouldReEnableSpinnerWrites()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            using var indicator = new LiveThinkingIndicator();
+            indicator.Start();
+            Thread.Sleep(300);
+
+            // Pause then resume
+            LiveThinkingIndicator.PauseForApproval();
+            Thread.Sleep(300);
+            sw.GetStringBuilder().Clear();
+            LiveThinkingIndicator.ResumeAfterApproval();
+
+            // Act – wait for spinner to write again
+            Thread.Sleep(350);
+            var afterResume = sw.ToString();
+
+            // Assert
+            afterResume.Should().NotBeEmpty("spinner should resume writing after ResumeAfterApproval");
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void PromptCommandApproval_ShouldPauseAndResumeIndicator()
+    {
+        // This test verifies the static _approvalInProgress flag is set/cleared
+        // by checking the public Pause/Resume methods work correctly in isolation,
+        // since PromptCommandApproval uses interactive console prompts.
+
+        // Arrange – ensure clean state
+        LiveThinkingIndicator.ResumeAfterApproval();
+
+        // Act – simulate what PromptCommandApproval does internally
+        LiveThinkingIndicator.PauseForApproval();
+        var pausedState = LiveThinkingIndicator.IsApprovalInProgress;
+
+        LiveThinkingIndicator.ResumeAfterApproval();
+        var resumedState = LiveThinkingIndicator.IsApprovalInProgress;
+
+        // Assert
+        pausedState.Should().BeTrue("PauseForApproval should set the approval flag");
+        resumedState.Should().BeFalse("ResumeAfterApproval should clear the approval flag");
+    }
+
+    #endregion
+
+    #region Cancellation UX Tests
+
+    [Fact]
+    public void ShowCancelled_ShouldRenderCancelledMessage()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCancelled();
+        var output = AnsiConsole.ExportText();
+
+        // Assert
+        output.Should().Contain("Cancelled");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_SpinnerOutput_ShouldContainEscHint()
+    {
+        // Arrange – capture raw console output from the spinner
+        var originalOut = Console.Out;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+
+            // Allow a few spinner frames to render
+            Thread.Sleep(500);
+
+            indicator.Dispose();
+
+            var output = sw.ToString();
+
+            // Assert
+            output.Should().Contain("ESC to stop");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+    }
+
+    #endregion
+
+    #region Prompt History Tests
+
+    /// <summary>
+    /// Helper to access the private _promptHistory field via reflection.
+    /// </summary>
+    private static List<string> GetPromptHistoryField()
+    {
+        var field = typeof(ConsoleUI).GetField("_promptHistory", BindingFlags.Static | BindingFlags.NonPublic);
+        field.Should().NotBeNull("ConsoleUI should have a _promptHistory field");
+        return (List<string>)field!.GetValue(null)!;
+    }
+
+    /// <summary>
+    /// Helper to clear prompt history between tests.
+    /// </summary>
+    private static void ClearPromptHistory()
+    {
+        GetPromptHistoryField().Clear();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldAddEntry()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("test command");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().ContainSingle().Which.Should().Be("test command");
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldNotAddDuplicate()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("duplicate");
+        ConsoleUI.AddPromptHistory("duplicate");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldNotAddWhitespace()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        ConsoleUI.AddPromptHistory("");
+        ConsoleUI.AddPromptHistory("   ");
+        ConsoleUI.AddPromptHistory(null!);
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddPromptHistory_ShouldCapAt100Entries()
+    {
+        // Arrange
+        ClearPromptHistory();
+
+        // Act
+        for (int i = 0; i < 101; i++)
+            ConsoleUI.AddPromptHistory($"entry-{i}");
+
+        // Assert
+        var history = GetPromptHistoryField();
+        history.Should().HaveCount(100);
+        history[0].Should().Be("entry-1", "oldest entry (entry-0) should have been removed");
+        history[^1].Should().Be("entry-100");
+    }
+
+    #endregion
+
+    #region Reasoning Text Tests
+
+    [Fact]
+    public void WriteReasoningText_ShouldOutputText()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            // Act
+            ConsoleUI.WriteReasoningText("thinking...");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var output = sw.ToString();
+
+        // Assert — text content always written; ANSI codes only on non-redirected terminals
+        output.Should().Contain("thinking...");
+    }
+
+    [Fact]
+    public void WriteReasoningText_ShouldNotOutput_WhenTextIsEmpty()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            // Act
+            ConsoleUI.WriteReasoningText("");
+            ConsoleUI.WriteReasoningText(null!);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        // Assert — nothing should be written
+        sw.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StartReasoningBlock_ShouldNotThrow()
+    {
+        // Act & Assert — should not throw regardless of terminal capability
+        var act = () => ConsoleUI.StartReasoningBlock();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EndReasoningBlock_ShouldNotThrow()
+    {
+        // Act & Assert — should not throw
+        var act = () => ConsoleUI.EndReasoningBlock();
+        act.Should().NotThrow();
+    }
+
+    #endregion
 }

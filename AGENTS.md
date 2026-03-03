@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.1.28`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`0.1.29`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 
@@ -41,6 +41,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 - Use `TaskCompletionSource` and wait for `SessionIdleEvent` to determine turn completion.
 - Handle streaming with `AssistantMessageDeltaEvent`; keep `AssistantMessageEvent` as fallback/final.
+- Handle thinking tokens with `AssistantReasoningEvent` (`.Data.Content`); render via `ConsoleUI.WriteReasoningText()`.
 - Dispose event subscriptions when done with each send cycle.
 
 ### Session configuration
@@ -84,6 +85,14 @@ Preserve this model for all changes.
 - Change agent behavior/system message: `TroubleshootingSession.cs`
 - Add CLI options: `Program.cs` (manual switch parsing)
 - UI/status/help text: `UI/ConsoleUI.cs`
+
+## Notable UX Behaviors
+
+- **`/server` slash command** (not `/connect`) — accepts one or more server names separated by spaces or commas: `/server srv1 srv2` or `/server srv1,srv2`. Replaces the former `/connect` command.
+- **Multi-server `--server` flag** — repeatable (`--server srv1 --server srv2`) or comma-separated (`--server srv1,srv2`); all servers connect at startup via `InitializeAsync`.
+- **ESC cancellation** — a background poller in `RunInteractiveLoopAsync` cancels the active `CancellationTokenSource`; the token is passed to `_copilotSession.SendAsync` for true RPC-level cancellation. Poller skips `ReadKey` while `LiveThinkingIndicator.IsApprovalInProgress` is true.
+- **Reasoning display** — `AssistantReasoningEvent` handled in `SendMessageAsync` event switch; routed to `ConsoleUI.WriteReasoningText()` (ANSI 256-colour dark grey 238, falls back to plain text when stdout is redirected).
+- **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Confirm` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
 
 ## Build, Test, Verify (Required)
 

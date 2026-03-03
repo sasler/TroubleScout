@@ -4,9 +4,11 @@ using TroubleScout.Services;
 using TroubleScout.UI;
 
 // Parse command line arguments manually for simplicity
-var server = "localhost";
+// Server list is pre-populated by ParseServers; the switch only handles the missing-value error case.
+var servers = TroubleScout.Program.ParseServers(args);
 string? prompt = null;
 string? model = null;
+bool modelSpecifiedByCli = false;
 string? mcpConfigPath = null;
 var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
@@ -25,10 +27,10 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--server" or "-s" when i + 1 < args.Length:
-            server = args[++i];
+            i++; // value already consumed by ParseServers; advance past it
             break;
         case "--server" or "-s":
-            Console.WriteLine("--server (-s) requires a value: hostname or IP address.");
+            Console.WriteLine("--server (-s) requires a value: hostname or IP address. Repeat for multiple: -s srv1 -s srv2");
             return 1;
         case "--prompt" or "-p" when i + 1 < args.Length:
             prompt = args[++i];
@@ -38,6 +40,7 @@ for (int i = 0; i < args.Length; i++)
             return 1;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
+            modelSpecifiedByCli = true;
             break;
         case "--model" or "-m":
             Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4.1, gpt-5-mini).");
@@ -82,6 +85,10 @@ for (int i = 0; i < args.Length; i++)
             return 1;
         case "--byok-openai":
             useByokOpenAi = true;
+            byokProviderSpecifiedByCli = true;
+            break;
+        case "--no-byok":
+            useByokOpenAi = false;
             byokProviderSpecifiedByCli = true;
             break;
         case "--openai-base-url" when i + 1 < args.Length:
@@ -168,12 +175,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(server, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(server, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey);
+    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
 }
 
 return Environment.ExitCode;
@@ -247,7 +254,7 @@ static string GetAppVersion()
 /// Run in interactive mode with full TUI
 /// </summary>
 static async Task RunInteractiveModeAsync(
-    string server,
+    IReadOnlyList<string> servers,
     string? model,
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
@@ -257,13 +264,18 @@ static async Task RunInteractiveModeAsync(
     ExecutionMode executionMode,
     bool useByokOpenAi,
     string? byokOpenAiBaseUrl,
-    string? byokOpenAiApiKey)
+    string? byokOpenAiApiKey,
+    bool byokExplicitlyRequested = false,
+    bool modelExplicitlyRequested = false)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
     
+    var primary = servers[0];
+    var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
+
     await using var session = new TroubleshootingSession(
-        server,
+        primary,
         model,
         mcpConfigPath,
         skillDirectories,
@@ -272,7 +284,10 @@ static async Task RunInteractiveModeAsync(
         executionMode,
         useByokOpenAi,
         byokOpenAiBaseUrl,
-        byokOpenAiApiKey);
+        byokOpenAiApiKey,
+        byokExplicitlyRequested: byokExplicitlyRequested,
+        modelExplicitlyRequested: modelExplicitlyRequested,
+        additional);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -287,7 +302,10 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    ConsoleUI.ShowStatusPanel(server, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields());
+    var additionalTargets = session.AllTargetServers.Count > 1
+        ? session.AllTargetServers.Skip(1).ToList()
+        : null;
+    ConsoleUI.ShowStatusPanel(primary, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets);
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -302,7 +320,7 @@ static async Task RunInteractiveModeAsync(
 /// Run in headless mode for scripting/automation
 /// </summary>
 static async Task RunHeadlessModeAsync(
-    string server,
+    IReadOnlyList<string> servers,
     string prompt,
     string? model,
     string? mcpConfigPath,
@@ -312,10 +330,15 @@ static async Task RunHeadlessModeAsync(
     ExecutionMode executionMode,
     bool useByokOpenAi,
     string? byokOpenAiBaseUrl,
-    string? byokOpenAiApiKey)
+    string? byokOpenAiApiKey,
+    bool byokExplicitlyRequested = false,
+    bool modelExplicitlyRequested = false)
 {
+    var primary = servers[0];
+    var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
+
     await using var session = new TroubleshootingSession(
-        server,
+        primary,
         model,
         mcpConfigPath,
         skillDirectories,
@@ -324,7 +347,10 @@ static async Task RunHeadlessModeAsync(
         executionMode,
         useByokOpenAi,
         byokOpenAiBaseUrl,
-        byokOpenAiApiKey);
+        byokOpenAiApiKey,
+        byokExplicitlyRequested: byokExplicitlyRequested,
+        modelExplicitlyRequested: modelExplicitlyRequested,
+        additional);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -343,7 +369,8 @@ static async Task RunHeadlessModeAsync(
         return;
     }
 
-    ConsoleUI.ShowInfo($"Target: {server} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
+    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    ConsoleUI.ShowInfo($"Target: {serverDisplay} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
     ConsoleUI.ShowRule();
     ConsoleUI.ShowInfo($"Processing: {prompt}");
     Console.WriteLine();
@@ -351,4 +378,35 @@ static async Task RunHeadlessModeAsync(
     var result = await session.SendMessageAsync(prompt);
     
     Environment.ExitCode = result ? 0 : 1;
+}
+
+namespace TroubleScout
+{
+    /// <summary>
+    /// Partial class to expose testable CLI parsing helpers.
+    /// </summary>
+    public partial class Program
+    {
+        /// <summary>
+        /// Parse --server / -s flags from CLI args, supporting repeated flags and comma-separated values.
+        /// </summary>
+        public static List<string> ParseServers(string[] args)
+        {
+            var servers = new List<string> { "localhost" };
+            for (int i = 0; i < args.Length; i++)
+            {
+                if ((args[i] == "--server" || args[i] == "-s") && i + 1 < args.Length)
+                {
+                    var serverArg = args[++i];
+                    var parsed = serverArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (servers.Count == 1 && servers[0] == "localhost")
+                        servers.Clear();
+                    servers.AddRange(parsed);
+                }
+            }
+            if (servers.Count == 0)
+                servers = new List<string> { "localhost" };
+            return servers;
+        }
+    }
 }
