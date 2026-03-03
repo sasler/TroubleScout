@@ -1541,7 +1541,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// <summary>
     /// Send a message and process the response with streaming
     /// </summary>
-    public async Task<bool> SendMessageAsync(string userMessage)
+    public async Task<bool> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default)
     {
         if (_copilotSession == null)
         {
@@ -1553,6 +1553,14 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             var done = new TaskCompletionSource<bool>();
             var hasError = false;
+            var wasCancelled = false;
+
+            // Register cancellation callback to unblock the done TCS
+            using var cancelReg = cancellationToken.Register(() =>
+            {
+                wasCancelled = true;
+                done.TrySetResult(false);
+            });
             var hasStartedStreaming = false;
             var pendingStreamLineBreak = false;
             var currentStreamMessageId = string.Empty;
@@ -1714,6 +1722,14 @@ public class TroubleshootingSession : IAsyncDisposable
             if (hasStartedStreaming)
             {
                 ConsoleUI.EndAIResponse();
+            }
+
+            // Handle cancellation
+            if (wasCancelled)
+            {
+                thinkingIndicator.Dispose();
+                ConsoleUI.ShowCancelled();
+                return false;
             }
 
             SetPromptReply(promptIndex, responseBuffer.ToString());
@@ -2154,7 +2170,59 @@ public class TroubleshootingSession : IAsyncDisposable
 
             // Send message to Copilot
             RecordPrompt(input);
-            await SendMessageAsync(input);
+
+            var escCts = new CancellationTokenSource();
+            try
+            {
+                var escTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!escCts.Token.IsCancellationRequested)
+                        {
+                            if (Console.KeyAvailable && !LiveThinkingIndicator.IsApprovalInProgress)
+                            {
+                                var k = Console.ReadKey(intercept: true);
+                                if (k.Key == ConsoleKey.Escape)
+                                {
+                                    escCts.Cancel();
+                                    break;
+                                }
+                            }
+                            await Task.Delay(50, escCts.Token).ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected when AI finishes before ESC
+                    }
+                }, CancellationToken.None);
+
+                var wasEscCancelled = false;
+
+                await SendMessageAsync(input, escCts.Token);
+
+                if (escCts.IsCancellationRequested)
+                {
+                    wasEscCancelled = true;
+                    // Reset session to clean up any partial/in-flight AI turn
+                    _ = await ResetConversationAsync();
+                }
+
+                // Stop ESC polling if AI finished before ESC was pressed
+                escCts.Cancel();
+                try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
+                catch (TimeoutException) { /* ignore */ }
+
+                if (wasEscCancelled)
+                {
+                    ConsoleUI.ShowInfo("Session reset to clear any in-flight response.");
+                }
+            }
+            finally
+            {
+                escCts.Dispose();
+            }
         }
     }
 

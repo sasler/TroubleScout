@@ -1998,4 +1998,35 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     #endregion
+
+    #region Cancellation Tests
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldAcceptCancellationToken()
+    {
+        // Arrange – session is not initialized so it returns false immediately,
+        // but this validates the method signature accepts a CancellationToken.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act
+        var result = await _session.SendMessageAsync("test", cts.Token);
+
+        // Assert – returns false because session is not initialized (no hang)
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_WithDefaultToken_ShouldStillWork()
+    {
+        // Arrange – verify the default parameter works (no token passed)
+
+        // Act
+        var result = await _session.SendMessageAsync("test");
+
+        // Assert – returns false because session is not initialized
+        result.Should().BeFalse();
+    }
+
+    #endregion
 }

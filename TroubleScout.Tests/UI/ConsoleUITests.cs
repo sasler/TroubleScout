@@ -257,4 +257,49 @@ public class ConsoleUITests
     }
 
     #endregion
+
+    #region Cancellation UX Tests
+
+    [Fact]
+    public void ShowCancelled_ShouldRenderCancelledMessage()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowCancelled();
+        var output = AnsiConsole.ExportText();
+
+        // Assert
+        output.Should().Contain("Cancelled");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_SpinnerOutput_ShouldContainEscHint()
+    {
+        // Arrange – capture raw console output from the spinner
+        var originalOut = Console.Out;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+
+            // Allow a few spinner frames to render
+            Thread.Sleep(500);
+
+            indicator.Dispose();
+
+            var output = sw.ToString();
+
+            // Assert
+            output.Should().Contain("ESC to stop");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+    }
+
+    #endregion
 }

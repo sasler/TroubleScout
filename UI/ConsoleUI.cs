@@ -1460,6 +1460,16 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Display a cancellation message when the user presses ESC during an agent turn.
+    /// </summary>
+    public static void ShowCancelled()
+    {
+        EnsureLineBreak();
+        AnsiConsole.MarkupLine("[grey]⊘ Cancelled[/]");
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
     /// Context manager for the thinking indicator
     /// </summary>
     private class ThinkingContext : IDisposable
@@ -1551,7 +1561,7 @@ public class LiveThinkingIndicator : IDisposable
                         if (!_approvalInProgress)
                         {
                             // Clear the current line and write status
-                            Console.Write($"\r\x1b[K[cyan]{_currentStatus}{SpinnerFrames[_spinnerIndex]}[/]".Replace("[cyan]", "\u001b[36m").Replace("[/]", "\u001b[0m"));
+                            Console.Write($"\r\x1b[K\u001b[36m{_currentStatus}{SpinnerFrames[_spinnerIndex]}\u001b[0m  \u001b[90m(ESC to stop)\u001b[0m");
                             _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
                         }
                     }
