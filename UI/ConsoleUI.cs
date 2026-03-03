@@ -271,6 +271,7 @@ public static class ConsoleUI
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
         optionsTable.AddRow("[cyan]--disable-skill[/] [grey]<name>[/]", "Disable a specific skill by name (repeatable)");
         optionsTable.AddRow("[cyan]--byok-openai[/]", "Enable Bring-Your-Own-Key OpenAI-compatible mode");
+        optionsTable.AddRow("[cyan]--no-byok[/]", "Force GitHub Copilot provider (ignores saved BYOK provider selection)");
         optionsTable.AddRow("[cyan]--openai-base-url[/] [grey]<url>[/]", "Base URL for BYOK OpenAI-compatible endpoint");
         optionsTable.AddRow("[cyan]--openai-api-key[/] [grey]<key>[/]", "API key for BYOK OpenAI-compatible endpoint");
         optionsTable.AddRow("[cyan]-d[/], [cyan]--debug[/]", "Enable debug/diagnostic output");

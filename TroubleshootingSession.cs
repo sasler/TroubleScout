@@ -2017,6 +2017,9 @@ public class TroubleshootingSession : IAsyncDisposable
                      || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
                 {
                     SaveByokSettings(false, null, null);
+                    // Also update in-memory state so a subsequent /model switch doesn't re-save BYOK=true
+                    _useByokOpenAi = false;
+                    _byokOpenAiApiKey = null;
                     ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
                     ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
                     ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");

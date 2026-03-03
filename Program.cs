@@ -90,6 +90,10 @@ for (int i = 0; i < args.Length; i++)
             useByokOpenAi = true;
             byokProviderSpecifiedByCli = true;
             break;
+        case "--no-byok":
+            useByokOpenAi = false;
+            byokProviderSpecifiedByCli = true;
+            break;
         case "--openai-base-url" when i + 1 < args.Length:
             byokOpenAiBaseUrl = args[++i];
             byokBaseUrlSpecifiedByCli = true;
