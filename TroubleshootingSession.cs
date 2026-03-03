@@ -107,11 +107,28 @@ public class TroubleshootingSession : IAsyncDisposable
         "/quit"
     ];
 
-    private SystemMessageConfig CreateSystemMessage(string targetServer)
+    private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
     {
         var targetInfo = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? "the local machine (localhost)"
             : $"the remote server: {targetServer}";
+
+        var connectedSessionsBlock = "";
+        if (additionalServerNames is { Count: > 0 })
+        {
+            var sessionLines = new System.Text.StringBuilder();
+            sessionLines.AppendLine();
+            sessionLines.AppendLine("## Connected PSSessions");
+            sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Use run_powershell with sessionName to target each:");
+            sessionLines.AppendLine($"- Primary (default): {targetServer} — use run_powershell without sessionName");
+            foreach (var server in additionalServerNames)
+            {
+                sessionLines.AppendLine($"- {server} — use run_powershell(command, sessionName: \"{server}\")");
+            }
+            sessionLines.AppendLine();
+            sessionLines.AppendLine("When the user asks about multiple servers, gather data from ALL of them using run_powershell with the appropriate sessionName. Do NOT call connect_server for these — they are already connected.");
+            connectedSessionsBlock = sessionLines.ToString();
+        }
 
         return new SystemMessageConfig
         {
@@ -179,7 +196,7 @@ public class TroubleshootingSession : IAsyncDisposable
             - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
             - Use close_server_session(serverName) when done with a server to clean up resources.
             - Always indicate which server each piece of data comes from.
-
+            {connectedSessionsBlock}
             Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
             server you're working on.
@@ -359,7 +376,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     continue;
 
                 updateStatus?.Invoke($"Connecting to {additionalServer}...");
-                var (addSuccess, addError) = await ConnectAdditionalServerAsync(additionalServer);
+                var (addSuccess, addError) = await ConnectAdditionalServerAsync(additionalServer, skipApproval: true);
                 if (!addSuccess)
                 {
                     _configurationWarnings.Add($"Could not connect to additional server '{additionalServer}': {addError}");
@@ -368,6 +385,12 @@ public class TroubleshootingSession : IAsyncDisposable
                         ConsoleUI.ShowWarning($"Additional server '{additionalServer}' failed: {addError}");
                     }
                 }
+            }
+
+            // Regenerate system message to include successfully connected additional servers
+            if (_additionalExecutors.Count > 0)
+            {
+                _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
             }
 
             await WarnIfPowerShellVersionIsOldAsync();
@@ -2234,6 +2257,18 @@ public class TroubleshootingSession : IAsyncDisposable
                             });
                         }
 
+                        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+
+                        // Recreate the Copilot session so the updated system message (with connected sessions) takes effect
+                        if (_copilotClient != null && _copilotSession != null && additionalServers.Count > 0)
+                        {
+                            await _copilotSession.DisposeAsync();
+                            _copilotSession = null;
+                            await CreateCopilotSessionAsync(
+                                !string.IsNullOrWhiteSpace(_selectedModel) ? _selectedModel : _requestedModel,
+                                null);
+                        }
+
                         ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
                     }
                 }
@@ -3131,7 +3166,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.Dispose();
 
         _targetServer = newServer;
-        _systemMessageConfig = CreateSystemMessage(_targetServer);
+        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,

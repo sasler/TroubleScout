@@ -238,7 +238,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
 
         // Act
-        var config = method!.Invoke(_session, ["localhost"]);
+        var config = method!.Invoke(_session, ["localhost", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
@@ -1735,6 +1735,51 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
     }
 
+    [Fact]
+    public void CreateSystemMessage_WithAdditionalServers_ListsAllSessions()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var additionalServers = new List<string> { "SERVER-B", "SERVER-C" } as IReadOnlyCollection<string>;
+
+        // Act
+        var config = method!.Invoke(_session, ["SERVER-A", additionalServers]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert — should contain connected-sessions listing
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("Connected PSSessions", "system message should list all connected sessions");
+        content.Should().Contain("SERVER-A", "primary server should appear in session list");
+        content.Should().Contain("SERVER-B", "additional server should appear in session list");
+        content.Should().Contain("SERVER-C", "additional server should appear in session list");
+        content.Should().Contain("sessionName", "system message should explain sessionName parameter");
+        content.Should().Contain("Do NOT call connect_server for these", "system message should warn against reconnecting");
+    }
+
+    [Fact]
+    public void CreateSystemMessage_WithoutAdditionalServers_OmitsConnectedSessionsBlock()
+    {
+        // Arrange
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        // Act — no additional servers
+        var config = method!.Invoke(_session, ["SERVER-A", null]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        // Assert — should NOT contain the connected-sessions block
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().NotContain("Connected PSSessions",
+            "system message should not list sessions when there are no additional servers");
+        // But the multi-server section should still exist
+        content.Should().Contain("Multi-Server Sessions",
+            "the generic multi-server guidance should remain");
+    }
+
     #endregion
 
     #region Tool Visibility Tests (T4)
@@ -1809,7 +1854,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var config = method!.Invoke(_session, ["test-server"]);
+        var config = method!.Invoke(_session, ["test-server", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
@@ -1827,7 +1872,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        var config = method!.Invoke(_session, ["test-server"]);
+        var config = method!.Invoke(_session, ["test-server", null]);
         var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
 
         // Assert
