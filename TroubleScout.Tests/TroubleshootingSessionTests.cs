@@ -1,6 +1,8 @@
 using FluentAssertions;
 using GitHub.Copilot.SDK;
 using System.Reflection;
+using System.Globalization;
+using System.Text.Json;
 using TroubleScout;
 using TroubleScout.Services;
 using Xunit;
@@ -133,7 +135,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var entry = Activator.CreateInstance(entryType, "gpt-4.1", "GPT-4.1", byokValue)!;
 
         var method = typeof(TroubleshootingSession)
-            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic);
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType], null);
         method.Should().NotBeNull();
 
         // Act
@@ -141,6 +143,42 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert - same model but different source should return false
         result.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveInitialSessionModel_WhenRequestedModelMissing_ShouldReturnFirstAvailable()
+    {
+        // Arrange
+        await using var session = new TroubleshootingSession("localhost", "gpt-5");
+        var availableModels = new List<ModelInfo>
+        {
+            new() { Id = "gpt-4.1", Name = "GPT-4.1" },
+            new() { Id = "claude-sonnet-4.6", Name = "Claude Sonnet 4.6" }
+        };
+
+        // Act
+        var actual = InvokeResolveInitialSessionModel(session, availableModels);
+
+        // Assert
+        actual.Should().Be("gpt-4.1");
+    }
+
+    [Fact]
+    public async Task ResolveInitialSessionModel_WhenRequestedModelExists_ShouldReturnRequestedModel()
+    {
+        // Arrange
+        await using var session = new TroubleshootingSession("localhost", "claude-sonnet-4.6");
+        var availableModels = new List<ModelInfo>
+        {
+            new() { Id = "gpt-4.1", Name = "GPT-4.1" },
+            new() { Id = "claude-sonnet-4.6", Name = "Claude Sonnet 4.6" }
+        };
+
+        // Act
+        var actual = InvokeResolveInitialSessionModel(session, availableModels);
+
+        // Assert
+        actual.Should().Be("claude-sonnet-4.6");
     }
 
     [Fact]
@@ -1211,11 +1249,64 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void ParseByokModelsResponse_ShouldCapturePricingAndCapabilities()
+    {
+        // Arrange
+        const string json = """
+            {
+              "data": [
+                {
+                  "id": "gpt-5",
+                  "name": "GPT 5",
+                  "pricing": {
+                    "input": 1.25,
+                    "output": 10
+                  },
+                  "supported_reasoning_efforts": ["low", "medium", "high"],
+                  "default_reasoning_effort": "medium",
+                  "capabilities": {
+                    "supports": {
+                      "vision": true,
+                      "reasoning_effort": true
+                    },
+                    "limits": {
+                      "max_context_window_tokens": 400000,
+                      "max_prompt_tokens": 128000
+                    }
+                  }
+                }
+              ]
+            }
+            """;
+
+        using var document = JsonDocument.Parse(json);
+
+        // Act
+        var result = InvokeParseByokModelsResponse(document.RootElement);
+
+        // Assert
+        result.Models.Should().ContainSingle();
+        result.Models[0].Id.Should().Be("gpt-5");
+        result.Models[0].Capabilities.Should().NotBeNull();
+        result.Models[0].Capabilities!.Supports!.Vision.Should().BeTrue();
+        result.Models[0].Capabilities.Supports.ReasoningEffort.Should().BeTrue();
+        result.Models[0].Capabilities.Limits!.MaxContextWindowTokens.Should().Be(400000);
+        result.Models[0].Capabilities.Limits.MaxPromptTokens.Should().Be(128000);
+        result.Models[0].DefaultReasoningEffort.Should().Be("medium");
+        result.Models[0].SupportedReasoningEfforts.Should().Contain(["low", "medium", "high"]);
+        result.PricingByModelId.Should().ContainKey("gpt-5");
+        result.PricingByModelId["gpt-5"].DisplayText.Should().Be("$1.25/M in, $10/M out");
+    }
+
+    [Fact]
     public void GetModelSelectionEntries_DualSourceModel_ShouldProduceTwoEntries()
     {
         // Arrange
         var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
         var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
+        SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
+        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
         InvokeUpdateAvailableModels(_session, githubModels, byokModels);
 
         // Act
@@ -1234,6 +1325,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var githubModels = new List<ModelInfo>();
         var byokModels = new List<ModelInfo> { new() { Id = "custom-model", Name = "Custom Model" } };
+        SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
+        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
         InvokeUpdateAvailableModels(_session, githubModels, byokModels);
 
         // Act
@@ -1251,6 +1344,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var githubModels = new List<ModelInfo> { new() { Id = "gpt-4.1", Name = "GPT 4.1" } };
         var byokModels = new List<ModelInfo>();
+        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
         InvokeUpdateAvailableModels(_session, githubModels, byokModels);
 
         // Act
@@ -1260,6 +1354,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         entries.Should().ContainSingle();
         entries[0].ModelId.Should().Be("gpt-4.1");
         entries[0].Source.Should().Be("GitHub");
+    }
+
+    [Fact]
+    public void GetModelSelectionEntries_WhenGitHubDisconnected_ShouldHideGitHubEntries()
+    {
+        // Arrange
+        var githubModels = new List<ModelInfo> { new() { Id = "gpt-4.1", Name = "GPT 4.1" } };
+        InvokeUpdateAvailableModels(_session, githubModels, []);
+
+        // Act
+        var entries = InvokeGetModelSelectionEntries(_session);
+
+        // Assert
+        entries.Should().BeEmpty();
     }
 
     [Fact]
@@ -1302,64 +1410,83 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void GetStatusFields_WhenUsageIncludesContext_ShouldIncludeCombinedContextField()
+    {
+        // Arrange
+        SetPrivateField(_session, "_lastUsage", CreateUsageSnapshot(maxContextTokens: 100000, usedContextTokens: 25000));
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert
+        fields.Should().Contain(f => f.Label == "Context" && f.Value == "25,000/100,000 (25%)");
+    }
+
+    [Fact]
     public async Task ChangeModelAsync_WithByokEntry_ShouldSetByokProvider()
     {
-        // Arrange — set up dual-source model
-        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
-        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
-        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+        await ExecuteWithTemporarySettingsPathAsync(async _settingsPath =>
+        {
+            // Arrange — set up dual-source model
+            var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+            var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+            InvokeUpdateAvailableModels(_session, githubModels, byokModels);
 
-        SetPrivateField(_session, "_useByokOpenAi", false);
-        SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
-        SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
+            SetPrivateField(_session, "_useByokOpenAi", false);
+            SetPrivateField(_session, "_byokOpenAiApiKey", "sk-test");
+            SetPrivateField(_session, "_byokOpenAiBaseUrl", "https://api.openai.com/v1");
 
-        // Set a non-null _copilotClient to pass the guard check
-        var client = new CopilotClient(new CopilotClientOptions());
-        SetPrivateField(_session, "_copilotClient", client);
+            // Set a non-null _copilotClient to pass the guard check
+            var client = new CopilotClient(new CopilotClientOptions());
+            SetPrivateField(_session, "_copilotClient", client);
 
-        var entries = InvokeGetModelSelectionEntries(_session);
-        var byokEntry = entries.First(e => e.Source == "Byok");
+            var entries = InvokeGetModelSelectionEntries(_session);
+            var byokEntry = entries.First(e => e.Source == "Byok");
 
-        // Act — will fail at session creation but provider flag should be set first
-        _ = await InvokeChangeModelAsyncWithEntry(_session, byokEntry);
+            // Act — will fail at session creation or persist only to the temporary settings path
+            _ = await InvokeChangeModelAsyncWithEntry(_session, byokEntry);
 
-        // Assert — _useByokOpenAi should be set to true
-        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
-        useByok.Should().BeTrue();
+            // Assert — _useByokOpenAi should be set to true
+            var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+            useByok.Should().BeTrue();
 
-        // Clean up: detach client from session to avoid double-dispose issues
-        SetPrivateField(_session, "_copilotClient", null);
-        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+            // Clean up: detach client from session to avoid double-dispose issues
+            SetPrivateField(_session, "_copilotClient", null);
+            try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+        });
     }
 
     [Fact]
     public async Task ChangeModelAsync_WithGitHubEntry_ShouldClearByokProvider()
     {
-        // Arrange — set up dual-source model
-        var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
-        var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
-        InvokeUpdateAvailableModels(_session, githubModels, byokModels);
+        await ExecuteWithTemporarySettingsPathAsync(async _settingsPath =>
+        {
+            // Arrange — set up dual-source model
+            var githubModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+            var byokModels = new List<ModelInfo> { new() { Id = "gpt-5", Name = "GPT 5" } };
+            InvokeUpdateAvailableModels(_session, githubModels, byokModels);
 
-        SetPrivateField(_session, "_useByokOpenAi", true);
-        SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
+            SetPrivateField(_session, "_useByokOpenAi", true);
+            SetPrivateField(_session, "_isGitHubCopilotAuthenticated", true);
 
-        // Set a non-null _copilotClient to pass the guard check
-        var client = new CopilotClient(new CopilotClientOptions());
-        SetPrivateField(_session, "_copilotClient", client);
+            // Set a non-null _copilotClient to pass the guard check
+            var client = new CopilotClient(new CopilotClientOptions());
+            SetPrivateField(_session, "_copilotClient", client);
 
-        var entries = InvokeGetModelSelectionEntries(_session);
-        var githubEntry = entries.First(e => e.Source == "GitHub");
+            var entries = InvokeGetModelSelectionEntries(_session);
+            var githubEntry = entries.First(e => e.Source == "GitHub");
 
-        // Act — will fail at session creation but provider flag should be set first
-        _ = await InvokeChangeModelAsyncWithEntry(_session, githubEntry);
+            // Act — will fail at session creation or persist only to the temporary settings path
+            _ = await InvokeChangeModelAsyncWithEntry(_session, githubEntry);
 
-        // Assert — _useByokOpenAi should be set to false
-        var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
-        useByok.Should().BeFalse();
+            // Assert — _useByokOpenAi should be set to false
+            var useByok = GetPrivateField<bool>(_session, "_useByokOpenAi");
+            useByok.Should().BeFalse();
 
-        // Clean up: detach client from session to avoid double-dispose issues
-        SetPrivateField(_session, "_copilotClient", null);
-        try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+            // Clean up: detach client from session to avoid double-dispose issues
+            SetPrivateField(_session, "_copilotClient", null);
+            try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+        });
     }
 
     [Fact]
@@ -1447,7 +1574,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var result = await handler(new PermissionRequest { Kind = "file-read" }, new PermissionInvocation());
 
         // Assert
-        result.Kind.Should().Be("approved");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
     }
 
     [Fact]
@@ -1461,7 +1588,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var result = await handler(new PermissionRequest { Kind = "url-fetch" }, new PermissionInvocation());
 
         // Assert
-        result.Kind.Should().Be("approved");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
     }
 
     [Fact]
@@ -1475,7 +1602,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var result = await handler(new PermissionRequest { Kind = "custom-tool" }, new PermissionInvocation());
 
         // Assert
-        result.Kind.Should().Be("approved");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Read_ShouldApproveInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+
+        // Act
+        var result = await handler(new PermissionRequest { Kind = "read" }, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
     }
 
     [Fact]
@@ -1490,8 +1631,212 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var result = await handler(new PermissionRequest { Kind = "mcp" }, new PermissionInvocation());
 
         // Assert
-        result.Kind.Should().Be("approved");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
         await session.DisposeAsync();
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldPreferConcreteCommand()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Restart-Service Spooler"
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Restart-Service Spooler");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldUseFullCommandTextPropertyWhenAvailable()
+    {
+        // Arrange
+        var request = new PermissionRequest { Kind = "shell" };
+        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(request, "Clear-RecycleBin -Force");
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldTrimReflectedCommandPreview()
+    {
+        // Arrange
+        var request = new PermissionRequest { Kind = "shell" };
+        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(request, "Clear-RecycleBin -Force\r\n-Confirm:$false");
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force -Confirm:$false");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldReadNestedCommandPayload()
+    {
+        // Arrange
+        using var commandJson = JsonDocument.Parse("""
+            {
+              "commandLine": "Clear-RecycleBin -Force"
+            }
+            """);
+
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["payload"] = commandJson.RootElement.Clone()
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_McpRequest_ShouldIncludeServerAndTool()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "mcp",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["serverName"] = "context7",
+                ["toolName"] = "query-docs",
+                ["arguments"] = "{\"libraryId\":\"/github/copilot-sdk\"}"
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Contain("context7/query-docs");
+        actual.Should().Contain("\"libraryId\"");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_McpRequest_ShouldIgnoreEmptyArguments()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "mcp",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["serverName"] = "context7",
+                ["toolName"] = "query-docs",
+                ["arguments"] = "   "
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("context7/query-docs");
+    }
+
+    [Fact]
+    public void CreateSystemMessage_ShouldWarnAgainstBackgroundMonitoringClaims()
+    {
+        // Act
+        var config = InvokeCreateSystemMessage(_session, "localhost");
+
+        // Assert
+        config.Content.Should().Contain("Never say you will keep monitoring");
+    }
+
+    [Fact]
+    public void BuildPromptForExecutionSafety_ShouldMentionConfirmFalseForMutatingRequests()
+    {
+        // Act
+        var prompt = InvokeBuildPromptForExecutionSafety("please empty my trash");
+
+        // Assert
+        prompt.Should().Contain("-Confirm:$false");
+    }
+
+    [Fact]
+    public void AddContextUsageField_ShouldUseInvariantFormatting()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+        CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+        try
+        {
+            var fields = new List<(string Label, string Value)>();
+
+            InvokeAddContextUsageField(fields, 25000, 100000);
+
+            fields.Should().ContainSingle();
+            fields[0].Label.Should().Be("Context");
+            fields[0].Value.Should().Be("25,000/100,000 (25%)");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
+    }
+
+    [Fact]
+    public void GetModelRateLabel_ShouldUseInvariantFormatting()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+        CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+        try
+        {
+            var model = new ModelInfo
+            {
+                Id = "gpt-4.1",
+                Name = "GPT 4.1",
+                Billing = new ModelBilling { Multiplier = 0.25 }
+            };
+
+            var actual = InvokeGetModelRateLabel(_session, model, "GitHub");
+
+            actual.Should().Be("0.25x premium");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     #endregion
@@ -1503,6 +1848,63 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("BuildSessionConfig should be an internal/private method on TroubleshootingSession");
         return (SessionConfig)method!.Invoke(session, [model])!;
+    }
+
+    private static string InvokeDescribePermissionRequest(PermissionRequest request)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("DescribePermissionRequest", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("DescribePermissionRequest should exist on TroubleshootingSession");
+        return (string)method!.Invoke(null, [request])!;
+    }
+
+    private static SystemMessageConfig InvokeCreateSystemMessage(TroubleshootingSession session, string targetServer)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("CreateSystemMessage should exist on TroubleshootingSession");
+        return (SystemMessageConfig)method!.Invoke(session, [targetServer, new List<string>()])!;
+    }
+
+    private static string InvokeBuildPromptForExecutionSafety(string userMessage)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildPromptForExecutionSafety", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildPromptForExecutionSafety should exist on TroubleshootingSession");
+        return (string)method!.Invoke(null, [userMessage])!;
+    }
+
+    private static void InvokeAddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("AddContextUsageField", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("AddContextUsageField should exist on TroubleshootingSession");
+        method!.Invoke(null, [fields, usedContext, maxContext]);
+    }
+
+    private static string InvokeGetModelRateLabel(TroubleshootingSession session, ModelInfo model, string sourceName)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic);
+        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(type => type.Name == "ModelSource");
+        var source = Enum.Parse(sourceType, sourceName);
+
+        method.Should().NotBeNull("GetModelRateLabel should exist on TroubleshootingSession");
+        return (string)method!.Invoke(session, [model, source])!;
+    }
+
+    private static string? InvokeResolveInitialSessionModel(TroubleshootingSession session, IReadOnlyList<ModelInfo> availableModels)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ResolveInitialSessionModel", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("ResolveInitialSessionModel should exist on TroubleshootingSession");
+        return method!.Invoke(session, [availableModels]) as string;
     }
 
     private static void InvokeSaveModelAndProviderState(string model, bool useByokOpenAi)
@@ -1525,6 +1927,32 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             var tempSettingsPath = Path.Combine(tempDirectory, "settings.json");
             AppSettingsStore.SettingsPath = tempSettingsPath;
             testAction(tempSettingsPath);
+        }
+        finally
+        {
+            AppSettingsStore.SettingsPath = originalSettingsPath;
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for temp test files.
+            }
+        }
+    }
+
+    private static async Task ExecuteWithTemporarySettingsPathAsync(Func<string, Task> testAction)
+    {
+        var originalSettingsPath = AppSettingsStore.SettingsPath;
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"troublescout-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+
+        try
+        {
+            var tempSettingsPath = Path.Combine(tempDirectory, "settings.json");
+            AppSettingsStore.SettingsPath = tempSettingsPath;
+            await testAction(tempSettingsPath);
         }
         finally
         {
@@ -1624,7 +2052,38 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         return await task;
     }
 
+    private static (List<ModelInfo> Models, Dictionary<string, TestByokPriceInfo> PricingByModelId) InvokeParseByokModelsResponse(JsonElement rootElement)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        var result = method!.Invoke(null, [rootElement]);
+        result.Should().NotBeNull();
+
+        var resultType = result!.GetType();
+        var models = (List<ModelInfo>)resultType.GetProperty("Models")!.GetValue(result)!;
+        var pricingObject = resultType.GetProperty("PricingByModelId")!.GetValue(result)!;
+
+        var pricing = new Dictionary<string, TestByokPriceInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in (System.Collections.IEnumerable)pricingObject)
+        {
+            var entryType = entry.GetType();
+            var key = (string)entryType.GetProperty("Key")!.GetValue(entry)!;
+            var value = entryType.GetProperty("Value")!.GetValue(entry)!;
+            var valueType = value.GetType();
+
+            pricing[key] = new TestByokPriceInfo(
+                (decimal?)valueType.GetProperty("InputPricePerMillionTokens")!.GetValue(value),
+                (decimal?)valueType.GetProperty("OutputPricePerMillionTokens")!.GetValue(value),
+                (string?)valueType.GetProperty("DisplayText")!.GetValue(value));
+        }
+
+        return (models, pricing);
+    }
+
     private record TestModelSelectionEntry(string ModelId, string DisplayName, string Source);
+    private record TestByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
 
     private static List<TestModelSelectionEntry> InvokeGetModelSelectionEntries(TroubleshootingSession session)
     {
@@ -1669,6 +2128,31 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull("ChangeModelAsync(ModelSelectionEntry) overload should exist");
         var task = (Task<bool>)method!.Invoke(session, [entry, null])!;
         return await task;
+    }
+
+    private static object CreateUsageSnapshot(
+        int? promptTokens = null,
+        int? completionTokens = null,
+        int? totalTokens = null,
+        int? inputTokens = null,
+        int? outputTokens = null,
+        int? maxContextTokens = null,
+        int? usedContextTokens = null,
+        int? freeContextTokens = null)
+    {
+        var snapshotType = typeof(TroubleshootingSession).GetNestedType("CopilotUsageSnapshot", BindingFlags.NonPublic);
+        snapshotType.Should().NotBeNull();
+
+        return Activator.CreateInstance(
+            snapshotType!,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            inputTokens,
+            outputTokens,
+            maxContextTokens,
+            usedContextTokens,
+            freeContextTokens)!;
     }
 
     #region Multi-PSSession / AllTargetServers Tests
@@ -1843,6 +2327,35 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         fields.Should().NotContain(f => f.Label == "Tools used");
+    }
+
+    [Fact]
+    public void GetStatusFields_ShouldIncludeSectionSeparators()
+    {
+        // Arrange
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert – at least the Provider section separator should be present
+        fields.Should().Contain(f => f.Label == TroubleScout.UI.ConsoleUI.StatusSectionSeparator && f.Value == "Provider");
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenUsagePresent_ShouldNotIncludeRedundantContextFields()
+    {
+        // Arrange
+        SetPrivateField(_session, "_lastUsage", CreateUsageSnapshot(maxContextTokens: 100000, usedContextTokens: 25000));
+
+        // Act
+        var fields = _session.GetStatusFields();
+
+        // Assert – combined "Context" field present, redundant individual fields removed
+        fields.Should().Contain(f => f.Label == "Context");
+        fields.Should().NotContain(f => f.Label == "Context max");
+        fields.Should().NotContain(f => f.Label == "Context used");
+        fields.Should().NotContain(f => f.Label == "Context free");
     }
 
     [Fact]

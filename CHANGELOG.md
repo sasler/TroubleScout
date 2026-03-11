@@ -2,6 +2,25 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.6.0] - 2026-03-11
+
+### ✨ Features
+
+- ✨ **GitHub.Copilot.SDK upgraded to v0.1.32** — picks up the newer typed permission-result API and CLI compatibility improvements while keeping the existing event-streaming architecture.
+- 🤖 **Richer model metadata and picker UX** — `/model` now shows provider-specific entries only for connected providers, restores GitHub premium multipliers, shows BYOK pricing when provider metadata includes it, supports ESC to keep the current model, and shows a clearer post-selection model summary.
+- 📊 **More informative status view** — `/status` now groups provider, usage, and capability details more clearly and keeps the combined context-used/max view prominent.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Fix Safe-mode approval dialog details** — permission prompts once again show the actual requested shell command or MCP tool details instead of a generic placeholder.
+- 🐛 **Fix reasoning/output ordering** — reasoning is now kept strictly ahead of the assistant response, with a visible blank line separator and no late reasoning tokens after the response starts.
+- 🐛 **Fix startup model fallback after SDK upgrade** — TroubleScout now resolves a verified available model at startup instead of depending on an invalid default model selection.
+- 🐛 **Fix test settings leakage** — model-switch tests now use isolated settings storage so they cannot overwrite the real user profile state while validating provider switching.
+
+### 📝 Documentation & UX
+
+- 📝 Update README and agent guidance for SDK `0.1.32`, richer `/model` metadata, BYOK model metadata handling, and the refreshed status display.
+
 ## [v1.5.0] - 2026-03-03
 
 ### ✨ Features

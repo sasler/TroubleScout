@@ -26,7 +26,15 @@ public class TroubleshootingSession : IAsyncDisposable
         Byok = 2
     }
 
-    internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSource Source);
+    internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSource Source)
+    {
+        public string ProviderLabel { get; init; } = string.Empty;
+        public string RateLabel { get; init; } = "n/a";
+        public string DetailSummary { get; init; } = string.Empty;
+        public bool IsCurrent { get; init; }
+    }
+    internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
+    private sealed record ByokModelDiscoveryResult(List<ModelInfo> Models, Dictionary<string, ByokPriceInfo> PricingByModelId);
 
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
@@ -49,6 +57,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _copilotVersion;
     private List<ModelInfo> _availableModels = new();
     private readonly Dictionary<string, ModelSource> _modelSources = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ByokPriceInfo> _byokPricing = new(StringComparer.OrdinalIgnoreCase);
     private readonly string? _mcpConfigPath;
     private readonly List<string> _skillDirectories;
     private readonly List<string> _disabledSkills;
@@ -186,7 +195,9 @@ public class TroubleshootingSession : IAsyncDisposable
             - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
             - In YOLO mode, remediation commands can execute without confirmation
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+            - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
             - Never claim a command was executed unless run_powershell returned execution output
+            - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
             - If no tool was executed, clearly state that no command has been run yet
             - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
             - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
@@ -525,20 +536,21 @@ public class TroubleshootingSession : IAsyncDisposable
                 return false;
             }
 
-            string? effectiveModel = _requestedModel;
-            if (!string.IsNullOrWhiteSpace(effectiveModel) && _availableModels.All(m => m.Id != effectiveModel))
+            var effectiveModel = ResolveInitialSessionModel(_availableModels);
+            if (!string.IsNullOrWhiteSpace(_requestedModel)
+                && !string.Equals(effectiveModel, _requestedModel, StringComparison.OrdinalIgnoreCase)
+                && _availableModels.All(m => m.Id != _requestedModel))
             {
                 if (_modelExplicitlyRequested)
                 {
                     // User explicitly passed --model: fail with a clear error.
-                    ConsoleUI.ShowError("Invalid Model", $"The requested model '{effectiveModel}' is not available.");
+                    ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available.");
                     return false;
                 }
 
                 // Model from saved settings is not available (e.g. a BYOK-only model after switching to GitHub).
-                // Warn and fall back to the SDK default rather than refusing to start.
-                ConsoleUI.ShowWarning($"Saved model '{effectiveModel}' is not available with the current provider. Using the default model.\nUse /model to select a different one.");
-                effectiveModel = null;
+                // Warn and fall back to the first verified available model rather than trusting the SDK default.
+                ConsoleUI.ShowWarning($"Saved model '{_requestedModel}' is not available with the current provider. Using '{effectiveModel}'.\nUse /model to select a different one.");
             }
 
             if (!await CreateCopilotSessionAsync(effectiveModel, updateStatus))
@@ -586,6 +598,17 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
+    private string? ResolveInitialSessionModel(IReadOnlyList<ModelInfo> availableModels)
+    {
+        if (!string.IsNullOrWhiteSpace(_requestedModel)
+            && availableModels.Any(model => model.Id.Equals(_requestedModel, StringComparison.OrdinalIgnoreCase)))
+        {
+            return _requestedModel;
+        }
+
+        return availableModels.FirstOrDefault()?.Id;
+    }
+
     /// <summary>
     /// Change the AI model by creating a new session
     /// </summary>
@@ -618,7 +641,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (targetSource == ModelSource.Byok)
         {
-            if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+            if (!IsByokConfigured())
             {
                 ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
                 return false;
@@ -683,7 +706,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (entry.Source == ModelSource.Byok)
         {
-            if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
+            if (!IsByokConfigured())
             {
                 ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
                 return false;
@@ -1203,7 +1226,11 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 Id = model.Id,
                 Name = model.Name,
-                Billing = model.Billing
+                Billing = model.Billing,
+                Capabilities = model.Capabilities,
+                Policy = model.Policy,
+                SupportedReasoningEfforts = model.SupportedReasoningEfforts,
+                DefaultReasoningEffort = model.DefaultReasoningEffort
             };
         }
 
@@ -1215,12 +1242,26 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (!byId.TryGetValue(model.Id, out var existingModel))
             {
-                byId[model.Id] = new ModelInfo
+                var clonedModel = new ModelInfo
                 {
                     Id = model.Id,
                     Name = model.Name,
-                    Billing = model.Billing
+                    Billing = model.Billing,
+                    Policy = model.Policy,
+                    DefaultReasoningEffort = model.DefaultReasoningEffort
                 };
+
+                if (model.Capabilities != null)
+                {
+                    clonedModel.Capabilities = model.Capabilities;
+                }
+
+                if (model.SupportedReasoningEfforts != null)
+                {
+                    clonedModel.SupportedReasoningEfforts = model.SupportedReasoningEfforts;
+                }
+
+                byId[model.Id] = clonedModel;
             }
             else
             {
@@ -1232,6 +1273,28 @@ public class TroubleshootingSession : IAsyncDisposable
                 if (string.IsNullOrWhiteSpace(existingModel.Name) && !string.IsNullOrWhiteSpace(model.Name))
                 {
                     existingModel.Name = model.Name;
+                }
+
+                if (existingModel.Capabilities == null && model.Capabilities != null)
+                {
+                    existingModel.Capabilities = model.Capabilities;
+                }
+
+                if (existingModel.Policy == null && model.Policy != null)
+                {
+                    existingModel.Policy = model.Policy;
+                }
+
+                if ((existingModel.SupportedReasoningEfforts == null || existingModel.SupportedReasoningEfforts.Count == 0)
+                    && model.SupportedReasoningEfforts is { Count: > 0 })
+                {
+                    existingModel.SupportedReasoningEfforts = model.SupportedReasoningEfforts;
+                }
+
+                if (string.IsNullOrWhiteSpace(existingModel.DefaultReasoningEffort)
+                    && !string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
+                {
+                    existingModel.DefaultReasoningEffort = model.DefaultReasoningEffort;
                 }
             }
         }
@@ -1269,20 +1332,45 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if ((source & ModelSource.GitHub) != 0 && (source & ModelSource.Byok) != 0)
             {
-                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
-                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+                if (_isGitHubCopilotAuthenticated)
+                {
+                    entries.Add(BuildModelSelectionEntry(model, displayBase, ModelSource.GitHub));
+                }
+
+                if (IsByokConfigured())
+                {
+                    entries.Add(BuildModelSelectionEntry(model, displayBase, ModelSource.Byok));
+                }
             }
             else if ((source & ModelSource.GitHub) != 0)
             {
-                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (GitHub Copilot)", ModelSource.GitHub));
+                if (_isGitHubCopilotAuthenticated)
+                {
+                    entries.Add(BuildModelSelectionEntry(model, displayBase, ModelSource.GitHub));
+                }
             }
             else if ((source & ModelSource.Byok) != 0)
             {
-                entries.Add(new ModelSelectionEntry(model.Id, $"{displayBase} (BYOK / OpenAI)", ModelSource.Byok));
+                if (IsByokConfigured())
+                {
+                    entries.Add(BuildModelSelectionEntry(model, displayBase, ModelSource.Byok));
+                }
             }
         }
 
         return entries;
+    }
+
+    private ModelSelectionEntry BuildModelSelectionEntry(ModelInfo model, string displayBase, ModelSource source)
+    {
+        var providerLabel = source == ModelSource.Byok ? "BYOK / OpenAI" : "GitHub Copilot";
+        return new ModelSelectionEntry(model.Id, $"{displayBase} ({providerLabel})", source)
+        {
+            ProviderLabel = providerLabel,
+            RateLabel = GetModelRateLabel(model, source),
+            DetailSummary = BuildModelDetailSummary(model, source),
+            IsCurrent = IsCurrentModelAndSource(model.Id, source)
+        };
     }
 
     private async Task RefreshAvailableModelsAsync()
@@ -1319,6 +1407,159 @@ public class TroubleshootingSession : IAsyncDisposable
         });
 
         return string.Join(' ', formattedTokens);
+    }
+
+    private bool IsByokConfigured()
+    {
+        return !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl);
+    }
+
+    private string GetModelRateLabel(ModelInfo model, ModelSource source)
+    {
+        if (source == ModelSource.Byok
+            && _byokPricing.TryGetValue(model.Id, out var byokPrice)
+            && !string.IsNullOrWhiteSpace(byokPrice.DisplayText))
+        {
+            return byokPrice.DisplayText!;
+        }
+
+        if (model.Billing != null)
+        {
+            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
+        }
+
+        return "n/a";
+    }
+
+    private static string BuildModelDetailSummary(ModelInfo model, ModelSource source)
+    {
+        var details = new List<string>();
+
+        var contextWindow = model.Capabilities?.Limits?.MaxContextWindowTokens;
+        if (contextWindow is > 0)
+        {
+            details.Add($"context {FormatCompactTokenCount(contextWindow.Value)}");
+        }
+
+        var maxPrompt = model.Capabilities?.Limits?.MaxPromptTokens;
+        if (maxPrompt is > 0)
+        {
+            details.Add($"prompt {FormatCompactTokenCount(maxPrompt.Value)}");
+        }
+
+        if (model.Capabilities?.Supports?.Vision == true)
+        {
+            details.Add("vision");
+        }
+
+        if (model.Capabilities?.Supports?.ReasoningEffort == true)
+        {
+            details.Add("reasoning");
+        }
+
+        if (!string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
+        {
+            details.Add($"default reasoning {model.DefaultReasoningEffort}");
+        }
+
+        if (source == ModelSource.GitHub && model.Billing?.Multiplier > 0)
+        {
+            details.Add($"multiplier {model.Billing.Multiplier:0.##}x");
+        }
+
+        return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
+    }
+
+    private static string FormatCompactTokenCount(int value)
+    {
+        if (value >= 1_000_000)
+        {
+            return $"{value / 1_000_000d:0.#}M";
+        }
+
+        if (value >= 1_000)
+        {
+            return $"{value / 1_000d:0.#}k";
+        }
+
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private ModelInfo? GetSelectedModelInfo()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedModel))
+        {
+            return null;
+        }
+
+        var selected = _availableModels.FirstOrDefault(model => model.Id.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase));
+        if (selected != null)
+        {
+            return selected;
+        }
+
+        return _availableModels.FirstOrDefault(model => model.Name.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private IReadOnlyList<(string Label, string Value)> GetSelectedModelDetails()
+    {
+        var model = GetSelectedModelInfo();
+        if (model == null)
+        {
+            return [];
+        }
+
+        var source = _useByokOpenAi ? ModelSource.Byok : ModelSource.GitHub;
+        var details = new List<(string Label, string Value)>
+        {
+            ("Provider", source == ModelSource.Byok ? "BYOK / OpenAI" : "GitHub Copilot")
+        };
+
+        var rateLabel = GetModelRateLabel(model, source);
+        if (!rateLabel.Equals("n/a", StringComparison.OrdinalIgnoreCase))
+        {
+            details.Add((source == ModelSource.Byok ? "Pricing" : "Premium rate", rateLabel));
+        }
+
+        var contextWindow = model.Capabilities?.Limits?.MaxContextWindowTokens;
+        if (contextWindow is > 0)
+        {
+            details.Add(("Context window", FormatCompactTokenCount(contextWindow.Value)));
+        }
+
+        var maxPrompt = model.Capabilities?.Limits?.MaxPromptTokens;
+        if (maxPrompt is > 0)
+        {
+            details.Add(("Max prompt", FormatCompactTokenCount(maxPrompt.Value)));
+        }
+
+        var capabilities = new List<string>();
+        if (model.Capabilities?.Supports?.Vision == true)
+        {
+            capabilities.Add("vision");
+        }
+
+        if (model.Capabilities?.Supports?.ReasoningEffort == true)
+        {
+            capabilities.Add("reasoning");
+        }
+
+        if (capabilities.Count > 0)
+        {
+            details.Add(("Capabilities", string.Join(", ", capabilities)));
+        }
+
+        if (model.SupportedReasoningEfforts is { Count: > 0 })
+        {
+            details.Add(("Reasoning efforts", string.Join(", ", model.SupportedReasoningEfforts)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
+        {
+            details.Add(("Default reasoning", model.DefaultReasoningEffort));
+        }
+
+        return details;
     }
 
     private async Task<IReadOnlyList<string>> TryGetCliModelIdsAsync(string cliPath)
@@ -1681,6 +1922,9 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     
                     case AssistantReasoningDeltaEvent reasoningDelta:
+                        if (hasStartedStreaming)
+                            break;
+
                         var reasoningDeltaText = reasoningDelta.Data?.DeltaContent ?? "";
                         if (!string.IsNullOrEmpty(reasoningDeltaText))
                         {
@@ -1695,6 +1939,9 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
 
                     case AssistantReasoningEvent reasoning:
+                        if (hasStartedStreaming)
+                            break;
+
                         // Fallback for non-streaming reasoning (full content)
                         var reasoningText = reasoning.Data?.Content ?? "";
                         if (!string.IsNullOrEmpty(reasoningText))
@@ -1766,7 +2013,10 @@ public class TroubleshootingSession : IAsyncDisposable
                         if (!hasStartedStreaming)
                         {
                             hasStartedStreaming = true;
-                            if (hasStartedReasoning) ConsoleUI.EndReasoningBlock();
+                            if (hasStartedReasoning)
+                            {
+                                ConsoleUI.EndReasoningBlock();
+                            }
                             thinkingIndicator.StopForResponse();
                             ConsoleUI.StartAIResponse();
                         }
@@ -1786,6 +2036,10 @@ public class TroubleshootingSession : IAsyncDisposable
                         // Final message received (non-streaming fallback)
                         if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
+                            if (hasStartedReasoning)
+                            {
+                                ConsoleUI.EndReasoningBlock();
+                            }
                             thinkingIndicator.StopForResponse();
                             ConsoleUI.StartAIResponse();
                             ConsoleUI.WriteAIResponse(msg.Data.Content);
@@ -1885,6 +2139,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (MutatingIntentRegex.IsMatch(userMessage))
         {
             promptBuilder.Append("\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. ");
+            promptBuilder.Append("For PowerShell cmdlets that support confirmation prompts, include -Confirm:$false when appropriate. ");
             promptBuilder.Append("Do not claim any action was executed unless tool output confirms execution.");
         }
 
@@ -2162,7 +2417,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 if (byokReady)
                 {
-                    ConsoleUI.ShowSuccess($"BYOK enabled with model: {SelectedModel}");
+                    ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
                 }
 
                 continue;
@@ -2239,12 +2494,25 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 if (_availableModels.Count == 0)
                 {
+                    ConsoleUI.ShowWarning("No models are available yet. Authenticate GitHub Copilot or configure BYOK, then try /model again.");
                     continue;
                 }
 
                 var selectionEntries = GetModelSelectionEntries();
+                if (selectionEntries.Count == 0)
+                {
+                    ConsoleUI.ShowWarning("No connected provider models are available. Authenticate GitHub Copilot or configure BYOK first.");
+                    continue;
+                }
+
                 var selectedEntry = ConsoleUI.PromptModelSelection(SelectedModel, selectionEntries);
-                if (selectedEntry != null && !IsCurrentModelAndSource(selectedEntry))
+                if (selectedEntry == null)
+                {
+                    ConsoleUI.ShowInfo($"Keeping current model: {SelectedModel}");
+                    continue;
+                }
+
+                if (!IsCurrentModelAndSource(selectedEntry))
                 {
                     var displayName = selectedEntry.DisplayName;
                     var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
@@ -2254,7 +2522,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     
                     if (success)
                     {
-                        ConsoleUI.ShowSuccess($"Now using: {SelectedModel} via {ActiveProviderDisplayName}");
+                        ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
                     }
                 }
                 continue;
@@ -2387,13 +2655,16 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private bool IsCurrentModelAndSource(ModelSelectionEntry entry)
+        => IsCurrentModelAndSource(entry.ModelId, entry.Source);
+
+    private bool IsCurrentModelAndSource(string modelId, ModelSource source)
     {
-        if (!IsCurrentModel(entry.ModelId))
+        if (!IsCurrentModel(modelId))
             return false;
 
         // Same model — check if provider also matches
         var currentSource = _useByokOpenAi ? ModelSource.Byok : ModelSource.GitHub;
-        return currentSource == entry.Source;
+        return currentSource == source;
     }
 
     private static string GetFirstInputToken(string input)
@@ -2478,6 +2749,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private async Task<List<ModelInfo>> TryGetByokProviderModelsAsync()
     {
+        _byokPricing.Clear();
+
         if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
         {
             return [];
@@ -2506,38 +2779,15 @@ public class TroubleshootingSession : IAsyncDisposable
                 await using var stream = await response.Content.ReadAsStreamAsync();
                 using var document = await JsonDocument.ParseAsync(stream);
 
-                if (!document.RootElement.TryGetProperty("data", out var dataElement)
-                    || dataElement.ValueKind != JsonValueKind.Array)
+                var discovery = ParseByokModelsResponse(document.RootElement);
+                if (discovery.Models.Count > 0)
                 {
-                    continue;
-                }
-
-                var discovered = new List<ModelInfo>();
-                foreach (var modelElement in dataElement.EnumerateArray())
-                {
-                    if (!modelElement.TryGetProperty("id", out var idElement)
-                        || idElement.ValueKind != JsonValueKind.String)
+                    foreach (var entry in discovery.PricingByModelId)
                     {
-                        continue;
+                        _byokPricing[entry.Key] = entry.Value;
                     }
 
-                    var modelId = idElement.GetString();
-                    if (string.IsNullOrWhiteSpace(modelId)
-                        || discovered.Any(existing => existing.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        continue;
-                    }
-
-                    discovered.Add(new ModelInfo
-                    {
-                        Id = modelId,
-                        Name = ToModelDisplayName(modelId)
-                    });
-                }
-
-                if (discovered.Count > 0)
-                {
-                    return discovered;
+                    return discovery.Models;
                 }
             }
             catch
@@ -2547,6 +2797,78 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return [];
+    }
+
+    private static ByokModelDiscoveryResult ParseByokModelsResponse(JsonElement rootElement)
+    {
+        if (!TryGetJsonPropertyIgnoreCase(rootElement, "data", out var dataElement)
+            || dataElement.ValueKind != JsonValueKind.Array)
+        {
+            return new ByokModelDiscoveryResult([], new(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var discovered = new List<ModelInfo>();
+        var pricing = new Dictionary<string, ByokPriceInfo>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var modelElement in dataElement.EnumerateArray())
+        {
+            var modelId = ReadJsonStringProperty(modelElement, "id");
+            if (string.IsNullOrWhiteSpace(modelId)
+                || discovered.Any(existing => existing.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var model = new ModelInfo
+            {
+                Id = modelId,
+                Name = ReadJsonStringProperty(modelElement, "name", "display_name", "displayName") ?? ToModelDisplayName(modelId)
+            };
+
+            var capabilities = BuildByokCapabilities(modelElement);
+            if (capabilities != null)
+            {
+                model.Capabilities = capabilities;
+            }
+
+            var billingMultiplier = ReadJsonDoubleProperty(modelElement, "multiplier");
+            if (!billingMultiplier.HasValue
+                && TryGetJsonPropertyIgnoreCase(modelElement, "billing", out var billingElement)
+                && billingElement.ValueKind == JsonValueKind.Object)
+            {
+                billingMultiplier = ReadJsonDoubleProperty(billingElement, "multiplier");
+            }
+
+            if (billingMultiplier.HasValue)
+            {
+                model.Billing = new ModelBilling
+                {
+                    Multiplier = billingMultiplier.Value
+                };
+            }
+
+            var supportedReasoningEfforts = ReadJsonStringArrayProperty(modelElement, "supported_reasoning_efforts", "supportedReasoningEfforts");
+            if (supportedReasoningEfforts.Count > 0)
+            {
+                model.SupportedReasoningEfforts = supportedReasoningEfforts;
+            }
+
+            var defaultReasoningEffort = ReadJsonStringProperty(modelElement, "default_reasoning_effort", "defaultReasoningEffort");
+            if (!string.IsNullOrWhiteSpace(defaultReasoningEffort))
+            {
+                model.DefaultReasoningEffort = defaultReasoningEffort;
+            }
+
+            var priceInfo = ExtractByokPriceInfo(modelElement);
+            if (priceInfo != null)
+            {
+                pricing[modelId] = priceInfo;
+            }
+
+            discovered.Add(model);
+        }
+
+        return new ByokModelDiscoveryResult(discovered, pricing);
     }
 
     private async Task<bool> ConfigureByokOpenAiAsync(string baseUrl, string apiKey, string? model, Action<string>? updateStatus)
@@ -3115,7 +3437,8 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 Type = "openai",
                 BaseUrl = _byokOpenAiBaseUrl,
-                ApiKey = _byokOpenAiApiKey
+                ApiKey = _byokOpenAiApiKey,
+                WireApi = GetByokWireApi(model)
             };
         }
 
@@ -3154,6 +3477,13 @@ public class TroubleshootingSession : IAsyncDisposable
         return true;
     }
 
+    private static string? GetByokWireApi(string? model)
+    {
+        return !string.IsNullOrWhiteSpace(model) && model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
+            ? "responses"
+            : null;
+    }
+
     internal SessionConfig BuildSessionConfig(string? model)
     {
         return new SessionConfig
@@ -3166,31 +3496,317 @@ public class TroubleshootingSession : IAsyncDisposable
             OnPermissionRequest = (req, inv) =>
             {
                 // Read-only operations and our own custom tools are always auto-approved
-                var kind = req.Kind ?? string.Empty;
-                if (kind is "file-read" or "url-fetch" or "custom-tool")
-                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+                var kind = NormalizePermissionKind(req.Kind);
+                if (kind is "read" or "url" or "custom-tool")
+                {
+                    return Task.FromResult(new PermissionRequestResult
+                    {
+                        Kind = PermissionRequestResultKind.Approved
+                    });
+                }
 
                 // In YOLO mode, approve everything (read live value so /mode changes take effect)
                 if (_executionMode == ExecutionMode.Yolo)
-                    return Task.FromResult(new PermissionRequestResult { Kind = "approved" });
+                {
+                    return Task.FromResult(new PermissionRequestResult
+                    {
+                        Kind = PermissionRequestResultKind.Approved
+                    });
+                }
 
                 // In Safe mode: MCP, shell, file-write require user approval
-                var description = kind switch
-                {
-                    "mcp"        => "An MCP tool is requesting permission to execute",
-                    "shell"      => "An external shell command is requesting permission",
-                    "file-write" => "A tool is requesting permission to write files",
-                    _            => $"A tool operation ({Markup.Escape(kind)}) is requesting permission"
-                };
+                var description = DescribePermissionRequest(req);
                 var approved = ConsoleUI.PromptCommandApproval(
                     description,
-                    $"Allow this in Safe mode? (kind: {Markup.Escape(kind)})");
+                    BuildPermissionPromptReason(kind));
                 return Task.FromResult(new PermissionRequestResult
                 {
-                    Kind = approved ? "approved" : "denied-interactively-by-user"
+                    Kind = approved
+                        ? PermissionRequestResultKind.Approved
+                        : PermissionRequestResultKind.DeniedInteractivelyByUser
                 });
             }
         };
+    }
+
+    private static string NormalizePermissionKind(string? kind)
+    {
+        var normalized = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "file-read" => "read",
+            "file-write" => "write",
+            "url-fetch" => "url",
+            _ => normalized
+        };
+    }
+
+    private static string DescribePermissionRequest(PermissionRequest request)
+    {
+        var kind = NormalizePermissionKind(request.Kind);
+        var extensionData = request.ExtensionData;
+
+        switch (kind)
+        {
+            case "shell":
+            {
+                var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
+                    ?? ReadPermissionExtensionString(extensionData,
+                        "fullCommandText",
+                        "command",
+                        "commandLine",
+                        "commandText",
+                        "cmd",
+                        "shellCommand",
+                        "rawCommand",
+                        "text")
+                    ?? ReadNestedPermissionExtensionString(extensionData,
+                        "command",
+                        "payload",
+                        "input",
+                        "request",
+                        "details");
+                return !string.IsNullOrWhiteSpace(command)
+                    ? TrimPermissionPreview(command)
+                    : "Shell command";
+            }
+            case "mcp":
+            {
+                var serverName = ReadPermissionExtensionString(extensionData, "mcpServerName", "serverName", "server", "name");
+                var toolName = ReadPermissionExtensionString(extensionData, "toolName", "tool", "method");
+                var arguments = ReadPermissionExtensionString(extensionData, "arguments", "params", "input");
+
+                var target = string.IsNullOrWhiteSpace(serverName)
+                    ? toolName
+                    : string.IsNullOrWhiteSpace(toolName)
+                        ? serverName
+                        : $"{serverName}/{toolName}";
+
+                if (!string.IsNullOrWhiteSpace(target) && !string.IsNullOrWhiteSpace(arguments))
+                {
+                    return TrimPermissionPreview($"{target} {arguments}");
+                }
+
+                return !string.IsNullOrWhiteSpace(target)
+                    ? target
+                    : "MCP tool invocation";
+            }
+            case "write":
+            {
+                var path = ReadPermissionExtensionString(extensionData, "path", "filePath", "target", "uri");
+                return !string.IsNullOrWhiteSpace(path)
+                    ? $"Write file: {path}"
+                    : "File write";
+            }
+            case "read":
+            {
+                var path = ReadPermissionExtensionString(extensionData, "path", "filePath", "target", "uri");
+                return !string.IsNullOrWhiteSpace(path)
+                    ? $"Read file: {path}"
+                    : "File read";
+            }
+            case "url":
+            {
+                var url = ReadPermissionExtensionString(extensionData, "url", "uri");
+                return !string.IsNullOrWhiteSpace(url)
+                    ? $"Fetch URL: {url}"
+                    : "URL fetch";
+            }
+            case "custom-tool":
+            {
+                var toolName = ReadPermissionExtensionString(extensionData, "toolName", "tool", "name");
+                var arguments = ReadPermissionExtensionString(extensionData, "arguments", "params", "input");
+
+                if (!string.IsNullOrWhiteSpace(toolName) && !string.IsNullOrWhiteSpace(arguments))
+                {
+                    return TrimPermissionPreview($"{toolName} {arguments}");
+                }
+
+                return !string.IsNullOrWhiteSpace(toolName)
+                    ? toolName
+                    : "Custom tool invocation";
+            }
+            default:
+            {
+                var preview = ReadPermissionExtensionString(extensionData, "command", "toolName", "path", "url", "uri");
+                return !string.IsNullOrWhiteSpace(preview)
+                    ? TrimPermissionPreview(preview)
+                    : $"Tool operation ({kind})";
+            }
+        }
+    }
+
+    private static string BuildPermissionPromptReason(string kind)
+    {
+        return kind switch
+        {
+            "mcp" => "Allow this MCP tool invocation in Safe mode?",
+            "shell" => "Allow this shell command in Safe mode?",
+            "write" => "Allow this file write in Safe mode?",
+            "read" => "Allow this file read?",
+            "url" => "Allow this URL fetch?",
+            "custom-tool" => "Allow this custom tool invocation?",
+            _ => $"Allow this tool operation in Safe mode? (kind: {Markup.Escape(kind)})"
+        };
+    }
+
+    private static string? ReadPermissionExtensionString(
+        IReadOnlyDictionary<string, object>? extensionData,
+        params string[] candidateKeys)
+    {
+        if (extensionData == null || extensionData.Count == 0)
+            return null;
+
+        foreach (var candidateKey in candidateKeys)
+        {
+            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
+                continue;
+
+            var text = ConvertPermissionExtensionValueToString(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return TrimPermissionPreview(text);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadNestedPermissionExtensionString(
+        IReadOnlyDictionary<string, object>? extensionData,
+        params string[] containerKeys)
+    {
+        if (extensionData == null || extensionData.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var containerKey in containerKeys)
+        {
+            if (!TryGetExtensionValue(extensionData, containerKey, out var value) || value == null)
+            {
+                continue;
+            }
+
+            var text = ExtractNestedCommandText(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return TrimPermissionPreview(text);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractNestedCommandText(object value)
+    {
+        if (value is JsonElement json)
+        {
+            return ExtractNestedCommandText(json);
+        }
+
+        if (value is IReadOnlyDictionary<string, object> readOnlyDictionary)
+        {
+            return ReadPermissionExtensionString(readOnlyDictionary,
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        if (value is IDictionary<string, object> dictionary)
+        {
+            return ReadPermissionExtensionString(
+                dictionary.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        return null;
+    }
+
+    private static string? ExtractNestedCommandText(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            return TrimSingleLine(element.GetString());
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in new[]
+                 {
+                     "fullCommandText", "command", "commandLine", "commandText", "cmd", "shellCommand", "rawCommand", "text"
+                 })
+        {
+            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+            {
+                var text = ExtractNestedCommandText(value);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryGetExtensionValue(
+        IReadOnlyDictionary<string, object> extensionData,
+        string candidateKey,
+        out object? value)
+    {
+        foreach (var entry in extensionData)
+        {
+            if (entry.Key.Equals(candidateKey, StringComparison.OrdinalIgnoreCase))
+            {
+                value = entry.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static string? ConvertPermissionExtensionValueToString(object? value)
+    {
+        string? rawText = value switch
+        {
+            null => null,
+            string text => text,
+            JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
+            JsonElement json => json.GetRawText(),
+            _ => value.ToString()
+        };
+
+        return string.IsNullOrWhiteSpace(rawText)
+            ? null
+            : TrimSingleLine(rawText);
+    }
+
+    private static string TrimPermissionPreview(string text)
+    {
+        const int maxLength = 180;
+
+        var singleLine = TrimSingleLine(text);
+        return singleLine.Length <= maxLength
+            ? singleLine
+            : singleLine[..maxLength].TrimEnd() + "...";
     }
 
     private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)
@@ -3314,11 +3930,20 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
     {
         var fields = new List<(string Label, string Value)>();
+
+        // -- Provider section --
+        fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Provider"));
         fields.Add(("Provider", ActiveProviderDisplayName));
         fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
         fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
         fields.Add(("Session ID", _sessionId));
+
+        // -- Usage section --
+        if (_toolInvocationCount > 0 || (_lastUsage != null && _lastUsage.HasAny))
+        {
+            fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Usage"));
+        }
 
         if (_toolInvocationCount > 0)
         {
@@ -3332,9 +3957,20 @@ public class TroubleshootingSession : IAsyncDisposable
             AddUsageField(fields, "Total tokens", _lastUsage.TotalTokens);
             AddUsageField(fields, "Input tokens", _lastUsage.InputTokens);
             AddUsageField(fields, "Output tokens", _lastUsage.OutputTokens);
-            AddUsageField(fields, "Context max", _lastUsage.MaxContextTokens);
-            AddUsageField(fields, "Context used", _lastUsage.UsedContextTokens);
-            AddUsageField(fields, "Context free", _lastUsage.FreeContextTokens);
+            AddContextUsageField(fields, _lastUsage.UsedContextTokens, _lastUsage.MaxContextTokens);
+        }
+
+        // -- Capabilities section --
+        var hasMcpOrSkills =
+            _configuredMcpServers.Any(v => !string.IsNullOrWhiteSpace(v))
+            || _runtimeMcpServers.Count > 0
+            || _configuredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
+            || _runtimeSkills.Count > 0
+            || _configurationWarnings.Count > 0;
+
+        if (hasMcpOrSkills)
+        {
+            fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Capabilities"));
         }
 
         AddCapabilityField(fields, "MCP configured", _configuredMcpServers);
@@ -3356,6 +3992,18 @@ public class TroubleshootingSession : IAsyncDisposable
             return;
 
         fields.Add((label, value.Value.ToString("N0", CultureInfo.InvariantCulture)));
+    }
+
+    private static void AddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)
+    {
+        if (!usedContext.HasValue || !maxContext.HasValue || maxContext.Value <= 0)
+        {
+            return;
+        }
+
+        var percentage = usedContext.Value * 100d / maxContext.Value;
+        var value = $"{usedContext.Value.ToString("N0", CultureInfo.InvariantCulture)}/{maxContext.Value.ToString("N0", CultureInfo.InvariantCulture)} ({percentage.ToString("0.#", CultureInfo.InvariantCulture)}%)";
+        fields.Add(("Context", value));
     }
 
     private static void AddCapabilityField(List<(string Label, string Value)> fields, string label, IEnumerable<string> values)
@@ -3777,6 +4425,262 @@ public class TroubleshootingSession : IAsyncDisposable
         var prop = instance.GetType().GetProperty(propertyName,
             BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
         return prop?.GetValue(instance);
+    }
+
+    private static bool TryGetJsonPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.NameEquals(propertyName) || property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string? ReadJsonStringProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text.Trim();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static List<string> ReadJsonStringArrayProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            var result = new List<string>();
+            foreach (var item in value.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                    continue;
+
+                var text = item.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    result.Add(text.Trim());
+                }
+            }
+
+            return result;
+        }
+
+        return [];
+    }
+
+    private static int? ReadJsonIntProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+                continue;
+
+            if (value.ValueKind == JsonValueKind.Number)
+            {
+                if (value.TryGetInt32(out var intValue))
+                    return intValue;
+                if (value.TryGetInt64(out var longValue))
+                    return (int)longValue;
+                if (value.TryGetDouble(out var doubleValue))
+                    return (int)doubleValue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static double? ReadJsonDoubleProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+                continue;
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var doubleValue))
+            {
+                return doubleValue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static decimal? ReadJsonDecimalProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+                continue;
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var decimalValue))
+            {
+                return decimalValue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && decimal.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool? ReadJsonBoolProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+                continue;
+
+            if (value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                return value.GetBoolean();
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && bool.TryParse(value.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static ModelCapabilities? BuildByokCapabilities(JsonElement modelElement)
+    {
+        JsonElement supportsSource = modelElement;
+        JsonElement limitsSource = modelElement;
+
+        if (TryGetJsonPropertyIgnoreCase(modelElement, "capabilities", out var capabilitiesElement)
+            && capabilitiesElement.ValueKind == JsonValueKind.Object)
+        {
+            if (TryGetJsonPropertyIgnoreCase(capabilitiesElement, "supports", out var supportsElement)
+                && supportsElement.ValueKind == JsonValueKind.Object)
+            {
+                supportsSource = supportsElement;
+            }
+
+            if (TryGetJsonPropertyIgnoreCase(capabilitiesElement, "limits", out var limitsElement)
+                && limitsElement.ValueKind == JsonValueKind.Object)
+            {
+                limitsSource = limitsElement;
+            }
+        }
+
+        var supportsVision = ReadJsonBoolProperty(supportsSource, "vision", "supports_vision", "supportsVision");
+        var supportsReasoningEffort = ReadJsonBoolProperty(supportsSource, "reasoningEffort", "reasoning_effort", "supports_reasoning_effort", "supportsReasoningEffort");
+        var maxPromptTokens = ReadJsonIntProperty(limitsSource, "max_prompt_tokens", "maxPromptTokens");
+        var maxContextWindowTokens = ReadJsonIntProperty(limitsSource, "max_context_window_tokens", "maxContextWindowTokens", "context_window", "contextWindow");
+
+        if (!supportsVision.HasValue
+            && !supportsReasoningEffort.HasValue
+            && !maxPromptTokens.HasValue
+            && !maxContextWindowTokens.HasValue)
+        {
+            return null;
+        }
+
+        var capabilities = new ModelCapabilities();
+
+        if (supportsVision.HasValue || supportsReasoningEffort.HasValue)
+        {
+            capabilities.Supports = new ModelSupports
+            {
+                Vision = supportsVision ?? false,
+                ReasoningEffort = supportsReasoningEffort ?? false
+            };
+        }
+
+        if (maxPromptTokens.HasValue || maxContextWindowTokens.HasValue)
+        {
+            capabilities.Limits = new ModelLimits
+            {
+                MaxPromptTokens = maxPromptTokens,
+                MaxContextWindowTokens = maxContextWindowTokens ?? 0
+            };
+        }
+
+        return capabilities;
+    }
+
+    private static ByokPriceInfo? ExtractByokPriceInfo(JsonElement modelElement)
+    {
+        var display = ReadJsonStringProperty(modelElement, "price_display", "priceDisplay", "pricing_display", "pricingDisplay");
+        var input = ReadJsonDecimalProperty(modelElement, "input_price", "inputPrice", "prompt_price", "promptPrice", "input_per_million", "inputPricePerMillionTokens");
+        var output = ReadJsonDecimalProperty(modelElement, "output_price", "outputPrice", "completion_price", "completionPrice", "output_per_million", "outputPricePerMillionTokens");
+
+        if (TryGetJsonPropertyIgnoreCase(modelElement, "pricing", out var pricingElement)
+            && pricingElement.ValueKind == JsonValueKind.Object)
+        {
+            display ??= ReadJsonStringProperty(pricingElement, "display", "label", "summary");
+            input ??= ReadJsonDecimalProperty(pricingElement, "input", "input_price", "inputPrice", "prompt", "prompt_price", "promptPrice", "input_per_million", "inputPricePerMillionTokens");
+            output ??= ReadJsonDecimalProperty(pricingElement, "output", "output_price", "outputPrice", "completion", "completion_price", "completionPrice", "output_per_million", "outputPricePerMillionTokens");
+        }
+
+        if (!input.HasValue && !output.HasValue && string.IsNullOrWhiteSpace(display))
+        {
+            return null;
+        }
+
+        display ??= FormatByokPriceDisplay(input, output);
+        return new ByokPriceInfo(input, output, display);
+    }
+
+    private static string? FormatByokPriceDisplay(decimal? inputPrice, decimal? outputPrice)
+    {
+        if (inputPrice.HasValue && outputPrice.HasValue)
+        {
+            return $"${inputPrice.Value.ToString("0.####", CultureInfo.InvariantCulture)}/M in, ${outputPrice.Value.ToString("0.####", CultureInfo.InvariantCulture)}/M out";
+        }
+
+        if (inputPrice.HasValue)
+        {
+            return $"${inputPrice.Value.ToString("0.####", CultureInfo.InvariantCulture)}/M";
+        }
+
+        if (outputPrice.HasValue)
+        {
+            return $"${outputPrice.Value.ToString("0.####", CultureInfo.InvariantCulture)}/M";
+        }
+
+        return null;
     }
 
     private static int? ReadIntProperty(object? instance, params string[] propertyNames)

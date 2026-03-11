@@ -339,6 +339,56 @@ Get-Process
     }
 
     [Fact]
+    public async Task ExecuteAsync_CommandWithNoOutput_ShouldReturnEmptyOutput()
+    {
+        // Arrange
+        await _executor.InitializeAsync();
+
+        // Act
+        var result = await _executor.ExecuteAsync("Start-Sleep -Milliseconds 10");
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Output.Should().BeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ShouldSuppressPowerShellConfirmPreference()
+    {
+        // Arrange
+        await _executor.InitializeAsync();
+
+        // Act
+        var result = await _executor.ExecuteAsync("$ConfirmPreference");
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Output.Trim().Should().Be("None");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenCommandExceedsTimeout_ShouldReturnTimeoutError()
+    {
+        // Arrange
+        await _executor.InitializeAsync();
+        _executor.CommandTimeoutOverride = TimeSpan.FromMilliseconds(100);
+
+        try
+        {
+            // Act
+            var result = await _executor.ExecuteAsync("Start-Sleep -Seconds 5");
+
+            // Assert
+            result.Success.Should().BeFalse();
+            result.Error.Should().Contain("timed out");
+        }
+        finally
+        {
+            _executor.CommandTimeoutOverride = null;
+        }
+    }
+
+    [Fact]
     public async Task TestConnectionAsync_LocalExecution_ShouldSucceed()
     {
         // Act

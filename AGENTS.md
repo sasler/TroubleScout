@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.1.29`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`0.1.32`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 
@@ -49,6 +49,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 - Keep `SystemMessageConfig.Mode` as append/default behavior unless there is a strong reason to replace.
 - Keep `Streaming = true` for interactive UX.
 - Build tool list with `AIFunctionFactory.Create(...)` in `Tools/DiagnosticTools.cs`.
+- When configuring BYOK OpenAI-compatible providers, preserve richer `ModelInfo` metadata and use `ProviderConfig.WireApi = "responses"` for GPT-5-family models.
 
 ### Resource lifecycle
 

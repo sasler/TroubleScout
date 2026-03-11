@@ -29,6 +29,39 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void GetRateLabel_ShouldReturnPremiumMultiplier_WhenBillingExists()
+    {
+        // Arrange
+        var model = new ModelInfo
+        {
+            Id = "gpt-4.1",
+            Name = "GPT 4.1",
+            Billing = new ModelBilling { Multiplier = 0.25 }
+        };
+
+        // Act
+        var actual = InvokeGetRateLabel(model);
+
+        // Assert
+        actual.Should().Be("0.25x premium");
+    }
+
+    [Fact]
+    public void ShowModelSelectionSummary_ShouldRenderSelectedModelDetails()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowModelSelectionSummary("gpt-4.1", [("Provider", "GitHub Copilot"), ("Context window", "128k")]);
+        var output = AnsiConsole.ExportText();
+
+        // Assert
+        output.Should().Contain("Model selected");
+        output.Should().Contain("gpt-4.1");
+        output.Should().Contain("GitHub Copilot");
+        output.Should().Contain("128k");
+    }
+
+    [Fact]
     public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
     {
         // Arrange & Act
@@ -452,5 +485,101 @@ public class ConsoleUITests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void EndReasoningBlock_ShouldAddSeparatorAfterReasoningText()
+    {
+        // Arrange
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(sw);
+
+        try
+        {
+            // Act
+            ConsoleUI.WriteReasoningText("thinking...");
+            ConsoleUI.EndReasoningBlock();
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        // Assert
+        sw.ToString().Should().Contain("thinking...");
+        sw.ToString().Should().EndWith(Environment.NewLine);
+    }
+
     #endregion
+
+    #region Context Value Markup Tests
+
+    [Theory]
+    [InlineData("25,000/100,000 (25%)", "green")]
+    [InlineData("80,000/100,000 (80%)", "yellow")]
+    [InlineData("95,000/100,000 (95%)", "red")]
+    public void FormatContextValueMarkup_ShouldApplyCorrectColor(string value, string expectedColor)
+    {
+        var markup = ConsoleUI.FormatContextValueMarkup(value);
+
+        markup.Should().Contain(expectedColor);
+        markup.Should().Contain(Markup.Escape(value));
+    }
+
+    [Fact]
+    public void FormatContextValueMarkup_WhenNoPercentage_ShouldFallBackToCyan()
+    {
+        var markup = ConsoleUI.FormatContextValueMarkup("unknown");
+
+        markup.Should().Contain("cyan");
+    }
+
+    #endregion
+
+    #region Status Panel Section Separator Tests
+
+    [Fact]
+    public void ShowStatusPanel_WithSectionSeparators_ShouldRenderSectionHeaders()
+    {
+        AnsiConsole.Record();
+        ConsoleUI.ShowStatusPanel(
+            "localhost", "Local", true, "gpt-4.1", ExecutionMode.Safe,
+            usageFields: new (string, string)[]
+            {
+                (ConsoleUI.StatusSectionSeparator, "Provider"),
+                ("Provider", "GitHub Copilot"),
+                (ConsoleUI.StatusSectionSeparator, "Usage"),
+                ("Prompt tokens", "1,234"),
+                ("Context", "25,000/100,000 (25%)"),
+            });
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("Provider");
+        output.Should().Contain("Usage");
+        output.Should().Contain("25,000/100,000 (25%)");
+    }
+
+    [Fact]
+    public void GetVisibleModelPickerRange_WhenSelectionNearEnd_ShouldScrollWindow()
+    {
+        var range = InvokeGetVisibleModelPickerRange(totalCount: 20, selectedIndex: 18, pageSize: 6);
+
+        range.StartIndex.Should().Be(14);
+        range.Count.Should().Be(6);
+    }
+
+    #endregion
+
+    private static (int StartIndex, int Count) InvokeGetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
+    {
+        var method = typeof(ConsoleUI).GetMethod("GetVisibleModelPickerRange", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        var result = method!.Invoke(null, [totalCount, selectedIndex, pageSize]);
+        result.Should().NotBeNull();
+
+        var type = result!.GetType();
+        return (
+            (int)type.GetField("Item1")!.GetValue(result)!,
+            (int)type.GetField("Item2")!.GetValue(result)!);
+    }
 }
