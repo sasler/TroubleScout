@@ -1369,7 +1369,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ProviderLabel = providerLabel,
             RateLabel = GetModelRateLabel(model, source),
             DetailSummary = BuildModelDetailSummary(model, source),
-            IsCurrent = IsCurrentModelAndSource(new ModelSelectionEntry(model.Id, $"{displayBase} ({providerLabel})", source))
+            IsCurrent = IsCurrentModelAndSource(model.Id, source)
         };
     }
 
@@ -1425,7 +1425,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (model.Billing != null)
         {
-            return $"{model.Billing.Multiplier:0.##}x premium";
+            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
         }
 
         return "n/a";
@@ -2655,13 +2655,16 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private bool IsCurrentModelAndSource(ModelSelectionEntry entry)
+        => IsCurrentModelAndSource(entry.ModelId, entry.Source);
+
+    private bool IsCurrentModelAndSource(string modelId, ModelSource source)
     {
-        if (!IsCurrentModel(entry.ModelId))
+        if (!IsCurrentModel(modelId))
             return false;
 
         // Same model — check if provider also matches
         var currentSource = _useByokOpenAi ? ModelSource.Byok : ModelSource.GitHub;
-        return currentSource == entry.Source;
+        return currentSource == source;
     }
 
     private static string GetFirstInputToken(string input)
@@ -3564,7 +3567,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         "request",
                         "details");
                 return !string.IsNullOrWhiteSpace(command)
-                    ? command
+                    ? TrimPermissionPreview(command)
                     : "Shell command";
             }
             case "mcp":
@@ -3782,14 +3785,18 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static string? ConvertPermissionExtensionValueToString(object? value)
     {
-        return value switch
+        string? rawText = value switch
         {
             null => null,
-            string text => TrimSingleLine(text),
-            JsonElement json when json.ValueKind == JsonValueKind.String => TrimSingleLine(json.GetString()),
-            JsonElement json => TrimSingleLine(json.GetRawText()),
-            _ => TrimSingleLine(value.ToString())
+            string text => text,
+            JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
+            JsonElement json => json.GetRawText(),
+            _ => value.ToString()
         };
+
+        return string.IsNullOrWhiteSpace(rawText)
+            ? null
+            : TrimSingleLine(rawText);
     }
 
     private static string TrimPermissionPreview(string text)
@@ -3995,7 +4002,8 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         var percentage = usedContext.Value * 100d / maxContext.Value;
-        fields.Add(("Context", $"{usedContext.Value:N0}/{maxContext.Value:N0} ({percentage:0.#}%)"));
+        var value = $"{usedContext.Value.ToString("N0", CultureInfo.InvariantCulture)}/{maxContext.Value.ToString("N0", CultureInfo.InvariantCulture)} ({percentage.ToString("0.#", CultureInfo.InvariantCulture)}%)";
+        fields.Add(("Context", value));
     }
 
     private static void AddCapabilityField(List<(string Label, string Value)> fields, string label, IEnumerable<string> values)

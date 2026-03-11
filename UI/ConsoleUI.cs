@@ -1465,6 +1465,7 @@ public static class ConsoleUI
                             result = choices[selectedIndex];
                             return;
                         case ConsoleKey.Escape:
+                            result = choices.FirstOrDefault(choice => choice.IsCurrent) ?? choices[selectedIndex];
                             return;
                     }
                 }

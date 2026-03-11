@@ -1,6 +1,7 @@
 using FluentAssertions;
 using GitHub.Copilot.SDK;
 using System.Reflection;
+using System.Globalization;
 using System.Text.Json;
 using TroubleScout;
 using TroubleScout.Services;
@@ -134,7 +135,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var entry = Activator.CreateInstance(entryType, "gpt-4.1", "GPT-4.1", byokValue)!;
 
         var method = typeof(TroubleshootingSession)
-            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic);
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType], null);
         method.Should().NotBeNull();
 
         // Act
@@ -1675,6 +1676,26 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldTrimReflectedCommandPreview()
+    {
+        // Arrange
+        var request = new PermissionRequest { Kind = "shell" };
+        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(request, "Clear-RecycleBin -Force\r\n-Confirm:$false");
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force -Confirm:$false");
+    }
+
+    [Fact]
     public void DescribePermissionRequest_ShellRequest_ShouldReadNestedCommandPayload()
     {
         // Arrange
@@ -1724,6 +1745,28 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void DescribePermissionRequest_McpRequest_ShouldIgnoreEmptyArguments()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "mcp",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["serverName"] = "context7",
+                ["toolName"] = "query-docs",
+                ["arguments"] = "   "
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("context7/query-docs");
+    }
+
+    [Fact]
     public void CreateSystemMessage_ShouldWarnAgainstBackgroundMonitoringClaims()
     {
         // Act
@@ -1741,6 +1784,59 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         prompt.Should().Contain("-Confirm:$false");
+    }
+
+    [Fact]
+    public void AddContextUsageField_ShouldUseInvariantFormatting()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+        CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+        try
+        {
+            var fields = new List<(string Label, string Value)>();
+
+            InvokeAddContextUsageField(fields, 25000, 100000);
+
+            fields.Should().ContainSingle();
+            fields[0].Label.Should().Be("Context");
+            fields[0].Value.Should().Be("25,000/100,000 (25%)");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
+    }
+
+    [Fact]
+    public void GetModelRateLabel_ShouldUseInvariantFormatting()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+        CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+        try
+        {
+            var model = new ModelInfo
+            {
+                Id = "gpt-4.1",
+                Name = "GPT 4.1",
+                Billing = new ModelBilling { Multiplier = 0.25 }
+            };
+
+            var actual = InvokeGetModelRateLabel(_session, model, "GitHub");
+
+            actual.Should().Be("0.25x premium");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     #endregion
@@ -1779,6 +1875,27 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("BuildPromptForExecutionSafety should exist on TroubleshootingSession");
         return (string)method!.Invoke(null, [userMessage])!;
+    }
+
+    private static void InvokeAddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("AddContextUsageField", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("AddContextUsageField should exist on TroubleshootingSession");
+        method!.Invoke(null, [fields, usedContext, maxContext]);
+    }
+
+    private static string InvokeGetModelRateLabel(TroubleshootingSession session, ModelInfo model, string sourceName)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic);
+        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
+            .First(type => type.Name == "ModelSource");
+        var source = Enum.Parse(sourceType, sourceName);
+
+        method.Should().NotBeNull("GetModelRateLabel should exist on TroubleshootingSession");
+        return (string)method!.Invoke(session, [model, source])!;
     }
 
     private static string? InvokeResolveInitialSessionModel(TroubleshootingSession session, IReadOnlyList<ModelInfo> availableModels)
