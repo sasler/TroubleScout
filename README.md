@@ -21,6 +21,8 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
 - **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
+- **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing when available, context-window metadata, and a clearer selected-model summary
+- **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
 ## Prerequisites
@@ -152,6 +154,14 @@ Available models depend on auth mode:
 
 - GitHub mode: models available to your Copilot account/subscription
 - BYOK mode: models available from your configured OpenAI provider
+
+In the interactive TUI, `/model` now:
+
+- Shows only models from providers that are currently connected
+- Restores GitHub premium multipliers next to supported models
+- Shows BYOK pricing when the provider exposes pricing metadata in `/models`
+- Lets you press `ESC` to keep the current model and return to the prompt
+- Shows a confirmation panel with provider, rate/pricing, context window, and capability details after selection
 
 ### MCP Servers and Skills
 

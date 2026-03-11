@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
@@ -80,6 +81,7 @@ public static class ConsoleUI
         grid.AddColumn(new GridColumn().PadRight(2));
         grid.AddColumn(new GridColumn());
 
+        // --- Connection section ---
         if (additionalTargets?.Count > 0)
         {
             var allServers = new List<string> { targetServer };
@@ -102,10 +104,10 @@ public static class ConsoleUI
             ? "[green]Connected[/]" 
             : "[yellow]Not ready[/]";
 
-        grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{connectionMode}[/]");
+        grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{Markup.Escape(connectionMode)}[/]");
         grid.AddRow("[grey]Copilot Status:[/]", copilotStatus);
         grid.AddRow("[grey]Execution Mode:[/]", GetExecutionModeMarkup(executionMode));
-        
+
         if (copilotReady)
         {
             var modelDisplay = !string.IsNullOrEmpty(model) && model != "default" 
@@ -114,16 +116,35 @@ public static class ConsoleUI
             grid.AddRow("[grey]AI Model:[/]", modelDisplay);
         }
 
+        // --- Usage / capability fields grouped by section ---
         if (usageFields != null)
         {
+            bool separatorAdded = false;
             foreach (var (label, value) in usageFields)
             {
                 if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
                     continue;
 
+                if (label == StatusSectionSeparator)
+                {
+                    grid.AddRow("[dim]---[/]", $"[dim]{Markup.Escape(value)}[/]");
+                    separatorAdded = true;
+                    continue;
+                }
+
+                // Render the combined "Context" field prominently
+                if (label == "Context" && !separatorAdded)
+                {
+                    grid.AddRow("[dim]---[/]", "[dim]Usage[/]");
+                }
+
+                var markup = IsContextField(label)
+                    ? FormatContextValueMarkup(value)
+                    : $"[cyan]{Markup.Escape(value)}[/]";
+
                 grid.AddRow(
                     $"[grey]{Markup.Escape(label)}:[/]",
-                    $"[cyan]{Markup.Escape(value)}[/]");
+                    markup);
             }
         }
         
@@ -139,6 +160,34 @@ public static class ConsoleUI
             AnsiConsole.MarkupLine("[grey]  Tip: Use /model to select AI model.[/]");
         }
         AnsiConsole.WriteLine();
+    }
+
+    internal const string StatusSectionSeparator = "\x1F";
+
+    private static bool IsContextField(string label)
+    {
+        return label.Equals("Context", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Colorize the combined context usage value based on fill percentage.
+    /// Input format: "25,000/100,000 (25%)"
+    /// </summary>
+    internal static string FormatContextValueMarkup(string value)
+    {
+        var match = Regex.Match(value, @"\((\d+(?:\.\d+)?)%\)");
+        if (match.Success && double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+        {
+            var color = pct switch
+            {
+                >= 90 => "red",
+                >= 70 => "yellow",
+                _ => "green"
+            };
+            return $"[bold {color}]{Markup.Escape(value)}[/]";
+        }
+
+        return $"[cyan]{Markup.Escape(value)}[/]";
     }
 
     /// <summary>
@@ -1308,95 +1357,269 @@ public static class ConsoleUI
     /// </summary>
     public static string? PromptModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
     {
-        AnsiConsole.MarkupLine($"[grey]Current Model:[/] [magenta]{Markup.Escape(currentModel)}[/]");
-        AnsiConsole.WriteLine();
-
         var choices = models
-            .Select(m => new ModelChoice(m, GetDisplayName(m, currentModel), GetRateLabel(m)))
+            .Select(model => new ModelPickerChoice(
+                model.Id,
+                model.Name,
+                GetRateLabel(model),
+                BuildModelDetailSummary(model),
+                model.Id.Equals(currentModel, StringComparison.OrdinalIgnoreCase),
+                null))
             .ToList();
 
-        var maxNameLength = choices.Count == 0 ? 0 : choices.Max(c => c.DisplayName.Length);
-        choices.Add(ModelChoice.Cancel);
-
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<ModelChoice>()
-                .Title("[cyan]Select AI Model:[/]")
-                .PageSize(12)
-                .UseConverter(choice =>
-                {
-                    if (choice.IsCancel)
-                        return "Cancel";
-
-                    var name = choice.DisplayName.PadRight(maxNameLength);
-                    var rate = Markup.Escape(choice.RateLabel);
-                    return $"{Markup.Escape(name)}  [grey]{rate}[/]";
-                })
-                .AddChoices(choices));
-
-        return selection.IsCancel ? null : selection.Model.Id;
-    }
-
-    private static string GetDisplayName(ModelInfo model, string currentModel)
-    {
-        var isDefault = model.Id.Equals(currentModel, StringComparison.OrdinalIgnoreCase);
-        return isDefault ? $"{model.Name} (default)" : model.Name;
+        return PromptModelSelectionCore(currentModel, choices)?.ModelId;
     }
 
     private static string GetRateLabel(ModelInfo model)
     {
         if (model.Billing != null)
         {
-            return $"{model.Billing.Multiplier:0.##}x";
+            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
         }
 
         return "n/a";
     }
 
-    private sealed record ModelChoice(ModelInfo Model, string DisplayName, string RateLabel)
-    {
-        public static ModelChoice Cancel { get; } = new(new ModelInfo(), "Cancel", "");
-        public bool IsCancel => ReferenceEquals(this, Cancel);
-    }
-
-    private sealed record EntryChoice(TroubleshootingSession.ModelSelectionEntry Entry, string DisplayName)
-    {
-        public static EntryChoice Cancel { get; } = new(null!, "Cancel");
-        public bool IsCancel => ReferenceEquals(this, Cancel);
-    }
+    private sealed record ModelPickerChoice(
+        string ModelId,
+        string DisplayName,
+        string RateLabel,
+        string DetailSummary,
+        bool IsCurrent,
+        TroubleshootingSession.ModelSource? SourceHint);
 
     internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
         string currentModel,
         IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
     {
-        AnsiConsole.MarkupLine($"[grey]Current Model:[/] [magenta]{Markup.Escape(currentModel)}[/]");
-        AnsiConsole.WriteLine();
-
         var choices = entries
-            .Select(e =>
-            {
-                var isDefault = e.ModelId.Equals(currentModel, StringComparison.OrdinalIgnoreCase);
-                var name = isDefault ? $"{e.DisplayName} (default)" : e.DisplayName;
-                return new EntryChoice(e, name);
-            })
+            .Select(entry => new ModelPickerChoice(
+                entry.ModelId,
+                entry.DisplayName,
+                entry.RateLabel,
+                entry.DetailSummary,
+                entry.IsCurrent,
+                entry.Source))
             .ToList();
 
-        var maxNameLength = choices.Count == 0 ? 0 : choices.Max(c => c.DisplayName.Length);
-        choices.Add(EntryChoice.Cancel);
+        var selectedChoice = PromptModelSelectionCore(currentModel, choices);
+        if (selectedChoice == null)
+        {
+            return null;
+        }
 
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<EntryChoice>()
-                .Title("[cyan]Select AI Model:[/]")
-                .PageSize(15)
-                .UseConverter(choice =>
+        return entries.FirstOrDefault(entry =>
+            entry.ModelId.Equals(selectedChoice.ModelId, StringComparison.OrdinalIgnoreCase)
+            && entry.Source == selectedChoice.SourceHint);
+    }
+
+    private static ModelPickerChoice? PromptModelSelectionCore(string currentModel, IReadOnlyList<ModelPickerChoice> choices)
+    {
+        if (choices.Count == 0)
+        {
+            return null;
+        }
+
+        if (Console.IsInputRedirected)
+        {
+            return choices.FirstOrDefault(choice => choice.IsCurrent) ?? choices[0];
+        }
+
+        var selectedIndex = 0;
+        for (var i = 0; i < choices.Count; i++)
+        {
+            if (choices[i].IsCurrent)
+            {
+                selectedIndex = i;
+                break;
+            }
+        }
+        ModelPickerChoice? result = null;
+
+        AnsiConsole.Live(BuildModelPickerLayout(currentModel, choices, selectedIndex))
+            .Overflow(VerticalOverflow.Ellipsis)
+            .Start(context =>
+            {
+                while (true)
                 {
-                    if (choice.IsCancel)
-                        return "Cancel";
+                    context.UpdateTarget(BuildModelPickerLayout(currentModel, choices, selectedIndex));
 
-                    return Markup.Escape(choice.DisplayName.PadRight(maxNameLength));
-                })
-                .AddChoices(choices));
+                    var key = Console.ReadKey(intercept: true).Key;
+                    switch (key)
+                    {
+                        case ConsoleKey.UpArrow:
+                        case ConsoleKey.K:
+                            selectedIndex = (selectedIndex - 1 + choices.Count) % choices.Count;
+                            break;
+                        case ConsoleKey.DownArrow:
+                        case ConsoleKey.J:
+                            selectedIndex = (selectedIndex + 1) % choices.Count;
+                            break;
+                        case ConsoleKey.PageUp:
+                            selectedIndex = Math.Max(0, selectedIndex - 5);
+                            break;
+                        case ConsoleKey.PageDown:
+                            selectedIndex = Math.Min(choices.Count - 1, selectedIndex + 5);
+                            break;
+                        case ConsoleKey.Enter:
+                            result = choices[selectedIndex];
+                            return;
+                        case ConsoleKey.Escape:
+                            return;
+                    }
+                }
+            });
 
-        return selection.IsCancel ? null : selection.Entry;
+        AnsiConsole.WriteLine();
+        return result;
+    }
+
+    private static IRenderable BuildModelPickerLayout(string currentModel, IReadOnlyList<ModelPickerChoice> choices, int selectedIndex)
+    {
+        var selectedChoice = choices[selectedIndex];
+        var showSourceColumn = choices.Any(c => c.SourceHint.HasValue);
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[bold] [/]").Width(2))
+            .AddColumn(new TableColumn("[bold]Model[/]"));
+
+        if (showSourceColumn)
+        {
+            table.AddColumn(new TableColumn("[bold]Source[/]"));
+        }
+
+        table.AddColumn(new TableColumn("[bold]Rate[/]").RightAligned());
+
+        foreach (var (choice, index) in choices.Select((choice, index) => (choice, index)))
+        {
+            var pointer = index == selectedIndex ? "[cyan]>[/]" : " ";
+            var name = index == selectedIndex
+                ? $"[bold cyan]{Markup.Escape(choice.DisplayName)}[/]"
+                : Markup.Escape(choice.DisplayName);
+
+            if (choice.IsCurrent)
+            {
+                name += " [grey](active)[/]";
+            }
+
+            var sourceLabel = choice.SourceHint switch
+            {
+                TroubleshootingSession.ModelSource.Byok => "[yellow]BYOK[/]",
+                TroubleshootingSession.ModelSource.GitHub => "[green]GitHub[/]",
+                _ => "[grey]--[/]"
+            };
+
+            if (showSourceColumn)
+            {
+                table.AddRow(pointer, name, sourceLabel, Markup.Escape(choice.RateLabel));
+            }
+            else
+            {
+                table.AddRow(pointer, name, Markup.Escape(choice.RateLabel));
+            }
+        }
+
+        var detailsGrid = new Grid();
+        detailsGrid.AddColumn(new GridColumn().PadRight(1));
+        detailsGrid.AddColumn();
+        detailsGrid.AddRow("[grey]Current:[/]", $"[magenta]{Markup.Escape(currentModel)}[/]");
+        detailsGrid.AddRow("[grey]Selection:[/]", $"[bold cyan]{Markup.Escape(selectedChoice.DisplayName)}[/]");
+        detailsGrid.AddRow("[grey]Rate:[/]", $"[cyan]{Markup.Escape(selectedChoice.RateLabel)}[/]");
+        detailsGrid.AddRow("[grey]Details:[/]", $"[grey]{Markup.Escape(selectedChoice.DetailSummary)}[/]");
+
+        var detailsPanel = new Panel(detailsGrid)
+            .Header("[bold cyan] Model details [/]")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Grey);
+
+        var instructions = new Markup("[grey]Use [cyan]Up/Down[/] to browse, [green]Enter[/] to select, [yellow]Esc[/] to keep the current model.[/]");
+
+        return new Rows(
+            new Panel(table)
+                .Header("[bold cyan] Select AI model [/]") 
+                .Border(BoxBorder.Rounded)
+                .BorderColor(Color.Cyan),
+            detailsPanel,
+            instructions);
+    }
+
+    private static string BuildModelDetailSummary(ModelInfo model)
+    {
+        var details = new List<string>();
+
+        if (model.Capabilities?.Limits?.MaxContextWindowTokens is int contextWindow && contextWindow > 0)
+        {
+            details.Add($"context {FormatCompactTokenCount(contextWindow)}");
+        }
+
+        if (model.Capabilities?.Limits?.MaxPromptTokens is int maxPrompt && maxPrompt > 0)
+        {
+            details.Add($"prompt {FormatCompactTokenCount(maxPrompt)}");
+        }
+
+        if (model.Capabilities?.Supports?.Vision == true)
+        {
+            details.Add("vision");
+        }
+
+        if (model.Capabilities?.Supports?.ReasoningEffort == true)
+        {
+            details.Add("reasoning");
+        }
+
+        if (!string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
+        {
+            details.Add($"default reasoning {model.DefaultReasoningEffort}");
+        }
+
+        return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
+    }
+
+    private static string FormatCompactTokenCount(int value)
+    {
+        if (value >= 1_000_000)
+        {
+            return $"{value / 1_000_000d:0.#}M";
+        }
+
+        if (value >= 1_000)
+        {
+            return $"{value / 1_000d:0.#}k";
+        }
+
+        return value.ToString("N0", CultureInfo.InvariantCulture);
+    }
+
+    public static void ShowModelSelectionSummary(string selectedModel, IReadOnlyList<(string Label, string Value)> details)
+    {
+        var grid = new Grid();
+        grid.AddColumn(new GridColumn().PadRight(2));
+        grid.AddColumn();
+        grid.AddRow("[grey]Model:[/]", $"[bold magenta]{Markup.Escape(selectedModel)}[/]");
+
+        foreach (var (label, value) in details)
+        {
+            if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var markup = label.StartsWith("Context", StringComparison.OrdinalIgnoreCase)
+                ? $"[bold cyan]{Markup.Escape(value)}[/]"
+                : $"[cyan]{Markup.Escape(value)}[/]";
+
+            grid.AddRow($"[grey]{Markup.Escape(label)}:[/]", markup);
+        }
+
+        var panel = new Panel(grid)
+            .Header("[bold green] Model selected [/]") 
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Green);
+
+        AnsiConsole.Write(panel);
+        AnsiConsole.WriteLine();
     }
 
     /// <summary>
@@ -1562,6 +1785,7 @@ public static class ConsoleUI
     public static void EndReasoningBlock()
     {
         EnsureLineBreak();
+        Console.WriteLine();
     }
 
     /// <summary>
