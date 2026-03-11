@@ -1655,6 +1655,52 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldUseFullCommandTextPropertyWhenAvailable()
+    {
+        // Arrange
+        var request = new PermissionRequest { Kind = "shell" };
+        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(request, "Clear-RecycleBin -Force");
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force");
+    }
+
+    [Fact]
+    public void DescribePermissionRequest_ShellRequest_ShouldReadNestedCommandPayload()
+    {
+        // Arrange
+        using var commandJson = JsonDocument.Parse("""
+            {
+              "commandLine": "Clear-RecycleBin -Force"
+            }
+            """);
+
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["payload"] = commandJson.RootElement.Clone()
+            }
+        };
+
+        // Act
+        var actual = InvokeDescribePermissionRequest(request);
+
+        // Assert
+        actual.Should().Be("Clear-RecycleBin -Force");
+    }
+
+    [Fact]
     public void DescribePermissionRequest_McpRequest_ShouldIncludeServerAndTool()
     {
         // Arrange
@@ -1677,6 +1723,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         actual.Should().Contain("\"libraryId\"");
     }
 
+    [Fact]
+    public void CreateSystemMessage_ShouldWarnAgainstBackgroundMonitoringClaims()
+    {
+        // Act
+        var config = InvokeCreateSystemMessage(_session, "localhost");
+
+        // Assert
+        config.Content.Should().Contain("Never say you will keep monitoring");
+    }
+
     #endregion
 
     private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
@@ -1695,6 +1751,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("DescribePermissionRequest should exist on TroubleshootingSession");
         return (string)method!.Invoke(null, [request])!;
+    }
+
+    private static SystemMessageConfig InvokeCreateSystemMessage(TroubleshootingSession session, string targetServer)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("CreateSystemMessage should exist on TroubleshootingSession");
+        return (SystemMessageConfig)method!.Invoke(session, [targetServer, new List<string>()])!;
     }
 
     private static string? InvokeResolveInitialSessionModel(TroubleshootingSession session, IReadOnlyList<ModelInfo> availableModels)

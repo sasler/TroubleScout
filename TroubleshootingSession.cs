@@ -196,6 +196,7 @@ public class TroubleshootingSession : IAsyncDisposable
             - In YOLO mode, remediation commands can execute without confirmation
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
             - Never claim a command was executed unless run_powershell returned execution output
+            - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
             - If no tool was executed, clearly state that no command has been run yet
             - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
             - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
@@ -3544,7 +3545,22 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             case "shell":
             {
-                var command = ReadPermissionExtensionString(extensionData, "command", "commandLine", "cmd", "shellCommand");
+                var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
+                    ?? ReadPermissionExtensionString(extensionData,
+                        "fullCommandText",
+                        "command",
+                        "commandLine",
+                        "commandText",
+                        "cmd",
+                        "shellCommand",
+                        "rawCommand",
+                        "text")
+                    ?? ReadNestedPermissionExtensionString(extensionData,
+                        "command",
+                        "payload",
+                        "input",
+                        "request",
+                        "details");
                 return !string.IsNullOrWhiteSpace(command)
                     ? command
                     : "Shell command";
@@ -3645,6 +3661,99 @@ public class TroubleshootingSession : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(text))
             {
                 return TrimPermissionPreview(text);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadNestedPermissionExtensionString(
+        IReadOnlyDictionary<string, object>? extensionData,
+        params string[] containerKeys)
+    {
+        if (extensionData == null || extensionData.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var containerKey in containerKeys)
+        {
+            if (!TryGetExtensionValue(extensionData, containerKey, out var value) || value == null)
+            {
+                continue;
+            }
+
+            var text = ExtractNestedCommandText(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return TrimPermissionPreview(text);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractNestedCommandText(object value)
+    {
+        if (value is JsonElement json)
+        {
+            return ExtractNestedCommandText(json);
+        }
+
+        if (value is IReadOnlyDictionary<string, object> readOnlyDictionary)
+        {
+            return ReadPermissionExtensionString(readOnlyDictionary,
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        if (value is IDictionary<string, object> dictionary)
+        {
+            return ReadPermissionExtensionString(
+                dictionary.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        return null;
+    }
+
+    private static string? ExtractNestedCommandText(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            return TrimSingleLine(element.GetString());
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in new[]
+                 {
+                     "fullCommandText", "command", "commandLine", "commandText", "cmd", "shellCommand", "rawCommand", "text"
+                 })
+        {
+            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+            {
+                var text = ExtractNestedCommandText(value);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
             }
         }
 
