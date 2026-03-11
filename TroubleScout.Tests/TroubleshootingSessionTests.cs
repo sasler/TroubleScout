@@ -1733,6 +1733,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         config.Content.Should().Contain("Never say you will keep monitoring");
     }
 
+    [Fact]
+    public void BuildPromptForExecutionSafety_ShouldMentionConfirmFalseForMutatingRequests()
+    {
+        // Act
+        var prompt = InvokeBuildPromptForExecutionSafety("please empty my trash");
+
+        // Assert
+        prompt.Should().Contain("-Confirm:$false");
+    }
+
     #endregion
 
     private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
@@ -1760,6 +1770,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("CreateSystemMessage should exist on TroubleshootingSession");
         return (SystemMessageConfig)method!.Invoke(session, [targetServer, new List<string>()])!;
+    }
+
+    private static string InvokeBuildPromptForExecutionSafety(string userMessage)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildPromptForExecutionSafety", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildPromptForExecutionSafety should exist on TroubleshootingSession");
+        return (string)method!.Invoke(null, [userMessage])!;
     }
 
     private static string? InvokeResolveInitialSessionModel(TroubleshootingSession session, IReadOnlyList<ModelInfo> availableModels)

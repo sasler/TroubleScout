@@ -195,6 +195,7 @@ public class TroubleshootingSession : IAsyncDisposable
             - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
             - In YOLO mode, remediation commands can execute without confirmation
             - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+            - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
             - Never claim a command was executed unless run_powershell returned execution output
             - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
             - If no tool was executed, clearly state that no command has been run yet
@@ -2138,6 +2139,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (MutatingIntentRegex.IsMatch(userMessage))
         {
             promptBuilder.Append("\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. ");
+            promptBuilder.Append("For PowerShell cmdlets that support confirmation prompts, include -Confirm:$false when appropriate. ");
             promptBuilder.Append("Do not claim any action was executed unless tool output confirms execution.");
         }
 

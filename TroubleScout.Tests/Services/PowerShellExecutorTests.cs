@@ -353,6 +353,20 @@ Get-Process
     }
 
     [Fact]
+    public async Task ExecuteAsync_ShouldSuppressPowerShellConfirmPreference()
+    {
+        // Arrange
+        await _executor.InitializeAsync();
+
+        // Act
+        var result = await _executor.ExecuteAsync("$ConfirmPreference");
+
+        // Assert
+        result.Success.Should().BeTrue();
+        result.Output.Trim().Should().Be("None");
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WhenCommandExceedsTimeout_ShouldReturnTimeoutError()
     {
         // Arrange

@@ -446,6 +446,8 @@ public class PowerShellExecutor : IDisposable
                     // Serialize runspace usage to avoid concurrent pipeline execution.
                     var wrappedCommand = $@"
                         $ErrorActionPreference = 'Continue'
+                        $ConfirmPreference = 'None'
+                        $PSDefaultParameterValues['*:Confirm'] = $false
                         $currentComputer = $env:COMPUTERNAME
                         $__tsOutput = (& {{
 {command}
