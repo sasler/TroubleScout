@@ -27,6 +27,8 @@ public record CommandValidation(
 /// </summary>
 public class PowerShellExecutor : IDisposable
 {
+    private static readonly TimeSpan DefaultCommandTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan NoOutputCommandTimeout = TimeSpan.FromSeconds(30);
     private readonly string _targetServer;
     private readonly bool _useLocalExecution;
     private Runspace? _runspace;
@@ -53,6 +55,8 @@ public class PowerShellExecutor : IDisposable
         get => _executionMode;
         set => _executionMode = value;
     }
+
+    internal TimeSpan? CommandTimeoutOverride { get; set; }
 
     /// <summary>
     /// Gets a snapshot of PowerShell commands executed in this session
@@ -437,17 +441,40 @@ public class PowerShellExecutor : IDisposable
                 {
                     using var ps = PowerShell.Create();
                     ps.Runspace = _runspace;
+                    var timeout = CommandTimeoutOverride ?? GetCommandTimeout(command);
                     
                     // Serialize runspace usage to avoid concurrent pipeline execution.
                     var wrappedCommand = $@"
                         $ErrorActionPreference = 'Continue'
                         $currentComputer = $env:COMPUTERNAME
-                        {command} | Out-String -Width 200
+                        $__tsOutput = (& {{
+{command}
+                        }} | Out-String -Width 200)
+                        if (-not [string]::IsNullOrWhiteSpace($__tsOutput)) {{
+                            $__tsOutput.TrimEnd()
+                        }}
                     ";
                     
                     ps.AddScript(wrappedCommand);
+                    var asyncResult = ps.BeginInvoke();
+                    if (!asyncResult.AsyncWaitHandle.WaitOne(timeout))
+                    {
+                        try
+                        {
+                            ps.Stop();
+                        }
+                        catch
+                        {
+                            // Ignore stop failures during timeout handling.
+                        }
 
-                    var results = ps.Invoke();
+                        return new PowerShellResult(
+                            false,
+                            string.Empty,
+                            $"Command timed out after {timeout.TotalSeconds:0} seconds.");
+                    }
+
+                    var results = ps.EndInvoke(asyncResult);
                     var output = new StringBuilder();
 
                     foreach (var result in results.Where(result => result != null))
@@ -490,6 +517,48 @@ public class PowerShellExecutor : IDisposable
         {
             _commandHistory.Add(command.Trim());
         }
+    }
+
+    private TimeSpan GetCommandTimeout(string command)
+    {
+        return ExpectsNoOutput(command) ? NoOutputCommandTimeout : DefaultCommandTimeout;
+    }
+
+    private static bool ExpectsNoOutput(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return false;
+        }
+
+        var trimmed = command.Trim();
+        if (trimmed.Contains("Out-Null", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("> $null", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("[void]", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var cmdletName = ExtractCmdletName(trimmed);
+        if (string.IsNullOrWhiteSpace(cmdletName))
+        {
+            return false;
+        }
+
+        return cmdletName.StartsWith("Set-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Start-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Stop-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Restart-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Remove-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("New-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Clear-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Enable-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Disable-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Rename-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Move-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Add-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Install-", StringComparison.OrdinalIgnoreCase)
+            || cmdletName.StartsWith("Uninstall-", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

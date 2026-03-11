@@ -1476,6 +1476,7 @@ public static class ConsoleUI
 
     private static IRenderable BuildModelPickerLayout(string currentModel, IReadOnlyList<ModelPickerChoice> choices, int selectedIndex)
     {
+        var visibleRange = GetVisibleModelPickerRange(choices.Count, selectedIndex, GetModelPickerPageSize());
         var selectedChoice = choices[selectedIndex];
         var showSourceColumn = choices.Any(c => c.SourceHint.HasValue);
 
@@ -1492,8 +1493,9 @@ public static class ConsoleUI
 
         table.AddColumn(new TableColumn("[bold]Rate[/]").RightAligned());
 
-        foreach (var (choice, index) in choices.Select((choice, index) => (choice, index)))
+        foreach (var index in Enumerable.Range(visibleRange.StartIndex, visibleRange.Count))
         {
+            var choice = choices[index];
             var pointer = index == selectedIndex ? "[cyan]>[/]" : " ";
             var name = index == selectedIndex
                 ? $"[bold cyan]{Markup.Escape(choice.DisplayName)}[/]"
@@ -1528,6 +1530,7 @@ public static class ConsoleUI
         detailsGrid.AddRow("[grey]Selection:[/]", $"[bold cyan]{Markup.Escape(selectedChoice.DisplayName)}[/]");
         detailsGrid.AddRow("[grey]Rate:[/]", $"[cyan]{Markup.Escape(selectedChoice.RateLabel)}[/]");
         detailsGrid.AddRow("[grey]Details:[/]", $"[grey]{Markup.Escape(selectedChoice.DetailSummary)}[/]");
+        detailsGrid.AddRow("[grey]Visible:[/]", $"[grey]{visibleRange.StartIndex + 1}-{visibleRange.StartIndex + visibleRange.Count} of {choices.Count}[/]");
 
         var detailsPanel = new Panel(detailsGrid)
             .Header("[bold cyan] Model details [/]")
@@ -1590,6 +1593,36 @@ public static class ConsoleUI
         }
 
         return value.ToString("N0", CultureInfo.InvariantCulture);
+    }
+
+    private static int GetModelPickerPageSize()
+    {
+        var height = Console.WindowHeight;
+        if (height <= 0)
+        {
+            return 8;
+        }
+
+        return Math.Max(5, height - 14);
+    }
+
+    private static (int StartIndex, int Count) GetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
+    {
+        if (totalCount <= 0)
+        {
+            return (0, 0);
+        }
+
+        pageSize = Math.Max(1, Math.Min(pageSize, totalCount));
+        selectedIndex = Math.Max(0, Math.Min(selectedIndex, totalCount - 1));
+
+        var startIndex = Math.Max(0, selectedIndex - (pageSize / 2));
+        if (startIndex + pageSize > totalCount)
+        {
+            startIndex = Math.Max(0, totalCount - pageSize);
+        }
+
+        return (startIndex, pageSize);
     }
 
     public static void ShowModelSelectionSummary(string selectedModel, IReadOnlyList<(string Label, string Value)> details)

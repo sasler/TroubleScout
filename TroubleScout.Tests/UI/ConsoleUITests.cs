@@ -558,5 +558,28 @@ public class ConsoleUITests
         output.Should().Contain("25,000/100,000 (25%)");
     }
 
+    [Fact]
+    public void GetVisibleModelPickerRange_WhenSelectionNearEnd_ShouldScrollWindow()
+    {
+        var range = InvokeGetVisibleModelPickerRange(totalCount: 20, selectedIndex: 18, pageSize: 6);
+
+        range.StartIndex.Should().Be(14);
+        range.Count.Should().Be(6);
+    }
+
     #endregion
+
+    private static (int StartIndex, int Count) InvokeGetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
+    {
+        var method = typeof(ConsoleUI).GetMethod("GetVisibleModelPickerRange", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        var result = method!.Invoke(null, [totalCount, selectedIndex, pageSize]);
+        result.Should().NotBeNull();
+
+        var type = result!.GetType();
+        return (
+            (int)type.GetField("Item1")!.GetValue(result)!,
+            (int)type.GetField("Item2")!.GetValue(result)!);
+    }
 }
