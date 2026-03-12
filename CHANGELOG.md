@@ -2,6 +2,26 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.7.0] - 2026-03-12
+
+### ✨ Features
+
+- ✨ **Enhanced permission prompts** — approval dialogs now use a three-option `SelectionPrompt` (Yes / No / Explain). Choosing "Explain" shows a detailed command breakdown before re-prompting for approval.
+- 📊 **Always-visible status bar** — a compact info line showing model, provider, token usage, and tool invocation count is displayed after every AI response.
+- ⏱️ **Elapsed timer in thinking indicator** — the spinner now shows total elapsed time (e.g., `Thinking... (12s) — ESC to cancel`). Per-phase timers reset on each status change. Long-running phases trigger yellow warnings at 30s and 60s.
+- 🛡️ **Activity watchdog** — a background watchdog during `SendMessageAsync` detects inactivity: 15s idle shows "Waiting for response", 30s shows "Connection seems slow" in the thinking indicator.
+- 🔄 **Retry prompt** — new `ShowRetryPrompt` provides a Retry/Skip selection after errors or timeouts instead of silently failing.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Cleaner ESC cancellation** — improved interaction between ESC polling and error states to reduce spurious "Communication error" messages.
+- 🐛 **Thinking indicator clarity** — spinner now consistently shows "ESC to cancel" (was "ESC to stop") and includes elapsed time for better user orientation.
+
+### 📝 Documentation & UX
+
+- 📝 Update README with new approval flow, status bar, timer, and watchdog features.
+- 📝 Update AGENTS.md Notable UX Behaviors with approval prompt, status bar, and watchdog details.
+
 ## [v1.6.0] - 2026-03-11
 
 ### ✨ Features

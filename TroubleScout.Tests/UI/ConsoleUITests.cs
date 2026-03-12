@@ -289,6 +289,137 @@ public class ConsoleUITests
         resumedState.Should().BeFalse("ResumeAfterApproval should clear the approval flag");
     }
 
+    #region ApprovalResult Enum Tests
+
+    [Fact]
+    public void ApprovalResult_ShouldHaveTwoValues()
+    {
+        var values = Enum.GetValues<ApprovalResult>();
+        values.Should().HaveCount(2);
+        values.Should().Contain(ApprovalResult.Approved);
+        values.Should().Contain(ApprovalResult.Denied);
+    }
+
+    #endregion
+
+    #region ShowCommandExplanation Tests
+
+    [Fact]
+    public void ShowCommandExplanation_ShouldRenderCommandAndReason()
+    {
+        var method = typeof(ConsoleUI).GetMethod("ShowCommandExplanation",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        method.Should().NotBeNull("ShowCommandExplanation should exist as a private static method");
+
+        AnsiConsole.Record();
+        method!.Invoke(null, new object?[] { "Get-Process", "Diagnostic reason", "I need process info to check CPU usage" });
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("Get-Process");
+        output.Should().Contain("Diagnostic reason");
+        output.Should().Contain("I need process info to check CPU usage");
+    }
+
+    #endregion
+
+    #region StatusBarInfo Tests
+
+    [Fact]
+    public void StatusBarInfo_Empty_ShouldHaveNullFields()
+    {
+        var empty = StatusBarInfo.Empty;
+        empty.Model.Should().BeNull();
+        empty.Provider.Should().BeNull();
+        empty.InputTokens.Should().BeNull();
+        empty.OutputTokens.Should().BeNull();
+        empty.TotalTokens.Should().BeNull();
+        empty.ToolInvocations.Should().Be(0);
+    }
+
+    [Fact]
+    public void FormatCompactTokenCount_SmallNumber_ShouldReturnPlain()
+    {
+        ConsoleUI.FormatCompactTokenCount(500).Should().Be("500");
+    }
+
+    [Fact]
+    public void FormatCompactTokenCount_Thousands_ShouldReturnKFormat()
+    {
+        ConsoleUI.FormatCompactTokenCount(1500).Should().Be("1.5k");
+        ConsoleUI.FormatCompactTokenCount(25000).Should().Be("25k");
+    }
+
+    [Fact]
+    public void FormatCompactTokenCount_Millions_ShouldReturnMFormat()
+    {
+        ConsoleUI.FormatCompactTokenCount(1_500_000).Should().Be("1.5M");
+    }
+
+    [Fact]
+    public void WriteStatusBar_WithFullInfo_ShouldRenderModelAndTokens()
+    {
+        var info = new StatusBarInfo(
+            Model: "gpt-4.1",
+            Provider: "GitHub Copilot",
+            InputTokens: 1234,
+            OutputTokens: 567,
+            TotalTokens: 1801,
+            ToolInvocations: 3,
+            SessionId: "TS-test");
+
+        AnsiConsole.Record();
+        ConsoleUI.WriteStatusBar(info);
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("gpt-4.1");
+        output.Should().Contain("GitHub Copilot");
+        output.Should().Contain("1.2k");
+        output.Should().Contain("567");
+        output.Should().Contain("3");
+    }
+
+    [Fact]
+    public void WriteStatusBar_WithNullUsage_ShouldStillRenderModel()
+    {
+        var info = new StatusBarInfo(
+            Model: "claude-sonnet",
+            Provider: "BYOK",
+            InputTokens: null,
+            OutputTokens: null,
+            TotalTokens: null,
+            ToolInvocations: 0,
+            SessionId: null);
+
+        AnsiConsole.Record();
+        ConsoleUI.WriteStatusBar(info);
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("claude-sonnet");
+        output.Should().Contain("BYOK");
+    }
+
+    [Fact]
+    public void WriteStatusBar_WithOnlyTotalTokens_ShouldRenderTotalTokenCount()
+    {
+        var info = new StatusBarInfo(
+            Model: "gpt-4.1",
+            Provider: null,
+            InputTokens: null,
+            OutputTokens: null,
+            TotalTokens: 5000,
+            ToolInvocations: 0,
+            SessionId: null);
+
+        AnsiConsole.Record();
+        ConsoleUI.WriteStatusBar(info);
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("gpt-4.1");
+        output.Should().Contain("5k");
+    }
+
+    #endregion
+
     #endregion
 
     #region Cancellation UX Tests
@@ -304,6 +435,21 @@ public class ConsoleUITests
         // Assert
         output.Should().Contain("Cancelled");
     }
+
+    #region Retry Prompt Tests
+
+    [Fact]
+    public void ShowRetryPrompt_MethodShouldExist()
+    {
+        var method = typeof(ConsoleUI).GetMethod("ShowRetryPrompt",
+            BindingFlags.Public | BindingFlags.Static);
+        method.Should().NotBeNull("ShowRetryPrompt should exist as a public static method");
+        method!.ReturnType.Should().Be(typeof(bool));
+        method.GetParameters().Should().HaveCount(1);
+        method.GetParameters()[0].ParameterType.Should().Be(typeof(string));
+    }
+
+    #endregion
 
     [Fact]
     public void LiveThinkingIndicator_SpinnerOutput_ShouldContainEscHint()
@@ -326,12 +472,50 @@ public class ConsoleUITests
             var output = sw.ToString();
 
             // Assert
-            output.Should().Contain("ESC to stop");
+            output.Should().Contain("ESC to cancel");
         }
         finally
         {
             Console.SetOut(originalOut);
         }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_FormatElapsed_ShouldFormatSeconds()
+    {
+        LiveThinkingIndicator.FormatElapsed(5).Should().Be("5s");
+        LiveThinkingIndicator.FormatElapsed(45).Should().Be("45s");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_FormatElapsed_ShouldFormatMinutes()
+    {
+        LiveThinkingIndicator.FormatElapsed(60).Should().Be("1m");
+        LiveThinkingIndicator.FormatElapsed(90).Should().Be("1m 30s");
+        LiveThinkingIndicator.FormatElapsed(125).Should().Be("2m 5s");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_PhaseElapsed_ShouldResetOnUpdateStatus()
+    {
+        using var indicator = new LiveThinkingIndicator();
+        indicator.Start();
+        Thread.Sleep(100);
+
+        indicator.UpdateStatus("New phase");
+        var phaseAfterUpdate = indicator.PhaseElapsed;
+
+        phaseAfterUpdate.TotalMilliseconds.Should().BeLessThan(200);
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_Elapsed_ShouldTrackTotalTime()
+    {
+        using var indicator = new LiveThinkingIndicator();
+        indicator.Start();
+        Thread.Sleep(300);
+
+        indicator.Elapsed.TotalMilliseconds.Should().BeGreaterThan(200);
     }
 
     #endregion

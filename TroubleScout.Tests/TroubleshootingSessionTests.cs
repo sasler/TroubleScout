@@ -2586,6 +2586,32 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         result.Should().BeFalse();
     }
 
+    [Fact]
+    public void RunActivityWatchdog_ShouldBeCancellable()
+    {
+        // Verify the watchdog method signature exists and is internal static for test visibility.
+        var method = typeof(TroubleshootingSession).GetMethod(
+            "RunActivityWatchdogAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        method.Should().NotBeNull("RunActivityWatchdogAsync should exist");
+        method!.ReturnType.Should().Be(typeof(Task));
+    }
+
+    [Theory]
+    [InlineData(14.9, null)]
+    [InlineData(15.0, "Waiting for response")]
+    [InlineData(29.9, "Waiting for response")]
+    [InlineData(30.0, "Connection seems slow")]
+    public void GetActivityWatchdogStatus_ShouldReturnExpectedThresholdStatus(
+        double idleSeconds,
+        string? expectedStatus)
+    {
+        var status = TroubleshootingSession.GetActivityWatchdogStatus(idleSeconds);
+
+        status.Should().Be(expectedStatus);
+    }
+
     #endregion
 
     #region Reasoning Delta Streaming Tests

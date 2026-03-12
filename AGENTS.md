@@ -93,7 +93,11 @@ Preserve this model for all changes.
 - **Multi-server `--server` flag** — repeatable (`--server srv1 --server srv2`) or comma-separated (`--server srv1,srv2`); all servers connect at startup via `InitializeAsync`.
 - **ESC cancellation** — a background poller in `RunInteractiveLoopAsync` cancels the active `CancellationTokenSource`; the token is passed to `_copilotSession.SendAsync` for true RPC-level cancellation. Poller skips `ReadKey` while `LiveThinkingIndicator.IsApprovalInProgress` is true.
 - **Reasoning display** — `AssistantReasoningEvent` handled in `SendMessageAsync` event switch; routed to `ConsoleUI.WriteReasoningText()` (ANSI 256-colour dark grey 238, falls back to plain text when stdout is redirected).
-- **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Confirm` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
+- **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Prompt` or `SelectionPrompt` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
+- **Three-option approval prompts** — `ConsoleUI.PromptCommandApproval` returns `ApprovalResult` (Approved/Denied). The prompt offers Yes, No, or Explain via `SelectionPrompt<string>`. Explain shows a detail panel then re-prompts with a binary Yes/No.
+- **Post-response status bar** — `ConsoleUI.WriteStatusBar(StatusBarInfo)` renders a compact one-line bar after each AI response with model name, provider, token counts, and tool invocations. Data comes from `BuildStatusBarInfo()`.
+- **Elapsed timer** — `LiveThinkingIndicator` tracks total and per-phase elapsed time. Shows `(Xs)` after 3s of runtime. Per-phase timer resets on `UpdateStatus`/`ShowToolExecution`. Warnings appear at 30s ("Still working...") and 60s ("Still waiting...") when a phase is stuck.
+- **Activity watchdog** — `RunActivityWatchdogAsync` runs alongside `SendMessageAsync` and monitors `lastEventTime`. If no events arrive for 15s, updates indicator to "Waiting for response"; at 30s, "Connection seems slow". Watchdog is cancelled before the thinking indicator is disposed.
 
 ## Build, Test, Verify (Required)
 

@@ -1868,16 +1868,20 @@ public class TroubleshootingSession : IAsyncDisposable
 
         IDisposable? subscription = null;
         LiveThinkingIndicator? thinkingIndicator = null;
+        CancellationTokenSource? watchdogCts = null;
+        Task? watchdogTask = null;
         try
         {
             var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var hasError = false;
             var wasCancelled = false;
+            var lastEventTimeTicks = DateTime.UtcNow.Ticks;
 
             // Register cancellation callback to unblock the done TCS
             using var cancelReg = cancellationToken.Register(() =>
             {
                 wasCancelled = true;
+                watchdogCts?.Cancel();
                 done.TrySetResult(false);
             });
             var hasStartedStreaming = false;
@@ -1895,10 +1899,13 @@ public class TroubleshootingSession : IAsyncDisposable
             // Create a live thinking indicator (manually disposed before recursive calls)
             thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
+            watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            watchdogTask = RunActivityWatchdogAsync(thinkingIndicator, () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc), watchdogCts.Token);
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             subscription = _copilotSession.On(evt =>
             {
+                Interlocked.Exchange(ref lastEventTimeTicks, DateTime.UtcNow.Ticks);
                 CaptureCapabilityUsage(evt);
 
                 switch (evt)
@@ -2077,6 +2084,12 @@ public class TroubleshootingSession : IAsyncDisposable
             
             // Wait for completion
             await done.Task;
+            watchdogCts.Cancel();
+            try { await watchdogTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch { /* ignore */ }
+            watchdogCts.Dispose();
+            watchdogCts = null;
+            watchdogTask = null;
             
             // Explicitly dispose subscription BEFORE processing approvals
             // This prevents duplicate event handling when SendMessageAsync is called recursively
@@ -2086,6 +2099,12 @@ public class TroubleshootingSession : IAsyncDisposable
             if (hasStartedStreaming)
             {
                 ConsoleUI.EndAIResponse();
+            }
+
+            // Show compact status bar after response completes
+            if (hasStartedStreaming && !hasError && !wasCancelled)
+            {
+                ConsoleUI.WriteStatusBar(BuildStatusBarInfo());
             }
 
             // Handle cancellation
@@ -2113,21 +2132,77 @@ public class TroubleshootingSession : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowCancelled();
             return false;
         }
         catch (Exception ex)
         {
+            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
             return false;
         }
         finally
         {
+            watchdogCts?.Cancel();
+            watchdogCts?.Dispose();
             subscription?.Dispose();
             thinkingIndicator?.Dispose();
         }
+    }
+
+    internal static async Task RunActivityWatchdogAsync(
+        LiveThinkingIndicator indicator,
+        Func<DateTime> getLastEventTime,
+        CancellationToken cancellationToken)
+    {
+        const int checkIntervalMs = 2000;
+        string? lastWatchdogStatus = null;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(checkIntervalMs, cancellationToken);
+
+                var idleSeconds = (DateTime.UtcNow - getLastEventTime()).TotalSeconds;
+                var nextWatchdogStatus = GetActivityWatchdogStatus(idleSeconds);
+
+                if (!string.Equals(nextWatchdogStatus, lastWatchdogStatus, StringComparison.Ordinal))
+                {
+                    if (nextWatchdogStatus is not null)
+                    {
+                        indicator.UpdateStatus(nextWatchdogStatus);
+                    }
+
+                    lastWatchdogStatus = nextWatchdogStatus;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected
+        }
+    }
+
+    internal static string? GetActivityWatchdogStatus(double idleSeconds)
+    {
+        const int slowWarningSeconds = 15;
+        const int staleWarningSeconds = 30;
+
+        if (idleSeconds >= staleWarningSeconds)
+        {
+            return "Connection seems slow";
+        }
+
+        if (idleSeconds >= slowWarningSeconds)
+        {
+            return "Waiting for response";
+        }
+
+        return null;
     }
 
     private static string BuildPromptForExecutionSafety(string userMessage)
@@ -2159,7 +2234,8 @@ public class TroubleshootingSession : IAsyncDisposable
         if (commands.Count == 1)
         {
             var cmd = commands[0];
-            if (ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason))
+            var approval = ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason, pending[0].Intent);
+            if (approval == ApprovalResult.Approved)
             {
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(pending[0]);
@@ -2211,7 +2287,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// </summary>
     private Task<bool> PromptApprovalAsync(string command, string reason)
     {
-        return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason));
+        return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved);
     }
 
     private static void SaveModelAndProviderState(string model, bool useByokOpenAi)
@@ -2554,10 +2630,10 @@ public class TroubleshootingSession : IAsyncDisposable
                             // Approval must happen OUTSIDE the spinner (Spectre exclusivity constraint)
                             if (_executionMode == ExecutionMode.Safe)
                             {
-                                var approved = ConsoleUI.PromptCommandApproval(
+                                var approval = ConsoleUI.PromptCommandApproval(
                                     $"New-PSSession -ComputerName '{srv}'",
                                     $"TroubleScout wants to establish a direct PowerShell session to {srv}");
-                                if (!approved)
+                                if (approval != ApprovalResult.Approved)
                                 {
                                     ConsoleUI.ShowWarning($"Connection to {srv} was denied.");
                                     continue;
@@ -3516,12 +3592,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 // In Safe mode: MCP, shell, file-write require user approval
                 var description = DescribePermissionRequest(req);
-                var approved = ConsoleUI.PromptCommandApproval(
+                var approval = ConsoleUI.PromptCommandApproval(
                     description,
                     BuildPermissionPromptReason(kind));
                 return Task.FromResult(new PermissionRequestResult
                 {
-                    Kind = approved
+                    Kind = approval == ApprovalResult.Approved
                         ? PermissionRequestResultKind.Approved
                         : PermissionRequestResultKind.DeniedInteractivelyByUser
                 });
@@ -3876,10 +3952,10 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (!skipApproval && _executionMode == ExecutionMode.Safe)
         {
-            var approved = ConsoleUI.PromptCommandApproval(
+            var approval = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}'",
                 $"TroubleScout wants to establish a direct PowerShell session to {serverName}");
-            if (!approved)
+            if (approval != ApprovalResult.Approved)
                 return (false, $"Connection to {serverName} was denied by user.");
         }
 
@@ -3925,6 +4001,22 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.ExecutionMode = mode;
         foreach (var exec in _additionalExecutors.Values)
             exec.ExecutionMode = mode;
+    }
+
+    internal StatusBarInfo BuildStatusBarInfo()
+    {
+        var inputTokens = _lastUsage?.InputTokens ?? _lastUsage?.PromptTokens;
+        var outputTokens = _lastUsage?.OutputTokens ?? _lastUsage?.CompletionTokens;
+        var totalTokens = _lastUsage?.TotalTokens;
+
+        return new StatusBarInfo(
+            Model: SelectedModel,
+            Provider: ActiveProviderDisplayName,
+            InputTokens: inputTokens,
+            OutputTokens: outputTokens,
+            TotalTokens: totalTokens,
+            ToolInvocations: _toolInvocationCount,
+            SessionId: _sessionId);
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()

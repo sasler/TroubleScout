@@ -9,6 +9,30 @@ using TroubleScout.Services;
 namespace TroubleScout.UI;
 
 /// <summary>
+/// Result of a user approval prompt
+/// </summary>
+public enum ApprovalResult
+{
+    Approved,
+    Denied
+}
+
+/// <summary>
+/// Data for the compact status bar shown after each AI response
+/// </summary>
+public sealed record StatusBarInfo(
+    string? Model,
+    string? Provider,
+    int? InputTokens,
+    int? OutputTokens,
+    int? TotalTokens,
+    int ToolInvocations,
+    string? SessionId)
+{
+    public static StatusBarInfo Empty => new(null, null, null, null, null, 0, null);
+}
+
+/// <summary>
 /// Provides TUI components for the TroubleScout application
 /// </summary>
 public static class ConsoleUI
@@ -1272,34 +1296,131 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Write a compact status bar showing model, provider, and usage info
+    /// </summary>
+    public static void WriteStatusBar(StatusBarInfo info)
+    {
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(info.Model))
+        {
+            parts.Add($"[grey]Model:[/] [magenta]{Markup.Escape(info.Model)}[/]");
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.Provider))
+        {
+            parts.Add($"[grey]Provider:[/] [blue]{Markup.Escape(info.Provider)}[/]");
+        }
+
+        if (info.InputTokens.HasValue || info.OutputTokens.HasValue)
+        {
+            var inStr = info.InputTokens.HasValue ? FormatCompactTokenCount(info.InputTokens.Value) : "?";
+            var outStr = info.OutputTokens.HasValue ? FormatCompactTokenCount(info.OutputTokens.Value) : "?";
+            parts.Add($"[grey]Tokens:[/] [cyan]{inStr}[/][grey] in /[/] [cyan]{outStr}[/][grey] out[/]");
+        }
+        else if (info.TotalTokens.HasValue)
+        {
+            parts.Add($"[grey]Tokens:[/] [cyan]{FormatCompactTokenCount(info.TotalTokens.Value)}[/]");
+        }
+
+        if (info.ToolInvocations > 0)
+        {
+            parts.Add($"[grey]Tools:[/] [cyan]{info.ToolInvocations}[/]");
+        }
+
+        if (parts.Count == 0)
+            return;
+
+        var statusLine = string.Join("[grey] | [/]", parts);
+        AnsiConsole.MarkupLine($"[dim]───[/] {statusLine} [dim]───[/]");
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
     /// Display a command that requires approval
     /// </summary>
-    public static bool PromptCommandApproval(string command, string reason)
+    public static ApprovalResult PromptCommandApproval(string command, string reason, string? agentIntent = null)
     {
         LiveThinkingIndicator.PauseForApproval();
         try
         {
             AnsiConsole.WriteLine();
             
-            var panel = new Panel(new Rows(
-                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
-                new Markup(""),
-                new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
-                new Markup(""),
-                new Markup("[red]This command can modify system state.[/]")
-            ))
+            var rows = new List<IRenderable>
+            {
+                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]")
+            };
+
+            if (!string.IsNullOrWhiteSpace(agentIntent))
+            {
+                rows.Add(new Markup(""));
+                rows.Add(new Markup($"[cyan]Why:[/] [white]{Markup.Escape(agentIntent)}[/]"));
+            }
+
+            rows.Add(new Markup(""));
+            rows.Add(new Markup("[red]This command can modify system state.[/]"));
+
+            var panel = new Panel(new Rows(rows))
             .Header("[bold yellow] Approval Required [/]")
             .Border(BoxBorder.Heavy)
             .BorderColor(Color.Yellow);
             
             AnsiConsole.Write(panel);
-            
-            return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(new[]
+                    {
+                        "❌ No, skip",
+                        "✅ Yes, execute",
+                        "❓ Explain what this does"
+                    }));
+
+            if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowCommandExplanation(command, reason, agentIntent);
+
+                return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false)
+                    ? ApprovalResult.Approved
+                    : ApprovalResult.Denied;
+            }
+
+            return choice.Contains("Yes", StringComparison.OrdinalIgnoreCase)
+                ? ApprovalResult.Approved
+                : ApprovalResult.Denied;
         }
         finally
         {
             LiveThinkingIndicator.ResumeAfterApproval();
         }
+    }
+
+    private static void ShowCommandExplanation(string command, string reason, string? agentIntent = null)
+    {
+        AnsiConsole.WriteLine();
+
+        var grid = new Grid();
+        grid.AddColumn(new GridColumn().PadRight(2));
+        grid.AddColumn(new GridColumn());
+
+        if (!string.IsNullOrWhiteSpace(agentIntent))
+        {
+            grid.AddRow("[cyan]Why:[/]", $"[white]{Markup.Escape(agentIntent)}[/]");
+        }
+
+        grid.AddRow("[grey]Command:[/]", $"[white]{Markup.Escape(command)}[/]");
+        grid.AddRow("[grey]Safety rule:[/]", $"[white]{Markup.Escape(reason)}[/]");
+        grid.AddRow("[grey]Impact:[/]", "[yellow]This command may modify system state, services, or configuration.[/]");
+
+        var explanationPanel = new Panel(grid)
+            .Header("[bold cyan] Command Explanation [/]")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Cyan1);
+
+        AnsiConsole.Write(explanationPanel);
+        AnsiConsole.WriteLine();
     }
 
     /// <summary>
@@ -1581,7 +1702,7 @@ public static class ConsoleUI
         return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
     }
 
-    private static string FormatCompactTokenCount(int value)
+    internal static string FormatCompactTokenCount(int value)
     {
         if (value >= 1_000_000)
         {
@@ -1787,6 +1908,31 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Prompt the user to retry after an error or timeout
+    /// </summary>
+    public static bool ShowRetryPrompt(string message)
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(message)}[/]");
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(["Retry", "Skip"]));
+
+            return choice.StartsWith("Retry", StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
+    /// <summary>
     /// Display reasoning/thinking text in a visually muted dark color
     /// </summary>
     public static void WriteReasoningText(string text)
@@ -1873,13 +2019,15 @@ public static class ConsoleUI
 public class LiveThinkingIndicator : IDisposable
 {
     private readonly CancellationTokenSource _cts = new();
-    private string _currentStatus = "Thinking...";
+    private string _currentStatus = "Thinking";
     private bool _isRunning;
     private bool _hasStartedResponse;
     private readonly object _lock = new();
     private Task? _spinnerTask;
     private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
     private int _spinnerIndex;
+    private readonly System.Diagnostics.Stopwatch _totalElapsed = new();
+    private readonly System.Diagnostics.Stopwatch _phaseElapsed = new();
 
     private static volatile bool _approvalInProgress;
 
@@ -1892,6 +2040,12 @@ public class LiveThinkingIndicator : IDisposable
     /// <summary>Resume spinner output after an approval dialog completes.</summary>
     public static void ResumeAfterApproval() => _approvalInProgress = false;
 
+    /// <summary>Total elapsed time since the indicator started.</summary>
+    public TimeSpan Elapsed => _totalElapsed.Elapsed;
+
+    /// <summary>Elapsed time since the last phase change.</summary>
+    public TimeSpan PhaseElapsed => _phaseElapsed.Elapsed;
+
     public void Start()
     {
         lock (_lock)
@@ -1899,6 +2053,8 @@ public class LiveThinkingIndicator : IDisposable
             if (_isRunning) return;
             _isRunning = true;
             _hasStartedResponse = false;
+            _totalElapsed.Restart();
+            _phaseElapsed.Restart();
         }
 
         _spinnerTask = Task.Run(async () =>
@@ -1913,9 +2069,7 @@ public class LiveThinkingIndicator : IDisposable
 
                         if (!_approvalInProgress)
                         {
-                            // Clear the current line and write status
-                            Console.Write($"\r\x1b[K\u001b[36m{_currentStatus}{SpinnerFrames[_spinnerIndex]}\u001b[0m  \u001b[90m(ESC to stop)\u001b[0m");
-                            _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+                            WriteSpinnerFrame();
                         }
                     }
                     await Task.Delay(200, _cts.Token);
@@ -1928,11 +2082,62 @@ public class LiveThinkingIndicator : IDisposable
         });
     }
 
+    private void WriteSpinnerFrame()
+    {
+        var phaseSec = (int)_phaseElapsed.Elapsed.TotalSeconds;
+        var totalSec = (int)_totalElapsed.Elapsed.TotalSeconds;
+        var elapsed = FormatElapsed(totalSec);
+
+        string statusColor;
+        string status;
+        string hint;
+
+        if (phaseSec >= 60)
+        {
+            statusColor = "\u001b[33m";
+            status = $"\u26a0 Still waiting ({elapsed})";
+            hint = "operation may be stalled \u2014 ESC to cancel";
+        }
+        else if (phaseSec >= 30)
+        {
+            statusColor = "\u001b[33m";
+            status = $"\u26a0 Still working ({elapsed})";
+            hint = "this is taking longer than usual \u2014 ESC to cancel";
+        }
+        else
+        {
+            statusColor = "\u001b[36m";
+            status = $"{_currentStatus}{SpinnerFrames[_spinnerIndex]}";
+            if (totalSec >= 3)
+            {
+                status += $" ({elapsed})";
+            }
+
+            hint = "ESC to cancel";
+        }
+
+        Console.Write($"\r\x1b[K{statusColor}{status}\u001b[0m  \u001b[90m{hint}\u001b[0m");
+        _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+    }
+
+    internal static string FormatElapsed(int totalSeconds)
+    {
+        if (totalSeconds < 60)
+        {
+            return $"{totalSeconds}s";
+        }
+
+        var min = totalSeconds / 60;
+        var sec = totalSeconds % 60;
+        return sec > 0 ? $"{min}m {sec}s" : $"{min}m";
+    }
+
     public void UpdateStatus(string status)
     {
         lock (_lock)
         {
             _currentStatus = status;
+            _phaseElapsed.Restart();
         }
     }
 
@@ -1941,6 +2146,7 @@ public class LiveThinkingIndicator : IDisposable
         lock (_lock)
         {
             _currentStatus = $"Running {toolName}";
+            _phaseElapsed.Restart();
         }
     }
 
@@ -1962,6 +2168,9 @@ public class LiveThinkingIndicator : IDisposable
         
         lock (_lock)
         {
+            _totalElapsed.Stop();
+            _phaseElapsed.Stop();
+            
             if (!_hasStartedResponse)
             {
                 // Clear the status line if we haven't started a response
