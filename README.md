@@ -12,12 +12,15 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 ## Features
 
 - **Natural Language Troubleshooting**: Describe your issue, and the AI analyzes and diagnoses problems
-- **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval
+- **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval with a three-option prompt (Yes / No / Explain)
 - **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
+- **Always-Visible Status Bar**: Compact post-response line showing model, provider, token usage, and tool count
+- **Elapsed Timer**: Thinking indicator shows elapsed time and long-running warnings (30s/60s thresholds)
+- **Activity Watchdog**: Detects stalled operations and updates the user when the model goes quiet
 - **Local or Remote**: Works with localhost or remote servers via WinRM
 - **Multi-Server at Startup**: Connect to multiple servers with `--server srv1 --server srv2` (or `--server srv1,srv2`); all sessions are established at launch
 - **Multi-Server Sessions**: Connect to additional servers at runtime with `/server <name>` or via `connect_server` tool to avoid PowerShell double-hop issues
-- **ESC Cancellation**: Press ESC at any time to cancel the current AI turn; spinner shows `(ESC to stop)` as a persistent hint
+- **ESC Cancellation**: Press ESC at any time to cancel the current AI turn; spinner shows `(ESC to cancel)` as a persistent hint
 - **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
 - **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
@@ -219,6 +222,8 @@ TroubleScout uses a permission-based security model:
 - `Set-*`, `Start-*`, `Stop-*`, `Restart-*`
 - `Remove-*`, `New-*`, `Add-*`, `Enable-*`, `Disable-*`
 - Any command that can modify system state
+
+When approval is required, a three-option prompt is shown: **Yes** (execute), **No** (skip), or **Explain** (show command details before deciding).
 
 ### Blocked Commands
 
