@@ -2088,6 +2088,12 @@ public class TroubleshootingSession : IAsyncDisposable
                 ConsoleUI.EndAIResponse();
             }
 
+            // Show compact status bar after response completes
+            if (hasStartedStreaming && !hasError && !wasCancelled)
+            {
+                ConsoleUI.WriteStatusBar(BuildStatusBarInfo());
+            }
+
             // Handle cancellation
             if (wasCancelled)
             {
@@ -2159,7 +2165,8 @@ public class TroubleshootingSession : IAsyncDisposable
         if (commands.Count == 1)
         {
             var cmd = commands[0];
-            if (ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason))
+            var approval = ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason);
+            if (approval == ApprovalResult.Approved)
             {
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(pending[0]);
@@ -2211,7 +2218,7 @@ public class TroubleshootingSession : IAsyncDisposable
     /// </summary>
     private Task<bool> PromptApprovalAsync(string command, string reason)
     {
-        return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason));
+        return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved);
     }
 
     private static void SaveModelAndProviderState(string model, bool useByokOpenAi)
@@ -2554,10 +2561,10 @@ public class TroubleshootingSession : IAsyncDisposable
                             // Approval must happen OUTSIDE the spinner (Spectre exclusivity constraint)
                             if (_executionMode == ExecutionMode.Safe)
                             {
-                                var approved = ConsoleUI.PromptCommandApproval(
+                                var approval = ConsoleUI.PromptCommandApproval(
                                     $"New-PSSession -ComputerName '{srv}'",
                                     $"TroubleScout wants to establish a direct PowerShell session to {srv}");
-                                if (!approved)
+                                if (approval != ApprovalResult.Approved)
                                 {
                                     ConsoleUI.ShowWarning($"Connection to {srv} was denied.");
                                     continue;
@@ -3516,12 +3523,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 // In Safe mode: MCP, shell, file-write require user approval
                 var description = DescribePermissionRequest(req);
-                var approved = ConsoleUI.PromptCommandApproval(
+                var approval = ConsoleUI.PromptCommandApproval(
                     description,
                     BuildPermissionPromptReason(kind));
                 return Task.FromResult(new PermissionRequestResult
                 {
-                    Kind = approved
+                    Kind = approval == ApprovalResult.Approved
                         ? PermissionRequestResultKind.Approved
                         : PermissionRequestResultKind.DeniedInteractivelyByUser
                 });
@@ -3876,10 +3883,10 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (!skipApproval && _executionMode == ExecutionMode.Safe)
         {
-            var approved = ConsoleUI.PromptCommandApproval(
+            var approval = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}'",
                 $"TroubleScout wants to establish a direct PowerShell session to {serverName}");
-            if (!approved)
+            if (approval != ApprovalResult.Approved)
                 return (false, $"Connection to {serverName} was denied by user.");
         }
 
@@ -3925,6 +3932,22 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.ExecutionMode = mode;
         foreach (var exec in _additionalExecutors.Values)
             exec.ExecutionMode = mode;
+    }
+
+    internal StatusBarInfo BuildStatusBarInfo()
+    {
+        var inputTokens = _lastUsage?.InputTokens ?? _lastUsage?.PromptTokens;
+        var outputTokens = _lastUsage?.OutputTokens ?? _lastUsage?.CompletionTokens;
+        var totalTokens = _lastUsage?.TotalTokens;
+
+        return new StatusBarInfo(
+            Model: SelectedModel,
+            Provider: ActiveProviderDisplayName,
+            InputTokens: inputTokens,
+            OutputTokens: outputTokens,
+            TotalTokens: totalTokens,
+            ToolInvocations: _toolInvocationCount,
+            SessionId: _sessionId);
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()

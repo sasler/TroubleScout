@@ -9,6 +9,30 @@ using TroubleScout.Services;
 namespace TroubleScout.UI;
 
 /// <summary>
+/// Result of a user approval prompt
+/// </summary>
+public enum ApprovalResult
+{
+    Approved,
+    Denied
+}
+
+/// <summary>
+/// Data for the compact status bar shown after each AI response
+/// </summary>
+public sealed record StatusBarInfo(
+    string? Model,
+    string? Provider,
+    int? InputTokens,
+    int? OutputTokens,
+    int? TotalTokens,
+    int ToolInvocations,
+    string? SessionId)
+{
+    public static StatusBarInfo Empty => new(null, null, null, null, null, 0, null);
+}
+
+/// <summary>
 /// Provides TUI components for the TroubleScout application
 /// </summary>
 public static class ConsoleUI
@@ -1272,9 +1296,50 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Write a compact status bar showing model, provider, and usage info
+    /// </summary>
+    public static void WriteStatusBar(StatusBarInfo info)
+    {
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(info.Model))
+        {
+            parts.Add($"[grey]Model:[/] [magenta]{Markup.Escape(info.Model)}[/]");
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.Provider))
+        {
+            parts.Add($"[grey]Provider:[/] [blue]{Markup.Escape(info.Provider)}[/]");
+        }
+
+        if (info.InputTokens.HasValue || info.OutputTokens.HasValue)
+        {
+            var inStr = info.InputTokens.HasValue ? FormatCompactTokenCount(info.InputTokens.Value) : "?";
+            var outStr = info.OutputTokens.HasValue ? FormatCompactTokenCount(info.OutputTokens.Value) : "?";
+            parts.Add($"[grey]Tokens:[/] [cyan]{inStr}[/][grey] in /[/] [cyan]{outStr}[/][grey] out[/]");
+        }
+        else if (info.TotalTokens.HasValue)
+        {
+            parts.Add($"[grey]Tokens:[/] [cyan]{FormatCompactTokenCount(info.TotalTokens.Value)}[/]");
+        }
+
+        if (info.ToolInvocations > 0)
+        {
+            parts.Add($"[grey]Tools:[/] [cyan]{info.ToolInvocations}[/]");
+        }
+
+        if (parts.Count == 0)
+            return;
+
+        var statusLine = string.Join("[grey] | [/]", parts);
+        AnsiConsole.MarkupLine($"[dim]───[/] {statusLine} [dim]───[/]");
+        AnsiConsole.WriteLine();
+    }
+
+    /// <summary>
     /// Display a command that requires approval
     /// </summary>
-    public static bool PromptCommandApproval(string command, string reason)
+    public static ApprovalResult PromptCommandApproval(string command, string reason)
     {
         LiveThinkingIndicator.PauseForApproval();
         try
@@ -1293,13 +1358,57 @@ public static class ConsoleUI
             .BorderColor(Color.Yellow);
             
             AnsiConsole.Write(panel);
-            
-            return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false);
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(new[]
+                    {
+                        "✅ Yes, execute",
+                        "❌ No, skip",
+                        "❓ Explain what this does"
+                    }));
+
+            if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowCommandExplanation(command, reason);
+
+                return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false)
+                    ? ApprovalResult.Approved
+                    : ApprovalResult.Denied;
+            }
+
+            return choice.Contains("Yes", StringComparison.OrdinalIgnoreCase)
+                ? ApprovalResult.Approved
+                : ApprovalResult.Denied;
         }
         finally
         {
             LiveThinkingIndicator.ResumeAfterApproval();
         }
+    }
+
+    private static void ShowCommandExplanation(string command, string reason)
+    {
+        AnsiConsole.WriteLine();
+
+        var grid = new Grid();
+        grid.AddColumn(new GridColumn().PadRight(2));
+        grid.AddColumn(new GridColumn());
+
+        grid.AddRow("[grey]Command:[/]", $"[white]{Markup.Escape(command)}[/]");
+        grid.AddRow("[grey]Reason:[/]", $"[white]{Markup.Escape(reason)}[/]");
+        grid.AddRow("[grey]Impact:[/]", "[yellow]This command may modify system state, services, or configuration.[/]");
+        grid.AddRow("[grey]Safety:[/]", "[white]In Safe mode, all mutating commands require explicit user approval before execution.[/]");
+
+        var explanationPanel = new Panel(grid)
+            .Header("[bold cyan] Command Explanation [/]")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Cyan1);
+
+        AnsiConsole.Write(explanationPanel);
+        AnsiConsole.WriteLine();
     }
 
     /// <summary>
@@ -1581,7 +1690,7 @@ public static class ConsoleUI
         return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
     }
 
-    private static string FormatCompactTokenCount(int value)
+    internal static string FormatCompactTokenCount(int value)
     {
         if (value >= 1_000_000)
         {
