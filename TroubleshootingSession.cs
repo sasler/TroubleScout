@@ -2159,8 +2159,7 @@ public class TroubleshootingSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         const int checkIntervalMs = 2000;
-        const int slowWarningSeconds = 15;
-        const int staleWarningSeconds = 30;
+        string? lastWatchdogStatus = null;
 
         try
         {
@@ -2169,14 +2168,16 @@ public class TroubleshootingSession : IAsyncDisposable
                 await Task.Delay(checkIntervalMs, cancellationToken);
 
                 var idleSeconds = (DateTime.UtcNow - getLastEventTime()).TotalSeconds;
+                var nextWatchdogStatus = GetActivityWatchdogStatus(idleSeconds);
 
-                if (idleSeconds >= staleWarningSeconds)
+                if (!string.Equals(nextWatchdogStatus, lastWatchdogStatus, StringComparison.Ordinal))
                 {
-                    indicator.UpdateStatus("Connection seems slow");
-                }
-                else if (idleSeconds >= slowWarningSeconds)
-                {
-                    indicator.UpdateStatus("Waiting for response");
+                    if (nextWatchdogStatus is not null)
+                    {
+                        indicator.UpdateStatus(nextWatchdogStatus);
+                    }
+
+                    lastWatchdogStatus = nextWatchdogStatus;
                 }
             }
         }
@@ -2184,6 +2185,24 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             // Expected
         }
+    }
+
+    internal static string? GetActivityWatchdogStatus(double idleSeconds)
+    {
+        const int slowWarningSeconds = 15;
+        const int staleWarningSeconds = 30;
+
+        if (idleSeconds >= staleWarningSeconds)
+        {
+            return "Connection seems slow";
+        }
+
+        if (idleSeconds >= slowWarningSeconds)
+        {
+            return "Waiting for response";
+        }
+
+        return null;
     }
 
     private static string BuildPromptForExecutionSafety(string userMessage)
