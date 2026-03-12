@@ -1,5 +1,7 @@
 # TroubleScout
 
+![TroubleScout demo showing a sample troubleshooting session](docs/assets/troublescout-v1.7.0.gif)
+
 [![Build and Test](https://github.com/sasler/TroubleScout/actions/workflows/build.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/build.yml)
 [![Tests](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml)
 [![Branch Protection](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml)
