@@ -1982,13 +1982,15 @@ public static class ConsoleUI
 public class LiveThinkingIndicator : IDisposable
 {
     private readonly CancellationTokenSource _cts = new();
-    private string _currentStatus = "Thinking...";
+    private string _currentStatus = "Thinking";
     private bool _isRunning;
     private bool _hasStartedResponse;
     private readonly object _lock = new();
     private Task? _spinnerTask;
     private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
     private int _spinnerIndex;
+    private readonly System.Diagnostics.Stopwatch _totalElapsed = new();
+    private readonly System.Diagnostics.Stopwatch _phaseElapsed = new();
 
     private static volatile bool _approvalInProgress;
 
@@ -2001,6 +2003,12 @@ public class LiveThinkingIndicator : IDisposable
     /// <summary>Resume spinner output after an approval dialog completes.</summary>
     public static void ResumeAfterApproval() => _approvalInProgress = false;
 
+    /// <summary>Total elapsed time since the indicator started.</summary>
+    public TimeSpan Elapsed => _totalElapsed.Elapsed;
+
+    /// <summary>Elapsed time since the last phase change.</summary>
+    public TimeSpan PhaseElapsed => _phaseElapsed.Elapsed;
+
     public void Start()
     {
         lock (_lock)
@@ -2008,6 +2016,8 @@ public class LiveThinkingIndicator : IDisposable
             if (_isRunning) return;
             _isRunning = true;
             _hasStartedResponse = false;
+            _totalElapsed.Restart();
+            _phaseElapsed.Restart();
         }
 
         _spinnerTask = Task.Run(async () =>
@@ -2022,9 +2032,7 @@ public class LiveThinkingIndicator : IDisposable
 
                         if (!_approvalInProgress)
                         {
-                            // Clear the current line and write status
-                            Console.Write($"\r\x1b[K\u001b[36m{_currentStatus}{SpinnerFrames[_spinnerIndex]}\u001b[0m  \u001b[90m(ESC to stop)\u001b[0m");
-                            _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+                            WriteSpinnerFrame();
                         }
                     }
                     await Task.Delay(200, _cts.Token);
@@ -2037,11 +2045,62 @@ public class LiveThinkingIndicator : IDisposable
         });
     }
 
+    private void WriteSpinnerFrame()
+    {
+        var phaseSec = (int)_phaseElapsed.Elapsed.TotalSeconds;
+        var totalSec = (int)_totalElapsed.Elapsed.TotalSeconds;
+        var elapsed = FormatElapsed(totalSec);
+
+        string statusColor;
+        string status;
+        string hint;
+
+        if (phaseSec >= 60)
+        {
+            statusColor = "\u001b[33m";
+            status = $"\u26a0 Still waiting ({elapsed})";
+            hint = "operation may be stalled \u2014 ESC to cancel";
+        }
+        else if (phaseSec >= 30)
+        {
+            statusColor = "\u001b[33m";
+            status = $"\u26a0 Still working ({elapsed})";
+            hint = "this is taking longer than usual \u2014 ESC to cancel";
+        }
+        else
+        {
+            statusColor = "\u001b[36m";
+            status = $"{_currentStatus}{SpinnerFrames[_spinnerIndex]}";
+            if (totalSec >= 3)
+            {
+                status += $" ({elapsed})";
+            }
+
+            hint = "ESC to cancel";
+        }
+
+        Console.Write($"\r\x1b[K{statusColor}{status}\u001b[0m  \u001b[90m{hint}\u001b[0m");
+        _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+    }
+
+    internal static string FormatElapsed(int totalSeconds)
+    {
+        if (totalSeconds < 60)
+        {
+            return $"{totalSeconds}s";
+        }
+
+        var min = totalSeconds / 60;
+        var sec = totalSeconds % 60;
+        return sec > 0 ? $"{min}m {sec}s" : $"{min}m";
+    }
+
     public void UpdateStatus(string status)
     {
         lock (_lock)
         {
             _currentStatus = status;
+            _phaseElapsed.Restart();
         }
     }
 
@@ -2050,6 +2109,7 @@ public class LiveThinkingIndicator : IDisposable
         lock (_lock)
         {
             _currentStatus = $"Running {toolName}";
+            _phaseElapsed.Restart();
         }
     }
 
@@ -2068,6 +2128,8 @@ public class LiveThinkingIndicator : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        _totalElapsed.Stop();
+        _phaseElapsed.Stop();
         
         lock (_lock)
         {

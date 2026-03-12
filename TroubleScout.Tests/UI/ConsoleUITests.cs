@@ -456,12 +456,50 @@ public class ConsoleUITests
             var output = sw.ToString();
 
             // Assert
-            output.Should().Contain("ESC to stop");
+            output.Should().Contain("ESC to cancel");
         }
         finally
         {
             Console.SetOut(originalOut);
         }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_FormatElapsed_ShouldFormatSeconds()
+    {
+        LiveThinkingIndicator.FormatElapsed(5).Should().Be("5s");
+        LiveThinkingIndicator.FormatElapsed(45).Should().Be("45s");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_FormatElapsed_ShouldFormatMinutes()
+    {
+        LiveThinkingIndicator.FormatElapsed(60).Should().Be("1m");
+        LiveThinkingIndicator.FormatElapsed(90).Should().Be("1m 30s");
+        LiveThinkingIndicator.FormatElapsed(125).Should().Be("2m 5s");
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_PhaseElapsed_ShouldResetOnUpdateStatus()
+    {
+        using var indicator = new LiveThinkingIndicator();
+        indicator.Start();
+        Thread.Sleep(100);
+
+        indicator.UpdateStatus("New phase");
+        var phaseAfterUpdate = indicator.PhaseElapsed;
+
+        phaseAfterUpdate.TotalMilliseconds.Should().BeLessThan(200);
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_Elapsed_ShouldTrackTotalTime()
+    {
+        using var indicator = new LiveThinkingIndicator();
+        indicator.Start();
+        Thread.Sleep(300);
+
+        indicator.Elapsed.TotalMilliseconds.Should().BeGreaterThan(200);
     }
 
     #endregion
