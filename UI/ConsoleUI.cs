@@ -1339,20 +1339,28 @@ public static class ConsoleUI
     /// <summary>
     /// Display a command that requires approval
     /// </summary>
-    public static ApprovalResult PromptCommandApproval(string command, string reason)
+    public static ApprovalResult PromptCommandApproval(string command, string reason, string? agentIntent = null)
     {
         LiveThinkingIndicator.PauseForApproval();
         try
         {
             AnsiConsole.WriteLine();
             
-            var panel = new Panel(new Rows(
-                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]"),
-                new Markup(""),
-                new Markup($"[grey]Reason: {Markup.Escape(reason)}[/]"),
-                new Markup(""),
-                new Markup("[red]This command can modify system state.[/]")
-            ))
+            var rows = new List<IRenderable>
+            {
+                new Markup($"[yellow]Command:[/] [white]{Markup.Escape(command)}[/]")
+            };
+
+            if (!string.IsNullOrWhiteSpace(agentIntent))
+            {
+                rows.Add(new Markup(""));
+                rows.Add(new Markup($"[cyan]Why:[/] [white]{Markup.Escape(agentIntent)}[/]"));
+            }
+
+            rows.Add(new Markup(""));
+            rows.Add(new Markup("[red]This command can modify system state.[/]"));
+
+            var panel = new Panel(new Rows(rows))
             .Header("[bold yellow] Approval Required [/]")
             .Border(BoxBorder.Heavy)
             .BorderColor(Color.Yellow);
@@ -1372,7 +1380,7 @@ public static class ConsoleUI
 
             if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
             {
-                ShowCommandExplanation(command, reason);
+                ShowCommandExplanation(command, reason, agentIntent);
 
                 return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false)
                     ? ApprovalResult.Approved
@@ -1389,7 +1397,7 @@ public static class ConsoleUI
         }
     }
 
-    private static void ShowCommandExplanation(string command, string reason)
+    private static void ShowCommandExplanation(string command, string reason, string? agentIntent = null)
     {
         AnsiConsole.WriteLine();
 
@@ -1397,10 +1405,14 @@ public static class ConsoleUI
         grid.AddColumn(new GridColumn().PadRight(2));
         grid.AddColumn(new GridColumn());
 
+        if (!string.IsNullOrWhiteSpace(agentIntent))
+        {
+            grid.AddRow("[cyan]Why:[/]", $"[white]{Markup.Escape(agentIntent)}[/]");
+        }
+
         grid.AddRow("[grey]Command:[/]", $"[white]{Markup.Escape(command)}[/]");
-        grid.AddRow("[grey]Reason:[/]", $"[white]{Markup.Escape(reason)}[/]");
+        grid.AddRow("[grey]Safety rule:[/]", $"[white]{Markup.Escape(reason)}[/]");
         grid.AddRow("[grey]Impact:[/]", "[yellow]This command may modify system state, services, or configuration.[/]");
-        grid.AddRow("[grey]Safety:[/]", "[white]In Safe mode, all mutating commands require explicit user approval before execution.[/]");
 
         var explanationPanel = new Panel(grid)
             .Header("[bold cyan] Command Explanation [/]")

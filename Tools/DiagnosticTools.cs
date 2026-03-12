@@ -113,6 +113,7 @@ public class DiagnosticTools
     /// </summary>
     private async Task<string> RunPowerShellCommandAsync(
         [Description("The PowerShell command to execute")] string command,
+        [Description("Optional: briefly explain why you need to run this command (shown to user during approval)")] string? intent = null,
         [Description("Optional: the server name to run the command on. If omitted, runs on the primary target server. Must match a server name established with connect_server.")] string? sessionName = null)
     {
         // Resolve the executor for the given session name
@@ -154,7 +155,7 @@ public class DiagnosticTools
             executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
             var pending = new PendingCommand(command, validation.Reason ?? "Requires user approval",
-                isAlternate ? executor : null, isAlternate ? sessionName : null);
+                isAlternate ? executor : null, isAlternate ? sessionName : null, intent);
             _pendingCommands.Add(pending);
             _actionLogger?.Invoke(new CommandActionLog(
                 DateTimeOffset.Now,
@@ -739,7 +740,7 @@ public class DiagnosticTools
 /// <summary>
 /// Represents a command pending user approval
 /// </summary>
-public sealed record PendingCommand(string Command, string Reason, PowerShellExecutor? Executor = null, string? ServerName = null);
+public sealed record PendingCommand(string Command, string Reason, PowerShellExecutor? Executor = null, string? ServerName = null, string? Intent = null);
 
 public enum CommandApprovalState
 {

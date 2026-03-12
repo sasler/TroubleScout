@@ -312,11 +312,12 @@ public class ConsoleUITests
         method.Should().NotBeNull("ShowCommandExplanation should exist as a private static method");
 
         AnsiConsole.Record();
-        method!.Invoke(null, new object[] { "Get-Process", "Diagnostic reason" });
+        method!.Invoke(null, new object?[] { "Get-Process", "Diagnostic reason", "I need process info to check CPU usage" });
         var output = AnsiConsole.ExportText();
 
         output.Should().Contain("Get-Process");
         output.Should().Contain("Diagnostic reason");
+        output.Should().Contain("I need process info to check CPU usage");
     }
 
     #endregion

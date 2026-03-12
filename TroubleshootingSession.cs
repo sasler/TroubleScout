@@ -2215,7 +2215,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (commands.Count == 1)
         {
             var cmd = commands[0];
-            var approval = ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason);
+            var approval = ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason, pending[0].Intent);
             if (approval == ApprovalResult.Approved)
             {
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
