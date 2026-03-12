@@ -1875,7 +1875,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var hasError = false;
             var wasCancelled = false;
-            var lastEventTime = DateTime.UtcNow;
+            var lastEventTimeTicks = DateTime.UtcNow.Ticks;
 
             // Register cancellation callback to unblock the done TCS
             using var cancelReg = cancellationToken.Register(() =>
@@ -1900,12 +1900,12 @@ public class TroubleshootingSession : IAsyncDisposable
             thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
             watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            watchdogTask = RunActivityWatchdogAsync(thinkingIndicator, () => lastEventTime, watchdogCts.Token);
+            watchdogTask = RunActivityWatchdogAsync(thinkingIndicator, () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc), watchdogCts.Token);
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             subscription = _copilotSession.On(evt =>
             {
-                lastEventTime = DateTime.UtcNow;
+                Interlocked.Exchange(ref lastEventTimeTicks, DateTime.UtcNow.Ticks);
                 CaptureCapabilityUsage(evt);
 
                 switch (evt)

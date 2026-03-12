@@ -1365,8 +1365,8 @@ public static class ConsoleUI
                     .HighlightStyle(new Style(Color.Cyan1))
                     .AddChoices(new[]
                     {
-                        "✅ Yes, execute",
                         "❌ No, skip",
+                        "✅ Yes, execute",
                         "❓ Explain what this does"
                     }));
 
@@ -2153,11 +2153,12 @@ public class LiveThinkingIndicator : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        _totalElapsed.Stop();
-        _phaseElapsed.Stop();
         
         lock (_lock)
         {
+            _totalElapsed.Stop();
+            _phaseElapsed.Stop();
+            
             if (!_hasStartedResponse)
             {
                 // Clear the status line if we haven't started a response
