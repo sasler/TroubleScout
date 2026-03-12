@@ -1868,16 +1868,20 @@ public class TroubleshootingSession : IAsyncDisposable
 
         IDisposable? subscription = null;
         LiveThinkingIndicator? thinkingIndicator = null;
+        CancellationTokenSource? watchdogCts = null;
+        Task? watchdogTask = null;
         try
         {
             var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var hasError = false;
             var wasCancelled = false;
+            var lastEventTime = DateTime.UtcNow;
 
             // Register cancellation callback to unblock the done TCS
             using var cancelReg = cancellationToken.Register(() =>
             {
                 wasCancelled = true;
+                watchdogCts?.Cancel();
                 done.TrySetResult(false);
             });
             var hasStartedStreaming = false;
@@ -1895,10 +1899,13 @@ public class TroubleshootingSession : IAsyncDisposable
             // Create a live thinking indicator (manually disposed before recursive calls)
             thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
+            watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            watchdogTask = RunActivityWatchdogAsync(thinkingIndicator, () => lastEventTime, watchdogCts.Token);
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             subscription = _copilotSession.On(evt =>
             {
+                lastEventTime = DateTime.UtcNow;
                 CaptureCapabilityUsage(evt);
 
                 switch (evt)
@@ -2077,6 +2084,12 @@ public class TroubleshootingSession : IAsyncDisposable
             
             // Wait for completion
             await done.Task;
+            watchdogCts.Cancel();
+            try { await watchdogTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch { /* ignore */ }
+            watchdogCts.Dispose();
+            watchdogCts = null;
+            watchdogTask = null;
             
             // Explicitly dispose subscription BEFORE processing approvals
             // This prevents duplicate event handling when SendMessageAsync is called recursively
@@ -2119,20 +2132,57 @@ public class TroubleshootingSession : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowCancelled();
             return false;
         }
         catch (Exception ex)
         {
+            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
             return false;
         }
         finally
         {
+            watchdogCts?.Cancel();
+            watchdogCts?.Dispose();
             subscription?.Dispose();
             thinkingIndicator?.Dispose();
+        }
+    }
+
+    internal static async Task RunActivityWatchdogAsync(
+        LiveThinkingIndicator indicator,
+        Func<DateTime> getLastEventTime,
+        CancellationToken cancellationToken)
+    {
+        const int checkIntervalMs = 2000;
+        const int slowWarningSeconds = 15;
+        const int staleWarningSeconds = 30;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(checkIntervalMs, cancellationToken);
+
+                var idleSeconds = (DateTime.UtcNow - getLastEventTime()).TotalSeconds;
+
+                if (idleSeconds >= staleWarningSeconds)
+                {
+                    indicator.UpdateStatus("Connection seems slow");
+                }
+                else if (idleSeconds >= slowWarningSeconds)
+                {
+                    indicator.UpdateStatus("Waiting for response");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected
         }
     }
 

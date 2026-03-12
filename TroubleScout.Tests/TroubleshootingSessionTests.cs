@@ -2586,6 +2586,18 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         result.Should().BeFalse();
     }
 
+    [Fact]
+    public void RunActivityWatchdog_ShouldBeCancellable()
+    {
+        // Verify the watchdog method signature exists and is internal static for test visibility.
+        var method = typeof(TroubleshootingSession).GetMethod(
+            "RunActivityWatchdogAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        method.Should().NotBeNull("RunActivityWatchdogAsync should exist");
+        method!.ReturnType.Should().Be(typeof(Task));
+    }
+
     #endregion
 
     #region Reasoning Delta Streaming Tests

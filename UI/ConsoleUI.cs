@@ -1896,6 +1896,31 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Prompt the user to retry after an error or timeout
+    /// </summary>
+    public static bool ShowRetryPrompt(string message)
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(message)}[/]");
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(["Retry", "Skip"]));
+
+            return choice.StartsWith("Retry", StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
+    /// <summary>
     /// Display reasoning/thinking text in a visually muted dark color
     /// </summary>
     public static void WriteReasoningText(string text)

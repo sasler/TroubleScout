@@ -435,6 +435,21 @@ public class ConsoleUITests
         output.Should().Contain("Cancelled");
     }
 
+    #region Retry Prompt Tests
+
+    [Fact]
+    public void ShowRetryPrompt_MethodShouldExist()
+    {
+        var method = typeof(ConsoleUI).GetMethod("ShowRetryPrompt",
+            BindingFlags.Public | BindingFlags.Static);
+        method.Should().NotBeNull("ShowRetryPrompt should exist as a public static method");
+        method!.ReturnType.Should().Be(typeof(bool));
+        method.GetParameters().Should().HaveCount(1);
+        method.GetParameters()[0].ParameterType.Should().Be(typeof(string));
+    }
+
+    #endregion
+
     [Fact]
     public void LiveThinkingIndicator_SpinnerOutput_ShouldContainEscHint()
     {
