@@ -385,6 +385,118 @@ Get-Process
         result.RequiresApproval.Should().BeTrue();
     }
 
+    [Fact]
+    public void ValidateCommand_JeaSession_AllowedCommand_ShouldAutoApprove()
+    {
+        // Arrange
+        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
+
+        // Act
+        var result = executor.ValidateCommand("Get-Service");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_BlockedCommand_ShouldBlock()
+    {
+        // Arrange
+        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
+
+        // Act
+        var result = executor.ValidateCommand("Get-Process");
+
+        // Assert
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+        result.Reason.Should().Contain("not available in JEA session");
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_BlockedListStillApplies()
+    {
+        // Arrange
+        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Credential"]);
+
+        // Act
+        var result = executor.ValidateCommand("Get-Credential");
+
+        // Assert
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+        result.Reason.Should().Contain("blocked");
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_Pipeline_AllAllowed_ShouldAutoApprove()
+    {
+        // Arrange
+        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Where-Object", "Select-Object"]);
+
+        // Act
+        var result = executor.ValidateCommand("Get-Service | Where-Object {$_.Status -eq 'Running'} | Select-Object Name");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_Pipeline_SomeBlocked_ShouldBlock()
+    {
+        // Arrange
+        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Where-Object"]);
+
+        // Act
+        var result = executor.ValidateCommand("Get-Service | Where-Object {$_.Status -eq 'Running'} | Select-Object Name");
+
+        // Assert
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+        result.Reason.Should().Contain("Select-Object");
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_HyphenatedParameterValues_ShouldNotBlock()
+    {
+        // Arrange - hyphenated paths/server names in parameters should NOT be treated as cmdlets
+        using var executor = new PowerShellExecutor("testserver", "TestConfig");
+        executor.SetJeaAllowedCommandsForTesting(new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Get-ChildItem", "Get-Content", "Get-Service"
+        });
+
+        // Act - command with hyphenated path that looks like a cmdlet
+        var result = executor.ValidateCommand("Get-ChildItem -Path C:\\log-archive");
+
+        // Assert - should pass because only Get-ChildItem is in command position
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ValidateCommand_JeaSession_NullAllowedCommands_ShouldBlockAll()
+    {
+        // Arrange - JEA session where discovery hasn't completed yet
+        using var executor = new PowerShellExecutor("testserver", "TestConfig");
+        // Don't call SetJeaAllowedCommandsForTesting — _jeaAllowedCommands stays null
+
+        // Act
+        var result = executor.ValidateCommand("Get-Service");
+
+        // Assert - fail-closed: block everything if discovery hasn't completed
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+        result.Reason.Should().Contain("discovery has not completed");
+    }
+
     #endregion
 
     #region Local Execution Tests

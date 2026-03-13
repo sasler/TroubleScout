@@ -2284,7 +2284,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             "run_powershell", "get_system_info", "get_event_logs", "get_services",
             "get_processes", "get_disk_space", "get_network_info", "get_performance_counters",
-            "connect_server", "close_server_session"
+            "connect_server", "connect_jea_server", "close_server_session"
         };
 
         foreach (var tool in expectedTools)
@@ -2568,6 +2568,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Assert
         commands.Should().NotBeNull();
         commands.Should().Contain("/settings");
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldContainJea()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/jea");
     }
 
     #endregion

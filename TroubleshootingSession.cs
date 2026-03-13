@@ -99,6 +99,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ["get_network_info"]         = "Reading Network Config",
             ["get_performance_counters"] = "Reading Performance Counters",
             ["connect_server"]           = "Connecting to Server",
+            ["connect_jea_server"]       = "Connecting to JEA Session",
             ["close_server_session"]     = "Closing Server Session",
         };
 
@@ -111,6 +112,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/model",
         "/mode",
         "/server",
+        "/jea",
         "/capabilities",
         "/history",
         "/report",
@@ -127,6 +129,7 @@ public class TroubleshootingSession : IAsyncDisposable
             : $"the remote server: {targetServer}";
 
         var connectedSessionsBlock = "";
+        var jeaSessionsBlock = "";
         if (additionalServerNames is { Count: > 0 })
         {
             var sessionLines = new System.Text.StringBuilder();
@@ -137,11 +140,55 @@ public class TroubleshootingSession : IAsyncDisposable
             foreach (var server in additionalServerNames)
             {
                 var safe = SanitizeServerNameForPrompt(server);
-                sessionLines.AppendLine($"- {safe} — use run_powershell(command, sessionName: \"{safe}\")");
+                if (_additionalExecutors.TryGetValue(server, out var executor) && executor.IsJeaSession)
+                {
+                    var configName = SanitizeServerNameForPrompt(executor.ConfigurationName ?? "unknown");
+                    sessionLines.AppendLine($"- {safe} (JEA: {configName}) — use run_powershell(command, sessionName: \"{safe}\")");
+                }
+                else
+                {
+                    sessionLines.AppendLine($"- {safe} — use run_powershell(command, sessionName: \"{safe}\")");
+                }
             }
             sessionLines.AppendLine();
             sessionLines.AppendLine("When the user asks about multiple servers, gather data from ALL of them using run_powershell with the appropriate sessionName. Do NOT call connect_server for these — they are already connected.");
             connectedSessionsBlock = sessionLines.ToString();
+        }
+
+        var jeaExecutors = _additionalExecutors
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .Where(entry => entry.Value.IsJeaSession)
+            .ToList();
+
+        if (jeaExecutors.Count > 0)
+        {
+            var jeaLines = new StringBuilder();
+            jeaLines.AppendLine();
+            foreach (var (serverName, executor) in jeaExecutors)
+            {
+                var safeServerName = SanitizeServerNameForPrompt(serverName);
+                var safeConfigName = SanitizeServerNameForPrompt(executor.ConfigurationName ?? "unknown");
+                jeaLines.AppendLine($"## JEA Session: {safeServerName} (Configuration: {safeConfigName})");
+                jeaLines.AppendLine("This is a constrained JEA endpoint. ONLY the following commands are available:");
+
+                if (executor.JeaAllowedCommands is { Count: > 0 })
+                {
+                    foreach (var commandName in executor.JeaAllowedCommands.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                    {
+                        jeaLines.AppendLine($"- {SanitizeServerNameForPrompt(commandName)}");
+                    }
+                }
+                else
+                {
+                    jeaLines.AppendLine("- Command discovery has not completed yet.");
+                }
+
+                jeaLines.AppendLine("Do NOT attempt any other commands — they will be blocked by the JEA endpoint.");
+                jeaLines.AppendLine($"Use run_powershell with sessionName: \"{safeServerName}\" to target this session.");
+                jeaLines.AppendLine();
+            }
+
+            jeaSessionsBlock = jeaLines.ToString();
         }
 
         return new SystemMessageConfig
@@ -209,10 +256,12 @@ public class TroubleshootingSession : IAsyncDisposable
             ## Multi-Server Sessions & Double-Hop Avoidance
             - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
             - If you need data from a different server, use connect_server(serverName) to establish a DIRECT session from this client.
+            - If you need to use a constrained JEA endpoint, use connect_jea_server(serverName, configurationName) and then only run commands allowed by that endpoint.
             - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
             - Use close_server_session(serverName) when done with a server to clean up resources.
             - Always indicate which server each piece of data comes from.
             {connectedSessionsBlock}
+            {jeaSessionsBlock}
             Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
             server you're working on.
@@ -227,6 +276,13 @@ public class TroubleshootingSession : IAsyncDisposable
     /// </summary>
     private static string SanitizeServerNameForPrompt(string serverName) =>
         serverName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private static bool IsLocalhostName(string server) =>
+        string.IsNullOrEmpty(server) ||
+        server.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+        server.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+        server.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) ||
+        server.Equals(".", StringComparison.OrdinalIgnoreCase);
 
     public TroubleshootingSession(
         string targetServer,
@@ -268,7 +324,8 @@ public class TroubleshootingSession : IAsyncDisposable
         var settings = AppSettingsStore.Load();
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
+            (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName));
     }
 
     /// <summary>
@@ -2787,6 +2844,73 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            if (IsSlashCommandInvocation(lowerInput, "/jea"))
+            {
+                var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3)
+                {
+                    ConsoleUI.ShowWarning("Usage: /jea <server> <configurationName>");
+                    ConsoleUI.ShowInfo("Example: /jea NLAPPLAB301 JEA-InfraMgmt");
+                    continue;
+                }
+
+                var serverName = parts[1];
+                var configurationName = string.Join(' ', parts.Skip(2));
+
+                if (_executionMode == ExecutionMode.Safe)
+                {
+                    var approval = ConsoleUI.PromptCommandApproval(
+                        $"Enter-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",
+                        $"TroubleScout wants to establish a constrained JEA session to {serverName} using configuration {configurationName}");
+                    if (approval != ApprovalResult.Approved)
+                    {
+                        ConsoleUI.ShowWarning($"JEA connection to {serverName} was denied.");
+                        continue;
+                    }
+                }
+
+                var success = await ConsoleUI.RunWithSpinnerAsync(
+                    $"Connecting to JEA endpoint {configurationName} on {serverName}...",
+                    async _ =>
+                    {
+                        var (connected, error) = await ConnectJeaServerAsync(serverName, configurationName, skipApproval: true);
+                        if (!connected)
+                        {
+                            ConsoleUI.ShowWarning(error ?? $"Could not connect to JEA endpoint {configurationName} on {serverName}.");
+                        }
+
+                        return connected;
+                    });
+
+                if (success)
+                {
+                    if (_additionalExecutors.TryGetValue(serverName, out var executor) && executor.JeaAllowedCommands is { Count: > 0 })
+                    {
+                        ConsoleUI.ShowSuccess($"Connected to JEA endpoint '{configurationName}' on {serverName}");
+                        AnsiConsole.MarkupLine($"[grey]Discovered commands for {Markup.Escape(serverName)} ({Markup.Escape(configurationName)}):[/]");
+                        foreach (var commandName in executor.JeaAllowedCommands.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                        {
+                            AnsiConsole.MarkupLine($"  [grey]-[/] {Markup.Escape(commandName)}");
+                        }
+                    }
+
+                    _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+
+                    if (_copilotClient != null && _copilotSession != null)
+                    {
+                        await _copilotSession.DisposeAsync();
+                        _copilotSession = null;
+                        await CreateCopilotSessionAsync(
+                            string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
+                            null);
+                    }
+
+                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                }
+
+                continue;
+            }
+
             // Send message to Copilot
             RecordPrompt(input);
 
@@ -4031,7 +4155,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _executor.ExecutionMode = _executionMode;
         _executor.SetCustomSafeCommands(_configuredSafeCommands);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
+            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
+            (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName));
 
         updateStatus?.Invoke($"Connecting to {_targetServer}...");
         var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
@@ -4095,6 +4220,72 @@ public class TroubleshootingSession : IAsyncDisposable
         // Update system message configuration so future Copilot sessions include this additional server
         _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         return (true, null);
+    }
+
+    private async Task<(bool Success, string? Error)> ConnectJeaServerAsync(
+        string serverName,
+        string configurationName,
+        bool skipApproval = false)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+            return (false, "Server name cannot be empty.");
+
+        if (string.IsNullOrWhiteSpace(configurationName))
+            return (false, "Configuration name cannot be empty.");
+
+        serverName = serverName.Trim();
+        configurationName = configurationName.Trim();
+
+        if (serverName.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            return (false, "The primary target server cannot be replaced with a JEA session. Use /server first if you want to change the primary target.");
+
+        // JEA requires a remote connection — localhost creates an unconstrained local runspace
+        if (IsLocalhostName(serverName))
+            return (false, "JEA connections require a remote server. Use a remote hostname, not localhost.");
+
+        if (_additionalExecutors.TryGetValue(serverName, out var existingExecutor))
+        {
+            if (existingExecutor.IsJeaSession &&
+                string.Equals(existingExecutor.ConfigurationName, configurationName, StringComparison.OrdinalIgnoreCase))
+            {
+                return (true, null);
+            }
+
+            return (false, $"A session named '{serverName}' is already connected. Close it before connecting a different JEA configuration.");
+        }
+
+        if (!skipApproval && _executionMode == ExecutionMode.Safe)
+        {
+            var approval = ConsoleUI.PromptCommandApproval(
+                $"Enter-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",
+                $"TroubleScout wants to establish a constrained JEA session to {serverName} using configuration {configurationName}");
+            if (approval != ApprovalResult.Approved)
+                return (false, $"JEA connection to {serverName} was denied by user.");
+        }
+
+        var executor = new PowerShellExecutor(serverName, configurationName);
+        executor.ExecutionMode = _executionMode;
+        executor.SetCustomSafeCommands(_configuredSafeCommands);
+
+        try
+        {
+            var (success, error) = await executor.TestConnectionAsync();
+            if (!success)
+            {
+                executor.Dispose();
+                return (false, error ?? $"Failed to connect to JEA endpoint '{configurationName}' on {serverName}");
+            }
+
+            await executor.DiscoverJeaCommandsAsync();
+            _additionalExecutors[serverName] = executor;
+            _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            executor.Dispose();
+            return (false, ex.Message);
+        }
     }
 
     private PowerShellExecutor? GetExecutorForServer(string serverName)

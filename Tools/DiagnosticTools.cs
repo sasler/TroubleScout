@@ -19,6 +19,7 @@ public class DiagnosticTools
     private readonly Func<string, Task<(bool Success, string? Error)>>? _connectServerCallback;
     private readonly Func<string, PowerShellExecutor?>? _getExecutorCallback;
     private readonly Func<string, Task<bool>>? _closeSessionCallback;
+    private readonly Func<string, string, Task<(bool Success, string? Error)>>? _connectJeaServerCallback;
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
@@ -29,7 +30,8 @@ public class DiagnosticTools
         Action<CommandActionLog>? actionLogger = null,
         Func<string, Task<(bool Success, string? Error)>>? connectServerCallback = null,
         Func<string, PowerShellExecutor?>? getExecutorCallback = null,
-        Func<string, Task<bool>>? closeSessionCallback = null)
+        Func<string, Task<bool>>? closeSessionCallback = null,
+        Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
@@ -38,6 +40,7 @@ public class DiagnosticTools
         _connectServerCallback = connectServerCallback;
         _getExecutorCallback = getExecutorCallback;
         _closeSessionCallback = closeSessionCallback;
+        _connectJeaServerCallback = connectJeaServerCallback;
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -102,6 +105,10 @@ public class DiagnosticTools
             "Use this to avoid double-hop authentication issues when you need to run commands on " +
             "a server that is different from the current primary target. Each session runs commands " +
             "directly on that server without going through an intermediate hop.");
+
+        yield return AIFunctionFactory.Create(ConnectJeaServerAsync, "connect_jea_server",
+            "Connect to a JEA (Just Enough Administration) constrained PowerShell endpoint on a remote server. " +
+            "Only the commands allowed by the JEA configuration will be available.");
 
         yield return AIFunctionFactory.Create(CloseServerSessionAsync, "close_server_session",
             "Close and dispose a named PowerShell session previously created with connect_server. " +
@@ -170,7 +177,9 @@ public class DiagnosticTools
         }
 
         // Safe command - execute directly with target verification
-        var wrappedCommand = WrapCommandWithTargetVerification(command, executor, isAlternate ? sessionName : null);
+        var wrappedCommand = executor.IsJeaSession
+            ? command
+            : WrapCommandWithTargetVerification(command, executor, isAlternate ? sessionName : null);
         executor.AddHistoryEntry($"[EXECUTED] {command}");
         ConsoleUI.ShowCommandExecution(command, isAlternate ? sessionName! : _targetServer);
         var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
@@ -215,6 +224,23 @@ public class DiagnosticTools
             return $"[ERROR] {error ?? $"Failed to connect to {serverName}"}";
 
         return $"[OK] Connected to {serverName}. Use run_powershell with sessionName: \"{serverName}\" to execute commands.";
+    }
+
+    /// <summary>
+    /// Establish a JEA-constrained PowerShell session to a target server
+    /// </summary>
+    private async Task<string> ConnectJeaServerAsync(
+        [Description("The server name to connect to")] string serverName,
+        [Description("The JEA configuration name to use")] string configurationName)
+    {
+        if (_connectJeaServerCallback == null)
+            return "[ERROR] JEA sessions are not supported in this configuration.";
+
+        var (success, error) = await _connectJeaServerCallback(serverName, configurationName);
+        if (!success)
+            return $"[ERROR] {error ?? $"Failed to connect to JEA endpoint '{configurationName}' on {serverName}"}";
+
+        return $"[OK] Connected to JEA endpoint '{configurationName}' on {serverName}. Use run_powershell with sessionName: \"{serverName}\" to execute allowed commands only.";
     }
 
     /// <summary>
