@@ -2,6 +2,25 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.8.0] - 2026-03-13
+
+### ✨ Features
+
+- 🔐 **JEA (Just Enough Administration) support** — new `/jea <server> <configurationName>` slash command and `connect_jea_server` AI tool for constrained PowerShell endpoints. Automatically discovers available commands via `Get-Command` and strictly enforces the allowed command list — all other commands are blocked. System message is updated to inform the AI agent of available JEA commands.
+- 🔧 **Configurable safe commands** — `SafeCommands` list in `settings.json` with wildcard support (e.g., `"Get-*"`). Pre-populated with defaults on first load. Dangerous verb wildcards (`Remove-*`, `Set-*`, etc.) are rejected as a safety guardrail. Changes are applied immediately when settings are reloaded.
+- ⚙️ **`/settings` slash command** — opens `settings.json` in the configured editor (`EDITOR`/`VISUAL` env vars, fallback to `notepad`). Reloads and applies settings changes live after editor closes.
+- ⚡ **Immediate startup feedback** — shows target server info before the initialization spinner for faster perceived startup.
+- 🎨 **Redesigned HTML report** — modern dark-mode design with hero header, summary statistics cards, timeline-style prompt cards, color-coded approval states, copy-to-clipboard buttons, line-numbered code blocks, AI chat bubble for agent replies, print-friendly and responsive layout.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Fix report opening as wrong user** — replaced `UseShellExecute` with `cmd.exe /c start` to respect the current process user context when running via RunAs.
+
+### 🛡️ Security
+
+- 🛡️ **JEA fail-closed validation** — JEA sessions block all commands until command discovery completes. Localhost JEA connections are rejected (requires remote target). Command-position-only extraction prevents false matches on hyphenated parameter values.
+- 🛡️ **Safe command wildcard guardrails** — bare `"*"` and dangerous verb wildcards (e.g., `"Remove-*"`, `"Stop-*"`) are silently rejected to prevent accidental auto-approval of destructive commands.
+
 ## [v1.7.0] - 2026-03-12
 
 ### ✨ Features
