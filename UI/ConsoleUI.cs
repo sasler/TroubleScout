@@ -295,6 +295,7 @@ public static class ConsoleUI
             .AddColumn(new TableColumn("[grey]Action[/]"));
 
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
+        commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after the editor closes");
         commandTable.AddRow("[cyan]/status[/]", "Show current status");
         commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
@@ -398,6 +399,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/help[/]", "Show this full command reference");
         commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
+        commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");

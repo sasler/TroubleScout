@@ -2555,6 +2555,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         commands.Should().NotContain("/connect");
     }
 
+    [Fact]
+    public void SlashCommands_ShouldContainSettings()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/settings");
+    }
+
     #endregion
 
     #region Cancellation Tests

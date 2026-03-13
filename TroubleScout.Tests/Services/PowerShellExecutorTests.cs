@@ -156,6 +156,86 @@ public class PowerShellExecutorTests : IDisposable
         result.Reason.Should().Contain("empty");
     }
 
+    [Fact]
+    public void SetCustomSafeCommands_WildcardMatch_ShouldAutoApprove()
+    {
+        // Arrange
+        _executor.SetCustomSafeCommands(["Get-*"]);
+
+        // Act
+        var result = _executor.ValidateCommand("Get-Service");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SetCustomSafeCommands_ExactMatch_ShouldAutoApprove()
+    {
+        // Arrange
+        _executor.SetCustomSafeCommands(["Out-String"]);
+
+        // Act
+        var result = _executor.ValidateCommand("Out-String");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SetCustomSafeCommands_NoMatch_ShouldRequireApproval()
+    {
+        // Arrange
+        _executor.SetCustomSafeCommands(["Get-*"]);
+
+        // Act
+        var result = _executor.ValidateCommand("Out-String");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SetCustomSafeCommands_BlockedCommandStillBlocked()
+    {
+        // Arrange
+        _executor.SetCustomSafeCommands(["Get-*"]);
+
+        // Act
+        var result = _executor.ValidateCommand("Get-Credential");
+
+        // Assert
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("Get-Service", "Get-*", true)]
+    [InlineData("get-service", "GET-*", true)]
+    [InlineData("Out-String", "Out-String", true)]
+    [InlineData("Out-String", "Out-*", true)]
+    [InlineData("Out-String", "Get-*", false)]
+    [InlineData("Get-Service", "Get-Service", true)]
+    [InlineData("Get-Service", "Get-Serv*", true)]
+    [InlineData("Get-Service", "Get-Service*", true)]
+    [InlineData("Get-Service", "Get-Process", false)]
+    [InlineData("Remove-Item", "*", false)]
+    [InlineData("Set-Service", "Set-*", false)]
+    [InlineData("Remove-Item", "Remove-*", false)]
+    [InlineData("Stop-Process", "Stop-*", false)]
+    [InlineData("Restart-Service", "Restart-*", false)]
+    public void MatchesSafeCommandPattern_VariousCases(string cmdletName, string pattern, bool expected)
+    {
+        // Act
+        var matches = PowerShellExecutor.MatchesSafeCommandPattern(cmdletName, pattern);
+
+        // Assert
+        matches.Should().Be(expected);
+    }
+
     #endregion
 
     #region Multi-line Script Safety Tests

@@ -81,6 +81,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private int _sessionCounter;
     private int _toolInvocationCount;
     private bool _isGitHubCopilotAuthenticated;
+    private IReadOnlyList<string>? _configuredSafeCommands;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -106,6 +107,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/help",
         "/status",
         "/clear",
+        "/settings",
         "/model",
         "/mode",
         "/server",
@@ -263,6 +265,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
+        var settings = AppSettingsStore.Load();
+        ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
     }
@@ -2307,6 +2311,108 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
+    private void ApplySafeCommandsToAllExecutors(IReadOnlyList<string>? safeCommands)
+    {
+        _configuredSafeCommands = safeCommands?.Where(command => !string.IsNullOrWhiteSpace(command))
+            .Select(command => command.Trim())
+            .ToList();
+
+        _executor.SetCustomSafeCommands(_configuredSafeCommands);
+
+        foreach (var executor in _additionalExecutors.Values)
+        {
+            executor.SetCustomSafeCommands(_configuredSafeCommands);
+        }
+    }
+
+    private void ReloadSafeCommandsFromSettings()
+    {
+        var settings = AppSettingsStore.Load();
+        ApplySafeCommandsToAllExecutors(settings.SafeCommands);
+    }
+
+    private static async Task<string?> TryOpenSettingsEditorAsync(string settingsPath)
+    {
+        var editorCommand = Environment.GetEnvironmentVariable("EDITOR");
+        if (string.IsNullOrWhiteSpace(editorCommand))
+        {
+            editorCommand = Environment.GetEnvironmentVariable("VISUAL");
+        }
+
+        if (string.IsNullOrWhiteSpace(editorCommand) && OperatingSystem.IsWindows())
+        {
+            editorCommand = "notepad";
+        }
+
+        if (string.IsNullOrWhiteSpace(editorCommand))
+        {
+            return "No editor is configured. Set EDITOR or VISUAL to edit settings automatically.";
+        }
+
+        try
+        {
+            var (fileName, arguments) = ParseCommandWithArguments(editorCommand, settingsPath);
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = true,
+                CreateNoWindow = false
+            });
+
+            if (process == null)
+            {
+                return $"Could not start editor '{editorCommand}'.";
+            }
+
+            await process.WaitForExitAsync();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"Could not open settings editor: {TrimSingleLine(ex.Message)}";
+        }
+    }
+
+    private static (string FileName, string Arguments) ParseCommandWithArguments(string command, string settingsPath)
+    {
+        var trimmedCommand = command.Trim();
+        string fileName;
+        string arguments;
+
+        if (trimmedCommand.StartsWith('"'))
+        {
+            var closingQuote = trimmedCommand.IndexOf('"', 1);
+            if (closingQuote > 1)
+            {
+                fileName = trimmedCommand[1..closingQuote];
+                arguments = trimmedCommand[(closingQuote + 1)..].Trim();
+            }
+            else
+            {
+                fileName = trimmedCommand.Trim('"');
+                arguments = string.Empty;
+            }
+        }
+        else
+        {
+            var firstSpace = trimmedCommand.IndexOf(' ');
+            if (firstSpace >= 0)
+            {
+                fileName = trimmedCommand[..firstSpace];
+                arguments = trimmedCommand[(firstSpace + 1)..].Trim();
+            }
+            else
+            {
+                fileName = trimmedCommand;
+                arguments = string.Empty;
+            }
+        }
+
+        var settingsArgument = $"\"{settingsPath}\"";
+        return (fileName, string.IsNullOrWhiteSpace(arguments) ? settingsArgument : $"{arguments} {settingsArgument}");
+    }
+
     /// <summary>
     /// Run the interactive session loop
     /// </summary>
@@ -2356,6 +2462,21 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/status")
             {
                 ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                continue;
+            }
+
+            if (firstToken == "/settings")
+            {
+                _ = AppSettingsStore.Load();
+                ConsoleUI.ShowInfo($"Settings file: {AppSettingsStore.SettingsPath}");
+                var editorError = await TryOpenSettingsEditorAsync(AppSettingsStore.SettingsPath);
+                if (!string.IsNullOrWhiteSpace(editorError))
+                {
+                    ConsoleUI.ShowWarning(editorError);
+                }
+
+                ReloadSafeCommandsFromSettings();
+                ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns have been applied.");
                 continue;
             }
 
@@ -3908,6 +4029,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
+        _executor.SetCustomSafeCommands(_configuredSafeCommands);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync);
 
@@ -3961,6 +4083,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         var executor = new PowerShellExecutor(serverName);
         executor.ExecutionMode = _executionMode;
+        executor.SetCustomSafeCommands(_configuredSafeCommands);
         var (success, error) = await executor.TestConnectionAsync();
         if (!success)
         {

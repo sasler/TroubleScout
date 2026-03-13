@@ -39,6 +39,7 @@ public class PowerShellExecutor : IDisposable
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private ExecutionMode _executionMode = ExecutionMode.Safe;
+    private IReadOnlyList<string>? _customSafeCommands;
 
     /// <summary>
     /// The target server name that was requested
@@ -77,38 +78,7 @@ public class PowerShellExecutor : IDisposable
     /// <summary>
     /// Commands that are allowed to run automatically (read-only Get-* commands)
     /// </summary>
-    private static readonly HashSet<string> SafeCommandPrefixes =
-    [
-        "Get-",
-        "Select-",
-        "Sort-",
-        "Group-",
-        "Where-",
-        "ForEach-",
-        "Measure-",
-        "Test-",
-        "ConvertTo-",
-        "ConvertFrom-",
-        "Compare-",
-        "Find-",
-        "Search-",
-        "Resolve-"
-    ];
-
-    private static readonly HashSet<string> SafeOutCmdlets = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Out-String",
-        "Out-Null"
-    };
-
-    private static readonly HashSet<string> SafeFormatCmdlets = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Format-Custom",
-        "Format-Hex",
-        "Format-List",
-        "Format-Table",
-        "Format-Wide"
-    };
+    private static readonly string[] DefaultSafeCommands = AppSettingsStore.DefaultSafeCommands;
 
     /// <summary>
     /// Explicitly blocked commands even if they start with Get-
@@ -123,6 +93,13 @@ public class PowerShellExecutor : IDisposable
     {
         _targetServer = targetServer;
         _useLocalExecution = IsLocalhost(targetServer);
+    }
+
+    public void SetCustomSafeCommands(IReadOnlyList<string>? commands)
+    {
+        _customSafeCommands = commands?.Where(command => !string.IsNullOrWhiteSpace(command))
+            .Select(command => command.Trim())
+            .ToList();
     }
 
     private static bool IsLocalhost(string server)
@@ -230,22 +207,7 @@ public class PowerShellExecutor : IDisposable
 
     private bool IsReadOnlySingleCommand(string cmdletName)
     {
-        if (SafeCommandPrefixes.Any(prefix => cmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-        {
-            return true;
-        }
-
-        if (cmdletName.StartsWith("Format-", StringComparison.OrdinalIgnoreCase))
-        {
-            return SafeFormatCmdlets.Contains(cmdletName);
-        }
-
-        if (cmdletName.StartsWith("Out-", StringComparison.OrdinalIgnoreCase))
-        {
-            return SafeOutCmdlets.Contains(cmdletName);
-        }
-
-        return false;
+        return GetSafeCommandPatterns().Any(pattern => MatchesSafeCommandPattern(cmdletName, pattern));
     }
 
     private CommandValidation GetMutatingCommandValidation(string baseReason)
@@ -280,10 +242,6 @@ public class PowerShellExecutor : IDisposable
     /// </summary>
     private bool IsReadOnlyScript(string command)
     {
-        // Safe cmdlet prefixes (read-only operations)
-        var safePrefixes = SafeCommandPrefixes;
-        var safeFormatCmdlets = SafeFormatCmdlets;
-
         // Split by common statement separators
         var statements = command
             .Replace("\r\n", "\n")
@@ -341,17 +299,8 @@ public class PowerShellExecutor : IDisposable
                 {
                     return false;
                 }
-                // Check if it's a safe cmdlet prefix
-                var isSafe = safePrefixes.Any(prefix => cmdlet.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-                
-                // Special handling for Format-* cmdlets
-                if (!isSafe && cmdlet.StartsWith("Format-", StringComparison.OrdinalIgnoreCase))
-                {
-                    isSafe = safeFormatCmdlets.Contains(cmdlet);
-                }
-                
-                // If not explicitly safe, the script requires approval
-                if (!isSafe)
+
+                if (!IsReadOnlySingleCommand(cmdlet))
                 {
                     return false;
                 }
@@ -359,6 +308,57 @@ public class PowerShellExecutor : IDisposable
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Verb prefixes that are never safe to auto-execute, even if a user adds them to SafeCommands.
+    /// </summary>
+    private static readonly string[] DangerousVerbPrefixes =
+    [
+        "Set-", "Start-", "Stop-", "Restart-", "Remove-", "New-", "Clear-",
+        "Enable-", "Disable-", "Rename-", "Move-", "Add-", "Install-",
+        "Uninstall-", "Invoke-", "Register-", "Unregister-", "Reset-",
+        "Update-", "Grant-", "Revoke-", "Suspend-", "Resume-", "Push-",
+        "Mount-", "Dismount-", "Repair-"
+    ];
+
+    internal static bool MatchesSafeCommandPattern(string cmdletName, string pattern)
+    {
+        if (string.IsNullOrWhiteSpace(cmdletName) || string.IsNullOrWhiteSpace(pattern))
+        {
+            return false;
+        }
+
+        var normalizedCmdletName = cmdletName.Trim();
+        var normalizedPattern = pattern.Trim();
+
+        if (normalizedPattern.EndsWith('*'))
+        {
+            var prefix = normalizedPattern[..^1];
+            // Reject empty prefix (bare "*") — would match everything
+            if (string.IsNullOrEmpty(prefix))
+            {
+                return false;
+            }
+
+            // Reject patterns that would auto-approve dangerous verbs (e.g. "Remove-*")
+            if (DangerousVerbPrefixes.Any(dv => prefix.Equals(dv.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
+                                              || prefix.Equals(dv, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            return normalizedCmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Exact match: also reject if the command starts with a dangerous verb
+        // (user could add "Remove-Item" explicitly — allow it, that's an intentional choice)
+        return normalizedCmdletName.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyList<string> GetSafeCommandPatterns()
+    {
+        return _customSafeCommands ?? DefaultSafeCommands;
     }
 
     /// <summary>
