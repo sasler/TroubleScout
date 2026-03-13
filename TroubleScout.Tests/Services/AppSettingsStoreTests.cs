@@ -61,6 +61,32 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Load_WhenSafeCommandsMissing_ShouldReturnDefaults()
+    {
+        // Arrange
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "LastModel": "gpt-4.1"
+        }
+        """);
+
+        // Act
+        var settings = AppSettingsStore.Load();
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+
+        // Assert
+        settings.SafeCommands.Should().NotBeNull();
+        settings.SafeCommands.Should().Contain([
+            "Get-*", "Select-*", "Sort-*", "Group-*", "Where-*", "ForEach-*", "Measure-*", "Test-*",
+            "ConvertTo-*", "ConvertFrom-*", "Compare-*", "Find-*", "Search-*", "Resolve-*",
+            "Out-String", "Out-Null", "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide"
+        ]);
+        json.Should().Contain("\"SafeCommands\"");
+        json.Should().Contain("\"Get-*\"");
+    }
+
+    [Fact]
     public void Save_ThenLoad_ShouldPersistSettings()
     {
         // Arrange
@@ -111,6 +137,23 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Save_WithSafeCommands_ShouldPersist()
+    {
+        // Arrange
+        var settings = new AppSettings
+        {
+            SafeCommands = ["Get-*", "Out-String", "Format-Table"]
+        };
+
+        // Act
+        AppSettingsStore.Save(settings);
+        var loaded = AppSettingsStore.Load();
+
+        // Assert
+        loaded.SafeCommands.Should().Equal("Get-*", "Out-String", "Format-Table");
+    }
+
+    [Fact]
     public void Save_ShouldCreateDirectoryAndPersist()
     {
         // Arrange
@@ -140,6 +183,28 @@ public class AppSettingsStoreTests : IDisposable
         // Assert
         settings.Should().NotBeNull();
         settings.LastModel.Should().BeNull();
+    }
+
+    [Fact]
+    public void Load_WithExistingSafeCommands_ShouldPreserveUserConfig()
+    {
+        // Arrange
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "SafeCommands": [
+            "Get-*",
+            "Out-String",
+            "MyCustom-Command"
+          ]
+        }
+        """);
+
+        // Act
+        var settings = AppSettingsStore.Load();
+
+        // Assert
+        settings.SafeCommands.Should().Equal("Get-*", "Out-String", "MyCustom-Command");
     }
 
     [Fact]

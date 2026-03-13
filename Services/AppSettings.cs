@@ -11,11 +11,36 @@ public sealed class AppSettings
     public string? ByokOpenAiBaseUrl { get; set; }
     public string? ByokOpenAiApiKey { get; set; }
     public string? ByokOpenAiApiKeyEncrypted { get; set; }
+    public List<string>? SafeCommands { get; set; }
 }
 
 public static class AppSettingsStore
 {
     private static string? _settingsPath;
+    internal static readonly string[] DefaultSafeCommands =
+    [
+        "Get-*",
+        "Select-*",
+        "Sort-*",
+        "Group-*",
+        "Where-*",
+        "ForEach-*",
+        "Measure-*",
+        "Test-*",
+        "ConvertTo-*",
+        "ConvertFrom-*",
+        "Compare-*",
+        "Find-*",
+        "Search-*",
+        "Resolve-*",
+        "Out-String",
+        "Out-Null",
+        "Format-Custom",
+        "Format-Hex",
+        "Format-List",
+        "Format-Table",
+        "Format-Wide"
+    ];
     
     public static string SettingsPath
     {
@@ -47,7 +72,11 @@ public static class AppSettingsStore
         try
         {
             if (!File.Exists(SettingsPath))
-                return new AppSettings();
+            {
+                var defaultSettings = CreateNormalizedSettings(new AppSettings(), out _);
+                Save(defaultSettings);
+                return defaultSettings;
+            }
 
             var json = File.ReadAllText(SettingsPath);
             var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
@@ -58,11 +87,17 @@ public static class AppSettingsStore
                 settings.ByokOpenAiApiKey = TryDecrypt(settings.ByokOpenAiApiKeyEncrypted);
             }
 
+            settings = CreateNormalizedSettings(settings, out var changed);
+            if (changed)
+            {
+                Save(settings);
+            }
+
             return settings;
         }
         catch
         {
-            return new AppSettings();
+            return CreateNormalizedSettings(new AppSettings(), out _);
         }
     }
 
@@ -80,7 +115,9 @@ public static class AppSettingsStore
             UseByokOpenAi = settings.UseByokOpenAi,
             ByokOpenAiBaseUrl = settings.ByokOpenAiBaseUrl,
             ByokOpenAiApiKey = null,
-            ByokOpenAiApiKeyEncrypted = TryEncrypt(settings.ByokOpenAiApiKey)
+            ByokOpenAiApiKeyEncrypted = TryEncrypt(settings.ByokOpenAiApiKey),
+            SafeCommands = settings.SafeCommands?.Where(command => !string.IsNullOrWhiteSpace(command)).Select(command => command.Trim()).ToList()
+                ?? DefaultSafeCommands.ToList()
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
@@ -89,6 +126,19 @@ public static class AppSettingsStore
         });
 
         File.WriteAllText(SettingsPath, json);
+    }
+
+    private static AppSettings CreateNormalizedSettings(AppSettings settings, out bool changed)
+    {
+        changed = false;
+
+        if (settings.SafeCommands == null)
+        {
+            settings.SafeCommands = DefaultSafeCommands.ToList();
+            changed = true;
+        }
+
+        return settings;
     }
 
     private static string? TryEncrypt(string? plainText)

@@ -837,12 +837,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Act
         var html = BuildReportHtmlViaReflection(
             prompt,
-            command,
-            output,
             reply,
-            "SafeAuto",
-            "PowerShell",
-            "localhost");
+            (command, output, "SafeAuto", "PowerShell", "localhost"));
 
         // Assert
         html.Should().Contain("TroubleScout Session Report");
@@ -854,6 +850,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         html.Should().Contain("SafeAuto");
         html.Should().Contain("Command");
         html.Should().Contain("Output");
+    }
+
+    [Fact]
+    public void BuildReportHtml_ShouldNotCountApprovalRequestedAsApproved()
+    {
+        // Act
+        var html = BuildReportHtmlViaReflection(
+            "Check services",
+            "reply",
+            ("Get-Service", "queued", "ApprovalRequested", "PowerShell", "localhost"),
+            ("Stop-Service", "done", "ApprovedByUser", "PowerShell", "localhost"));
+
+        // Assert
+        html.Should().Contain("<div class=\"summary-card sc-blue\"><div class=\"sc-val\">1</div><div class=\"sc-lbl\">Approved</div></div>");
     }
 
     [Fact]
@@ -878,12 +888,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static string BuildReportHtmlViaReflection(
         string prompt,
-        string command,
-        string output,
         string reply,
-        string safetyApproval,
-        string source,
-        string target)
+        params (string Command, string Output, string SafetyApproval, string Source, string Target)[] actions)
     {
         var sessionType = typeof(TroubleshootingSession);
         var actionType = sessionType.GetNestedType("ReportActionEntry", BindingFlags.NonPublic);
@@ -897,18 +903,22 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var actionCtor = actionType!
             .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
             .Single(ctor => ctor.GetParameters().Length == 6);
-        var action = actionCtor.Invoke([
-            DateTimeOffset.Now,
-            target,
-            command,
-            output,
-            safetyApproval,
-            source
-        ]);
 
         var actionListType = typeof(List<>).MakeGenericType(actionType);
         var actionList = Activator.CreateInstance(actionListType)!;
-        actionListType.GetMethod("Add")!.Invoke(actionList, [action]);
+        var addMethod = actionListType.GetMethod("Add")!;
+        foreach (var action in actions)
+        {
+            var actionEntry = actionCtor.Invoke([
+                DateTimeOffset.Now,
+                action.Target,
+                action.Command,
+                action.Output,
+                action.SafetyApproval,
+                action.Source
+            ]);
+            addMethod.Invoke(actionList, [actionEntry]);
+        }
 
         var promptCtor = promptType!
             .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
@@ -2284,7 +2294,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             "run_powershell", "get_system_info", "get_event_logs", "get_services",
             "get_processes", "get_disk_space", "get_network_info", "get_performance_counters",
-            "connect_server", "close_server_session"
+            "connect_server", "connect_jea_server", "close_server_session"
         };
 
         foreach (var tool in expectedTools)
@@ -2553,6 +2563,36 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         commands.Should().NotBeNull();
         commands.Should().Contain("/server");
         commands.Should().NotContain("/connect");
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldContainSettings()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/settings");
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldContainJea()
+    {
+        // Arrange
+        var field = typeof(TroubleshootingSession)
+            .GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+
+        // Act
+        var commands = field?.GetValue(null) as string[];
+
+        // Assert
+        commands.Should().NotBeNull();
+        commands.Should().Contain("/jea");
     }
 
     #endregion
