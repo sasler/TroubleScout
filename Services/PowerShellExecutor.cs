@@ -97,7 +97,7 @@ public class PowerShellExecutor : IDisposable
     public PowerShellExecutor(string targetServer)
     {
         _targetServer = targetServer;
-        _useLocalExecution = IsLocalhost(targetServer);
+        _useLocalExecution = IsLocalhostName(targetServer);
     }
 
     public PowerShellExecutor(string targetServer, string configurationName) : this(targetServer)
@@ -112,7 +112,7 @@ public class PowerShellExecutor : IDisposable
             .ToList();
     }
 
-    private static bool IsLocalhost(string server)
+    internal static bool IsLocalhostName(string server)
     {
         return string.IsNullOrEmpty(server) ||
                server.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||

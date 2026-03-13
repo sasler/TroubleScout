@@ -156,8 +156,8 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         var jeaExecutors = _additionalExecutors
-            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
             .Where(entry => entry.Value.IsJeaSession)
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (jeaExecutors.Count > 0)
@@ -276,13 +276,6 @@ public class TroubleshootingSession : IAsyncDisposable
     /// </summary>
     private static string SanitizeServerNameForPrompt(string serverName) =>
         serverName.Replace("\\", "\\\\").Replace("\"", "\\\"");
-
-    private static bool IsLocalhostName(string server) =>
-        string.IsNullOrEmpty(server) ||
-        server.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-        server.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
-        server.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) ||
-        server.Equals(".", StringComparison.OrdinalIgnoreCase);
 
     public TroubleshootingSession(
         string targetServer,
@@ -3536,11 +3529,13 @@ public class TroubleshootingSession : IAsyncDisposable
                         break;
                     case "AutoApprovedYolo":
                     case "ApprovedByUser":
-                    case "ApprovalRequested":
                         approvedCount++;
                         break;
                     case "Blocked":
                         blockedCount++;
+                        break;
+                    case "ApprovalRequested":
+                        // ApprovalRequested is an intermediate state that is later followed by ApprovedByUser or Denied.
                         break;
                     case "Denied":
                         deniedCount++;
@@ -4526,7 +4521,7 @@ public class TroubleshootingSession : IAsyncDisposable
             return (false, "The primary target server cannot be replaced with a JEA session. Use /server first if you want to change the primary target.");
 
         // JEA requires a remote connection — localhost creates an unconstrained local runspace
-        if (IsLocalhostName(serverName))
+        if (PowerShellExecutor.IsLocalhostName(serverName))
             return (false, "JEA connections require a remote server. Use a remote hostname, not localhost.");
 
         if (_additionalExecutors.TryGetValue(serverName, out var existingExecutor))
