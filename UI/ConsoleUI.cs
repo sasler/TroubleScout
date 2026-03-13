@@ -90,6 +90,14 @@ public static class ConsoleUI
     }
 
     /// <summary>
+    /// Show immediate startup progress before the initialization spinner
+    /// </summary>
+    public static void ShowStartupProgress(string targetServer)
+    {
+        AnsiConsole.MarkupLine($"[grey]Target:[/] [white]{Markup.Escape(targetServer)}[/]  [grey]— preparing session...[/]");
+    }
+
+    /// <summary>
     /// Display the status panel with connection and auth info
     /// </summary>
     public static void ShowStatusPanel(

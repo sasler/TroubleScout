@@ -274,6 +274,10 @@ static async Task RunInteractiveModeAsync(
     var primary = servers[0];
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
+    // Immediate startup feedback before the potentially slow initialization
+    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    ConsoleUI.ShowStartupProgress(serverDisplay);
+
     await using var session = new TroubleshootingSession(
         primary,
         model,
@@ -337,6 +341,10 @@ static async Task RunHeadlessModeAsync(
     var primary = servers[0];
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
+    // Immediate startup feedback before the potentially slow initialization
+    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    ConsoleUI.ShowStartupProgress(serverDisplay);
+
     await using var session = new TroubleshootingSession(
         primary,
         model,
@@ -369,7 +377,6 @@ static async Task RunHeadlessModeAsync(
         return;
     }
 
-    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
     ConsoleUI.ShowInfo($"Target: {serverDisplay} | Model: {session.SelectedModel} | Mode: {session.CurrentExecutionMode.ToCliValue()}");
     ConsoleUI.ShowRule();
     ConsoleUI.ShowInfo($"Processing: {prompt}");
