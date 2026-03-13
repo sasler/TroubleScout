@@ -2524,6 +2524,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/settings")
             {
+                // Ensure the settings file exists before launching the editor on first use.
                 _ = AppSettingsStore.Load();
                 ConsoleUI.ShowInfo($"Settings file: {AppSettingsStore.SettingsPath}");
                 var editorError = await TryOpenSettingsEditorAsync(AppSettingsStore.SettingsPath);
@@ -3788,10 +3789,8 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             else
             {
-                var actionIdx = 0;
                 foreach (var action in prompt.Actions)
                 {
-                    actionIdx++;
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
                     sb.AppendLine("            <div class=\"action-card\">");
@@ -3874,7 +3873,6 @@ public class TroubleshootingSession : IAsyncDisposable
         sb.AppendLine("      document.body.appendChild(ta); ta.select();");
         sb.AppendLine("      try { document.execCommand('copy'); showCopied(btn); } catch(e) {}");
         sb.AppendLine("      document.body.removeChild(ta);");
-        sb.AppendLine("      }");
         sb.AppendLine("    }");
         sb.AppendLine("    function showCopied(btn) {");
         sb.AppendLine("      var orig = btn.textContent;");

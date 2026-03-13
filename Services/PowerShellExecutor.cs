@@ -437,8 +437,7 @@ public class PowerShellExecutor : IDisposable
             return normalizedCmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
         }
 
-        // Exact match: also reject if the command starts with a dangerous verb
-        // (user could add "Remove-Item" explicitly — allow it, that's an intentional choice)
+        // Exact match: allow even dangerous verbs when the user explicitly listed the full command.
         return normalizedCmdletName.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
     }
 
