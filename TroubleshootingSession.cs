@@ -3479,10 +3479,15 @@ public class TroubleshootingSession : IAsyncDisposable
 
         try
         {
+            // Use cmd.exe /c start instead of UseShellExecute to respect the current
+            // user context when running as a different user (RunAs). UseShellExecute
+            // opens the browser as the primary logged-in user, causing path mismatches.
             var psi = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = reportPath,
-                UseShellExecute = true
+                FileName = "cmd.exe",
+                Arguments = $"/c start \"\" \"{reportPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
             };
 
             System.Diagnostics.Process.Start(psi);
