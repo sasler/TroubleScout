@@ -199,6 +199,20 @@ public class PowerShellExecutorTests : IDisposable
     }
 
     [Fact]
+    public void SetCustomSafeCommands_RemovingGetWildcard_ShouldRequireApprovalForGetCommands()
+    {
+        // Arrange
+        _executor.SetCustomSafeCommands(["Out-String"]);
+
+        // Act
+        var result = _executor.ValidateCommand("Get-Service");
+
+        // Assert
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+    }
+
+    [Fact]
     public void SetCustomSafeCommands_BlockedCommandStillBlocked()
     {
         // Arrange

@@ -63,6 +63,48 @@ public class DiagnosticTools
             CommandApprovalState.SafeAuto));
     }
 
+    private void LogCommandAction(string target, string command, string output, CommandApprovalState approvalState)
+    {
+        _actionLogger?.Invoke(new CommandActionLog(
+            DateTimeOffset.Now,
+            target,
+            command,
+            output,
+            approvalState));
+    }
+
+    private async Task<(bool ShouldExecute, string? TerminalOutput, CommandApprovalState ApprovalState)> EnsureCommandApprovedAsync(
+        PowerShellExecutor executor,
+        string target,
+        string displayCommand,
+        string validationCommand)
+    {
+        var validation = executor.ValidateCommand(validationCommand);
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            executor.AddHistoryEntry($"[BLOCKED] {displayCommand}");
+            var blockedOutput = $"[BLOCKED] {validation.Reason}";
+            LogCommandAction(target, displayCommand, blockedOutput, CommandApprovalState.Blocked);
+            return (false, blockedOutput, CommandApprovalState.Blocked);
+        }
+
+        if (!validation.RequiresApproval)
+        {
+            return (true, null, CommandApprovalState.SafeAuto);
+        }
+
+        executor.AddHistoryEntry($"[PENDING APPROVAL] {displayCommand}");
+        var approved = await _approvalCallback(displayCommand, validation.Reason ?? "Requires user approval");
+        if (!approved)
+        {
+            const string deniedOutput = "[DENIED] User denied approval; command was not executed.";
+            LogCommandAction(target, displayCommand, deniedOutput, CommandApprovalState.Denied);
+            return (false, deniedOutput, CommandApprovalState.Denied);
+        }
+
+        return (true, null, CommandApprovalState.ApprovedByUser);
+    }
+
     /// <summary>
     /// Creates AI tools for the Copilot session
     /// </summary>
@@ -305,12 +347,19 @@ public class DiagnosticTools
                 LastBoot = $os.LastBootUpTime
             } | Format-List
         ";
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
         const string displayCommand = "Get-SystemInfo";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!approval.ShouldExecute)
+        {
+            return approval.TerminalOutput!;
+        }
+
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogReadOnlyAction(displayCommand, output);
+        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
         return output;
     }
 
@@ -382,23 +431,36 @@ public class DiagnosticTools
         var displayCommand = string.IsNullOrEmpty(entryFilter)
             ? $"Get-WinEvent -LogName '{normalizedLogName}' -MaxEvents {count}"
             : $"Get-WinEvent -LogName '{normalizedLogName}' -Level {entryType} -MaxEvents {count}";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!primaryApproval.ShouldExecute)
+        {
+            return primaryApproval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogReadOnlyAction(displayCommand, result.Output);
+            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
             return result.Output;
+        }
+
+        var fallbackDisplayCommand = string.IsNullOrEmpty(entryFilter)
+            ? $"Get-EventLog -LogName '{normalizedLogName}' -Newest {count}"
+            : $"Get-EventLog -LogName '{normalizedLogName}' -EntryType {entryType} -Newest {count}";
+        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackDisplayCommand, fallbackDisplayCommand);
+        if (!fallbackApproval.ShouldExecute)
+        {
+            return fallbackApproval.TerminalOutput!;
         }
 
         var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
-        var fallbackDisplayCommand = string.IsNullOrEmpty(entryFilter)
-            ? $"Get-EventLog -LogName '{normalizedLogName}' -Newest {count}"
-            : $"Get-EventLog -LogName '{normalizedLogName}' -EntryType {entryType} -Newest {count}";
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Event log data unavailable.";
-        LogReadOnlyAction(fallbackDisplayCommand, fallbackOutput);
+        LogCommandAction(target, fallbackDisplayCommand, fallbackOutput, fallbackApproval.ApprovalState);
         return fallbackOutput;
     }
 
@@ -459,10 +521,17 @@ public class DiagnosticTools
                 ? "Get-Service"
                 : $"Get-Service | Where-Object Status -eq '{stateFilter}'")
             : $"Get-Service -Name '*{nameFilterValue}*'";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!approval.ShouldExecute)
+        {
+            return approval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogReadOnlyAction(displayCommand, output);
+        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
         return output;
     }
 
@@ -500,10 +569,17 @@ public class DiagnosticTools
         
         var wrappedCommand = WrapCommandWithTargetVerification(command);
         var displayCommand = $"Get-Process -Top {top} -SortBy {sortProperty}";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!approval.ShouldExecute)
+        {
+            return approval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogReadOnlyAction(displayCommand, output);
+        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
         return output;
     }
 
@@ -543,20 +619,41 @@ public class DiagnosticTools
         
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         const string displayCommand = "Get-Volume";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!primaryApproval.ShouldExecute)
+        {
+            return primaryApproval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogReadOnlyAction(displayCommand, result.Output);
+            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
             return result.Output;
+        }
+
+        const string cmdletFallbackDisplayCommand = "Get-PSDrive -PSProvider FileSystem";
+        var cmdletFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cmdletFallbackDisplayCommand, cmdletFallbackDisplayCommand);
+        if (!cmdletFallbackApproval.ShouldExecute)
+        {
+            return cmdletFallbackApproval.TerminalOutput!;
         }
 
         var wrappedCmdletFallback = WrapCommandWithTargetVerification(cmdletFallback);
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
         if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
-            LogReadOnlyAction("Get-PSDrive -PSProvider FileSystem", cmdletResult.Output);
+            LogCommandAction(target, cmdletFallbackDisplayCommand, cmdletResult.Output, cmdletFallbackApproval.ApprovalState);
             return cmdletResult.Output;
+        }
+
+        const string cimFallbackDisplayCommand = "Get-CimInstance Win32_LogicalDisk";
+        var cimFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cimFallbackDisplayCommand, cimFallbackDisplayCommand);
+        if (!cimFallbackApproval.ShouldExecute)
+        {
+            return cimFallbackApproval.TerminalOutput!;
         }
 
         var wrappedCimFallback = WrapCommandWithTargetVerification(cimFallback);
@@ -564,7 +661,7 @@ public class DiagnosticTools
         var cimOutput = cimResult.Success && string.IsNullOrWhiteSpace(cimResult.Error)
             ? cimResult.Output
             : $"[ERROR] {cimResult.Error}";
-        LogReadOnlyAction("Get-CimInstance Win32_LogicalDisk", cimOutput);
+        LogCommandAction(target, cimFallbackDisplayCommand, cimOutput, cimFallbackApproval.ApprovalState);
         return cimOutput;
     }
 
@@ -608,10 +705,17 @@ public class DiagnosticTools
         
         var wrappedCommand = WrapCommandWithTargetVerification(command);
         const string displayCommand = "Get-NetAdapter";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!approval.ShouldExecute)
+        {
+            return approval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogReadOnlyAction(displayCommand, output);
+        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
         return output;
     }
 
@@ -643,11 +747,18 @@ public class DiagnosticTools
         
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         var displayCommand = $"Get-Counter ({category})";
+        var target = _executor.ActualComputerName ?? _targetServer;
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        if (!primaryApproval.ShouldExecute)
+        {
+            return primaryApproval.TerminalOutput!;
+        }
+
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogReadOnlyAction(displayCommand, result.Output);
+            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
             return result.Output;
         }
 
@@ -694,12 +805,20 @@ public class DiagnosticTools
             "
         };
 
+        var fallbackDisplayCommand = $"Performance fallback ({category})";
+        var fallbackValidationCommand = "Get-CimInstance";
+        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackDisplayCommand, fallbackValidationCommand);
+        if (!fallbackApproval.ShouldExecute)
+        {
+            return fallbackApproval.TerminalOutput!;
+        }
+
         var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Performance counter data unavailable.";
-        LogReadOnlyAction($"Performance fallback ({category})", fallbackOutput);
+        LogCommandAction(target, fallbackDisplayCommand, fallbackOutput, fallbackApproval.ApprovalState);
         return fallbackOutput;
     }
 

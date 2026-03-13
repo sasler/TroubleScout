@@ -101,6 +101,8 @@ public class DiagnosticToolsTests : IDisposable
         // Arrange
         string? capturedCommand = null;
 
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
@@ -319,6 +321,8 @@ public class DiagnosticToolsTests : IDisposable
         var logs = new List<CommandActionLog>();
         var toolsWithLogger = new DiagnosticTools(_mockExecutor.Object, _mockApprovalCallback.Object, _targetServer, logs.Add);
 
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
         _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
@@ -398,6 +402,8 @@ public class DiagnosticToolsTests : IDisposable
     public async Task GetSystemInfo_WhenExecutionFails_ShouldReturnError()
     {
         // Arrange
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
 
@@ -413,6 +419,76 @@ public class DiagnosticToolsTests : IDisposable
         var resultString = result?.ToString();
         resultString.Should().Contain("ERROR");
         resultString.Should().Contain("Access denied");
+    }
+
+    [Fact]
+    public async Task GetSystemInfo_WhenSafeCommandsRequireApproval_ShouldPromptBeforeExecuting()
+    {
+        // Arrange
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockApprovalCallback.Setup(x => x.Invoke("Get-SystemInfo", "Requires approval"))
+            .ReturnsAsync(true);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
+
+        // Act
+        var tools = _diagnosticTools.GetTools().ToList();
+        var getSystemInfoTool = tools.First(t => t.Name == "get_system_info");
+        var result = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        // Assert
+        result?.ToString().Should().Contain("System Info Output");
+        _mockApprovalCallback.Verify(x => x.Invoke("Get-SystemInfo", "Requires approval"), Times.Once);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetSystemInfo_WhenApprovalDenied_ShouldNotExecute()
+    {
+        // Arrange
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockApprovalCallback.Setup(x => x.Invoke("Get-SystemInfo", "Requires approval"))
+            .ReturnsAsync(false);
+
+        // Act
+        var tools = _diagnosticTools.GetTools().ToList();
+        var getSystemInfoTool = tools.First(t => t.Name == "get_system_info");
+        var result = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        // Assert
+        result?.ToString().Should().Contain("DENIED");
+        _mockApprovalCallback.Verify(x => x.Invoke("Get-SystemInfo", "Requires approval"), Times.Once);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetPerformanceCounters_ShouldValidateRepresentativeDisplayCommand()
+    {
+        // Arrange
+        string? validatedCommand = null;
+
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Callback<string>(command => validatedCommand = command)
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "counter output"));
+
+        // Act
+        var tools = _diagnosticTools.GetTools().ToList();
+        var getPerformanceCountersTool = tools.First(t => t.Name == "get_performance_counters");
+        var result = await getPerformanceCountersTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        // Assert
+        result?.ToString().Should().Contain("counter output");
+        validatedCommand.Should().Be("Get-Counter (All)");
     }
 
     #endregion
