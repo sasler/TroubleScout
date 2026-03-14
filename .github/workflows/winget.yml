@@ -23,6 +23,15 @@ jobs:
     if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
+      - name: Check WINGET_TOKEN secret
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::error::WINGET_TOKEN secret is not set. Add a classic Personal Access Token with public_repo scope as the WINGET_TOKEN repository secret (Settings > Secrets and variables > Actions > New repository secret), then rerun this workflow. See RELEASE-PROCESS.md for step-by-step instructions."
+            exit 1
+          fi
+
       - name: Submit manifest PR to winget-pkgs
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e
         with:

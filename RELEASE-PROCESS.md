@@ -44,10 +44,42 @@ The repository is configured to use [`vedantmgoyal9/winget-releaser`](https://gi
 
 #### One-time setup
 
-1. Fork `microsoft/winget-pkgs` under the same GitHub account or organization that owns this repository.
-2. Create a **classic** GitHub Personal Access Token with `public_repo` scope.
-3. Add the token to this repository as the `WINGET_TOKEN` secret.
-4. Verify the existing WinGet package identifier remains `sasler.TroubleScout`.
+**Step 1 – Fork `microsoft/winget-pkgs`**
+
+Open <https://github.com/microsoft/winget-pkgs> and click **Fork** (top-right).
+Keep the owner as the same GitHub account that owns this repository (`sasler`).
+Leave the default settings and click **Create fork**.
+
+**Step 2 – Create a classic Personal Access Token**
+
+The WinGet submission tool (`komac`) needs a PAT to open a PR against your `winget-pkgs` fork.
+Fine-grained tokens do not work here; you must create a **classic** token.
+
+1. Go to <https://github.com/settings/tokens> (GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)).
+2. Click **Generate new token (classic)**.
+3. Give it a descriptive note, e.g. `TroubleScout WinGet releaser`.
+4. Under **Select scopes**, check **`public_repo`** (under the `repo` group).
+   No other scopes are needed.
+5. Set an expiration that suits your release cadence (or choose *No expiration* if you prefer).
+6. Click **Generate token**.
+7. **Copy the token immediately** — GitHub shows it only once.
+
+**Step 3 – Add the token as a repository secret**
+
+1. Open this repository on GitHub: <https://github.com/sasler/TroubleScout>.
+2. Go to **Settings** → **Secrets and variables** → **Actions**.
+3. Click **New repository secret**.
+4. Set **Name** to exactly `WINGET_TOKEN` (case-sensitive).
+5. Paste the token you copied in Step 2 into the **Secret** field.
+6. Click **Add secret**.
+
+**Step 4 – Verify the package identifier**
+
+Confirm the existing WinGet package identifier remains `sasler.TroubleScout` in `.github/workflows/winget.yml`.
+
+**Step 5 – Re-run the workflow**
+
+Go to **Actions → Publish to WinGet**, click **Run workflow**, enter the release tag (e.g. `v1.8.1`), and click **Run workflow** again.
 
 #### Why this workflow is separate
 
@@ -94,7 +126,7 @@ This helper:
 **GitHub Release succeeded, but no WinGet PR was created?**
 
 - Confirm `.github/workflows/winget.yml` exists on the default branch.
-- Verify the `WINGET_TOKEN` repository secret is configured.
+- Verify the `WINGET_TOKEN` repository secret is configured (see the **One-time setup** section above for step-by-step instructions).
 - Make sure the release is **published** and not a draft or prerelease.
 - Verify a fork of `microsoft/winget-pkgs` exists under the repo owner account.
 - Re-run the **Publish to WinGet** workflow manually with the release tag if needed.
