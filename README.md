@@ -96,6 +96,12 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 # Output: bin\Release\net10.0\win-arm64\publish\TroubleScout.exe
 ```
 
+**Validate the WinGet manifest for a release locally:**
+
+```powershell
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.1
+```
+
 ## Usage
 
 ### Interactive Mode (Default)
@@ -394,6 +400,6 @@ All pull requests require:
 
 ## Release Process
 
-Releases are automatically published via GitHub Actions when version tags are pushed. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions on creating new releases.
+Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the GitHub Release is published. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.8.1` release flow and beyond.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
