@@ -1,9 +1,11 @@
 name: Publish to WinGet
 
 on:
-  release:
+  workflow_run:
+    workflows:
+      - Release
     types:
-      - published
+      - completed
   workflow_dispatch:
     inputs:
       release_tag:
@@ -15,12 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: winget-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name || github.run_id }}
+  group: winget-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_branch || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Submit manifest PR to winget-pkgs
@@ -28,5 +30,5 @@ jobs:
         with:
           identifier: sasler.TroubleScout
           installers-regex: '^TroubleScout-v.*-win-(x64|arm64)\.zip$'
-          release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+          release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_branch }}
           token: ${{ secrets.WINGET_TOKEN }}
