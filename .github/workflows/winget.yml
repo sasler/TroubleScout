@@ -25,6 +25,15 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
     runs-on: ubuntu-latest
     steps:
+      - name: Verify WinGet secret is configured
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::error::WINGET_TOKEN is not configured. Add a classic Personal Access Token with public_repo scope as the WINGET_TOKEN repository secret, then rerun this workflow."
+            exit 1
+          fi
+
       - name: Submit manifest PR to winget-pkgs
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e
         with:
