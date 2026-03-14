@@ -2,6 +2,18 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.8.1] - 2026-03-14
+
+### ✨ Features
+
+- 🚀 **Automated WinGet PR workflow** — published GitHub Releases can now trigger a dedicated `.github/workflows/winget.yml` job that uses `winget-releaser` to open or update the `microsoft/winget-pkgs` manifest PR for `sasler.TroubleScout`.
+
+### 📝 Documentation & UX
+
+- 📝 **Document WinGet automation setup** — release docs now cover the required `winget-pkgs` fork, `WINGET_TOKEN` secret, manual retry flow, and why WinGet submission runs separately from the main release workflow.
+- 🧪 **Add local WinGet validation helper** — new `Tools/Validate-WinGetRelease.ps1` can download release zips, generate the TroubleScout manifest, run `winget validate`, and optionally invoke the official `winget-pkgs` Sandbox test before or after release publication.
+- 📝 **Refresh versioned examples** — README, workflow examples, and release-process command samples now reference the `v1.8.1` release line.
+
 ## [v1.8.0] - 2026-03-13
 
 ### ✨ Features

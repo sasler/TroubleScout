@@ -158,6 +158,10 @@ Releases are automated via GitHub Actions. When a version tag is pushed, the rel
 2. Packages `TroubleScout.exe` and includes `runtimes/` only when runtime files are present
 3. Creates a GitHub release with release notes
 
+If `WINGET_TOKEN` and a `winget-pkgs` fork are configured, a separate **Publish to WinGet** workflow also runs after the GitHub Release is published to open or update the WinGet manifest PR automatically.
+
+For local WinGet checks before or after release publication, use `.\Tools\Validate-WinGetRelease.ps1`. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for details.
+
 **Only maintainers can create releases.** See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions.
 
 ## 🧪 Testing Guidelines

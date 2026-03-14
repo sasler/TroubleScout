@@ -1,0 +1,32 @@
+name: Publish to WinGet
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to submit to winget-pkgs (for example v1.8.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winget-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit manifest PR to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e
+        with:
+          identifier: sasler.TroubleScout
+          installers-regex: '^TroubleScout-v.*-win-(x64|arm64)\.zip$'
+          release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
