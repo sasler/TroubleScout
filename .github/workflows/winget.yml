@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Submit manifest PR to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e
         with:
           identifier: sasler.TroubleScout
           installers-regex: '^TroubleScout-v.*-win-(x64|arm64)\.zip$'

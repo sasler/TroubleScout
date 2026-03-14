@@ -19,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$manifestSchemaVersion = '1.12.0'
 
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
     $ReleaseTag = if ($Version.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -74,7 +75,7 @@ PackageIdentifier: sasler.TroubleScout
 PackageVersion: $Version
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.12.0
+ManifestVersion: $manifestSchemaVersion
 "@
 
 $localeManifest = @"
@@ -99,7 +100,7 @@ Tags:
 - windows-server
 ReleaseNotesUrl: https://github.com/sasler/TroubleScout/releases/tag/$ReleaseTag
 ManifestType: defaultLocale
-ManifestVersion: 1.12.0
+ManifestVersion: $manifestSchemaVersion
 "@
 
 $installerManifest = @"
@@ -121,7 +122,7 @@ Installers:
   InstallerUrl: $Arm64InstallerUrl
   InstallerSha256: $arm64Hash
 ManifestType: installer
-ManifestVersion: 1.12.0
+ManifestVersion: $manifestSchemaVersion
 "@
 
 Set-Content -Path (Join-Path $ManifestDir 'sasler.TroubleScout.yaml') -Value $versionManifest -Encoding UTF8
