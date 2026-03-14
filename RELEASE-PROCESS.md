@@ -34,13 +34,13 @@ TroubleScout uses a **tag-based** release process: the `release.yml` workflow is
 5. **Release publishes automatically**:
    - Pushing the tag triggers `.github/workflows/release.yml` which builds and packages the release.
    - A GitHub Release is created with packaged zip files for both architectures (e.g., `TroubleScout-v1.3.0-win-x64.zip` and `TroubleScout-v1.3.0-win-arm64.zip`).
-   - If WinGet automation is configured, the published GitHub Release also triggers `.github/workflows/winget.yml`, which opens or updates the `winget-pkgs` PR for `sasler.TroubleScout`.
+   - If WinGet automation is configured, successful completion of `.github/workflows/release.yml` then triggers `.github/workflows/winget.yml`, which opens or updates the `winget-pkgs` PR for `sasler.TroubleScout`.
 
 ### Optional WinGet Automation
 
 TroubleScout can automatically create a `microsoft/winget-pkgs` PR after each published GitHub Release.
 
-The repository is configured to use [`vedantmgoyal9/winget-releaser`](https://github.com/vedantmgoyal9/winget-releaser) from a dedicated `.github/workflows/winget.yml` workflow triggered by `release: published`.
+The repository is configured to use [`vedantmgoyal9/winget-releaser`](https://github.com/vedantmgoyal9/winget-releaser) from a dedicated `.github/workflows/winget.yml` workflow triggered by successful completion of the `Release` workflow (plus optional manual dispatch).
 
 #### One-time setup
 
@@ -85,6 +85,7 @@ Go to **Actions → Publish to WinGet**, click **Run workflow**, enter the relea
 
 - `winget-releaser` expects a **published** GitHub Release so the release assets are publicly available.
 - Keeping WinGet submission separate from `release.yml` makes retries easier when `winget-pkgs` validation fails for reasons outside this repository.
+- The Release workflow creates the GitHub Release with `GITHUB_TOKEN`, which does **not** fan out into a second `release`-triggered workflow run. Triggering `winget.yml` from `workflow_run` avoids that GitHub Actions limitation.
 - The workflow can also be run manually via **Actions -> Publish to WinGet** using a release tag like `v1.8.1`.
 
 ### Local WinGet Validation Helper
