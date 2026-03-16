@@ -289,7 +289,7 @@ static async Task RunInteractiveModeAsync(
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
     // Immediate startup feedback before the potentially slow initialization
-    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    var serverDisplay = TroubleScout.Program.BuildStartupTargetDisplay(servers, initialJeaSession);
     ConsoleUI.ShowStartupProgress(serverDisplay);
 
     await using var session = new TroubleshootingSession(
@@ -321,10 +321,10 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    var additionalTargets = session.AllTargetServers.Count > 1
-        ? session.AllTargetServers.Skip(1).ToList()
+    var additionalTargets = session.EffectiveTargetServers.Count > 1
+        ? session.EffectiveTargetServers.Skip(1).ToList()
         : null;
-    ConsoleUI.ShowStatusPanel(primary, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets);
+    ConsoleUI.ShowStatusPanel(session.EffectiveTargetServer, session.EffectiveConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets, session.DefaultSessionTarget);
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -358,7 +358,7 @@ static async Task RunHeadlessModeAsync(
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
     // Immediate startup feedback before the potentially slow initialization
-    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    var serverDisplay = TroubleScout.Program.BuildStartupTargetDisplay(servers, initialJeaSession);
     ConsoleUI.ShowStartupProgress(serverDisplay);
 
     await using var session = new TroubleshootingSession(
@@ -444,6 +444,19 @@ namespace TroubleScout
             }
 
             return null;
+        }
+
+        public static string BuildStartupTargetDisplay(
+            IReadOnlyList<string> servers,
+            (string ServerName, string ConfigurationName)? initialJeaSession)
+        {
+            var primary = servers.Count > 0 ? servers[0] : "localhost";
+            if (initialJeaSession.HasValue && primary.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost)";
+            }
+
+            return servers.Count > 1 ? string.Join(", ", servers) : primary;
         }
     }
 }

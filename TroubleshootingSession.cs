@@ -68,6 +68,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly List<string> _configurationWarnings = new();
     private readonly IReadOnlyList<string> _additionalInitialServers;
     private readonly (string ServerName, string ConfigurationName)? _initialJeaSession;
+    private bool _startupJeaFocusActive;
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
     private bool _useByokOpenAi;
@@ -125,21 +126,75 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
     {
-        var targetInfo = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        var effectivePrimary = targetServer;
+        string? primaryJeaConfigName = null;
+        PowerShellExecutor? primaryJeaExec = null;
+
+        if (targetServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase)
+            && TryGetEffectivePrimaryJeaSession(out var primaryJeaServerName, out var configurationName, out var jeaExecCandidate))
+        {
+            effectivePrimary = primaryJeaServerName;
+            primaryJeaConfigName = configurationName;
+            primaryJeaExec = jeaExecCandidate;
+        }
+
+        var targetInfo = effectivePrimary.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? "the local machine (localhost)"
-            : $"the remote server: {targetServer}";
+            : $"the remote server: {effectivePrimary}";
 
         var connectedSessionsBlock = "";
         var jeaSessionsBlock = "";
+
+        // Build the primary JEA context block when the effective primary is a JEA endpoint
+        var primaryJeaBlock = "";
+        if (primaryJeaConfigName != null)
+        {
+            var pjLines = new StringBuilder();
+            pjLines.AppendLine();
+            var safePrimary = SanitizeServerNameForPrompt(effectivePrimary);
+            var safeConfig = SanitizeServerNameForPrompt(primaryJeaConfigName);
+            pjLines.AppendLine($"## Primary JEA Endpoint: {safePrimary} (Configuration: {safeConfig})");
+            pjLines.AppendLine("Your primary target is a constrained JEA endpoint. ONLY the following commands are available on this server:");
+
+            if (primaryJeaExec?.JeaAllowedCommands is { Count: > 0 })
+            {
+                foreach (var cmd in primaryJeaExec.JeaAllowedCommands.OrderBy(v => v, StringComparer.OrdinalIgnoreCase))
+                {
+                    pjLines.AppendLine($"- {SanitizeServerNameForPrompt(cmd)}");
+                }
+            }
+            else
+            {
+                pjLines.AppendLine("- Command discovery has not completed yet.");
+            }
+
+            pjLines.AppendLine("Do NOT attempt any other commands — they will be blocked by the JEA endpoint.");
+            pjLines.AppendLine($"Use run_powershell with sessionName: \"{safePrimary}\" to target this JEA session.");
+            pjLines.AppendLine("Do NOT use the built-in diagnostic helper tools for this endpoint; they rely on broader PowerShell language features than constrained JEA sessions allow.");
+            pjLines.AppendLine();
+            primaryJeaBlock = pjLines.ToString();
+        }
+
         if (additionalServerNames is { Count: > 0 })
         {
             var sessionLines = new System.Text.StringBuilder();
             sessionLines.AppendLine();
             sessionLines.AppendLine("## Connected PSSessions");
             sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Use run_powershell with sessionName to target each:");
-            sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} — use run_powershell without sessionName");
+            if (primaryJeaConfigName != null)
+            {
+                sessionLines.AppendLine($"- Bootstrap/default session: {SanitizeServerNameForPrompt(targetServer)} — run_powershell without sessionName targets this session. Use it only when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)} or for local setup tasks.");
+            }
+            else
+            {
+                sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} — use run_powershell without sessionName");
+            }
             foreach (var server in additionalServerNames)
             {
+                // Skip the JEA server that is already described in the primary JEA block
+                if (primaryJeaConfigName != null && server.Equals(effectivePrimary, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 var safe = SanitizeServerNameForPrompt(server);
                 if (_additionalExecutors.TryGetValue(server, out var executor) && executor.IsJeaSession)
                 {
@@ -156,8 +211,10 @@ public class TroubleshootingSession : IAsyncDisposable
             connectedSessionsBlock = sessionLines.ToString();
         }
 
+        // Build JEA blocks for additional (non-primary) JEA executors
         var jeaExecutors = _additionalExecutors
             .Where(entry => entry.Value.IsJeaSession)
+            .Where(entry => primaryJeaConfigName == null || !entry.Key.Equals(effectivePrimary, StringComparison.OrdinalIgnoreCase))
             .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -192,6 +249,32 @@ public class TroubleshootingSession : IAsyncDisposable
             jeaSessionsBlock = jeaLines.ToString();
         }
 
+        var targetContextGuidance = primaryJeaConfigName == null
+            ? $"""
+            - You are currently connected to {targetInfo}
+            - ALL commands and diagnostic operations will execute on this target server
+            - When gathering data or making observations, you MUST always state which server the data comes from
+            - Always verify that the data you receive is from the expected target server
+            - If the user doesn't specify a server in their question, assume they mean the current target: {effectivePrimary}
+            """
+            : $"""
+            - Your primary troubleshooting focus is {targetInfo}
+            - If the user doesn't specify a server in their question, assume they mean the current JEA target: {effectivePrimary}
+            - The default unnamed PowerShell session still targets {SanitizeServerNameForPrompt(targetServer)}. Do NOT use it for {SanitizeServerNameForPrompt(effectivePrimary)} unless the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)}.
+            - To work on {SanitizeServerNameForPrompt(effectivePrimary)}, use run_powershell with sessionName: "{SanitizeServerNameForPrompt(effectivePrimary)}"
+            - Do NOT use the built-in diagnostic helper tools for {SanitizeServerNameForPrompt(effectivePrimary)}; they rely on broader PowerShell language features than constrained JEA endpoints allow
+            - When gathering data or making observations, you MUST always state which server the data comes from
+            - For the primary JEA endpoint, verify source using the targeted session/server name rather than `$env:COMPUTERNAME`, which may be unavailable in no-language mode
+            """;
+
+        var dataCollectionGuidance = primaryJeaConfigName == null
+            ? "Use the diagnostic tools to collect relevant information FROM THE TARGET SERVER"
+            : $"Use run_powershell with sessionName: \"{SanitizeServerNameForPrompt(effectivePrimary)}\" to collect data from the primary JEA endpoint. Only use the bootstrap session when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)}.";
+
+        var sourceVerificationGuidance = primaryJeaConfigName == null
+            ? $"Always confirm the data comes from {effectivePrimary} by checking $env:COMPUTERNAME"
+            : $"For the primary JEA endpoint, confirm the source from the targeted session/server name ({SanitizeServerNameForPrompt(effectivePrimary)}) rather than using $env:COMPUTERNAME on the constrained endpoint";
+
         return new SystemMessageConfig
         {
             Content = $"""
@@ -199,12 +282,8 @@ public class TroubleshootingSession : IAsyncDisposable
             Your role is to diagnose issues on Windows servers by analyzing system data and providing actionable insights.
 
             ## Target Server Context
-            - You are currently connected to {targetInfo}
-            - ALL commands and diagnostic operations will execute on this target server
-            - When gathering data or making observations, you MUST always state which server the data comes from
-            - Always verify that the data you receive is from the expected target server
-            - If the user doesn't specify a server in their question, assume they mean the current target: {targetServer}
-
+            {targetContextGuidance}
+            {primaryJeaBlock}
             ## Your Capabilities
             - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
@@ -218,14 +297,14 @@ public class TroubleshootingSession : IAsyncDisposable
 
             ## Troubleshooting Approach
             1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
-            2. **Gather Data**: Use the diagnostic tools to collect relevant information FROM THE TARGET SERVER
-            3. **Verify Source**: Always confirm the data comes from {targetServer} by checking $env:COMPUTERNAME
+            2. **Gather Data**: {dataCollectionGuidance}
+            3. **Verify Source**: {sourceVerificationGuidance}
             4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
             5. **Diagnose**: Form hypotheses about the root cause based on evidence
             6. **Recommend**: Provide clear, actionable next steps
 
             ## Response Format
-            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {targetServer}...")
+            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {effectivePrimary}...")
             - Always format your response as Markdown
             - Use short Markdown sections and bullet lists to keep output readable
             - Separate distinct steps/findings with blank lines
@@ -263,7 +342,7 @@ public class TroubleshootingSession : IAsyncDisposable
             - Always indicate which server each piece of data comes from.
             {connectedSessionsBlock}
             {jeaSessionsBlock}
-            Remember: Your goal is to help the user understand what's wrong with {targetServer} and guide them to a solution, 
+            Remember: Your goal is to help the user understand what's wrong with {effectivePrimary} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
             server you're working on.
             """
@@ -302,6 +381,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _initialJeaSession = initialJeaSession is { } session
             ? (session.ServerName.Trim(), session.ConfigurationName.Trim())
             : null;
+        _startupJeaFocusActive = _initialJeaSession.HasValue;
         _requestedModel = model;
         _mcpConfigPath = mcpConfigPath;
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
@@ -367,6 +447,87 @@ public class TroubleshootingSession : IAsyncDisposable
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
+
+    private bool TryGetEffectivePrimaryJeaSession(
+        out string serverName,
+        out string configurationName,
+        out PowerShellExecutor executor)
+    {
+        if (_initialJeaSession is { } jea
+            && _startupJeaFocusActive
+            && _targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            && _additionalExecutors.TryGetValue(jea.ServerName, out var candidate)
+            && candidate.IsJeaSession)
+        {
+            serverName = jea.ServerName;
+            configurationName = candidate.ConfigurationName ?? jea.ConfigurationName;
+            executor = candidate;
+            return true;
+        }
+
+        serverName = string.Empty;
+        configurationName = string.Empty;
+        executor = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// The effective primary target for display purposes. When a startup JEA session is active
+    /// and the base target is localhost, the JEA server is the effective primary target.
+    /// </summary>
+    public string EffectiveTargetServer
+    {
+        get
+        {
+            if (TryGetEffectivePrimaryJeaSession(out var serverName, out _, out _))
+            {
+                return serverName;
+            }
+
+            return _targetServer;
+        }
+    }
+
+    /// <summary>
+    /// Connection mode reflecting the effective primary context. Returns JEA mode
+    /// when a startup JEA session is the effective primary target.
+    /// </summary>
+    public string EffectiveConnectionMode
+    {
+        get
+        {
+            if (TryGetEffectivePrimaryJeaSession(out _, out var configurationName, out _))
+            {
+                return $"JEA ({configurationName})";
+            }
+
+            return _executor.GetConnectionMode();
+        }
+    }
+
+    /// <summary>
+    /// All target servers, with the effective primary listed first.
+    /// When a startup JEA session is the effective primary, localhost is excluded from the list.
+    /// </summary>
+    public IReadOnlyList<string> EffectiveTargetServers
+    {
+        get
+        {
+            if (TryGetEffectivePrimaryJeaSession(out var serverName, out _, out _))
+            {
+                // JEA server is primary; exclude localhost from the visible list
+                return [serverName, .._additionalExecutors.Keys
+                    .Where(k => !k.Equals(serverName, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
+            }
+
+            return [_targetServer, .._additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
+        }
+    }
+
+    public string? DefaultSessionTarget =>
+        TryGetEffectivePrimaryJeaSession(out _, out _, out _) ? _targetServer : null;
+
     public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string ActiveProviderDisplayName => _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot";
@@ -2520,7 +2681,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 {
                     Console.Clear();
                     ConsoleUI.ShowBanner();
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                     ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
                     ConsoleUI.ShowWelcomeMessage();
                 }
@@ -2534,7 +2695,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/status")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                 continue;
             }
 
@@ -2714,7 +2875,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/capabilities")
             {
-                ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                 continue;
             }
 
@@ -2735,7 +2896,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     SetExecutionMode(requestedMode);
                     ConsoleUI.SetExecutionMode(_executionMode);
                     ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                 }
 
                 continue;
@@ -2855,7 +3016,7 @@ public class TroubleshootingSession : IAsyncDisposable
                                 null);
                         }
 
-                        ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                        ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                     }
                 }
                 continue;
@@ -2930,7 +3091,7 @@ public class TroubleshootingSession : IAsyncDisposable
                             null);
                     }
 
-                    ConsoleUI.ShowStatusPanel(_targetServer, ConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), _additionalExecutors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList());
+                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                 }
 
                 continue;
@@ -4454,6 +4615,30 @@ public class TroubleshootingSession : IAsyncDisposable
 
         if (newServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
         {
+            if (_startupJeaFocusActive
+                && _targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                && !EffectiveTargetServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
+            {
+                _startupJeaFocusActive = false;
+                _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+
+                if (_copilotClient != null && _copilotSession != null)
+                {
+                    updateStatus?.Invoke("Refreshing AI session...");
+                    await _copilotSession.DisposeAsync();
+                    _copilotSession = null;
+
+                    var modelToUse = string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel;
+                    if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
+                    {
+                        return false;
+                    }
+                }
+
+                ConsoleUI.ShowInfo("Primary focus reset to localhost.");
+                return true;
+            }
+
             ConsoleUI.ShowInfo($"Already connected to {newServer}");
             return true;
         }
@@ -4461,6 +4646,7 @@ public class TroubleshootingSession : IAsyncDisposable
         updateStatus?.Invoke("Closing current PowerShell session...");
         _executor.Dispose();
 
+        _startupJeaFocusActive = false;
         _targetServer = newServer;
         _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
         _executor = new PowerShellExecutor(_targetServer);
@@ -4702,6 +4888,16 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return fields;
+    }
+
+    /// <summary>
+    /// Returns additional targets for the status panel display, excluding the effective primary.
+    /// When a startup JEA session is the effective primary, localhost is excluded.
+    /// </summary>
+    private IReadOnlyList<string>? GetAdditionalTargetsForDisplay()
+    {
+        var all = EffectiveTargetServers;
+        return all.Count > 1 ? all.Skip(1).ToList() : null;
     }
 
     private static void AddUsageField(List<(string Label, string Value)> fields, string label, int? value)
