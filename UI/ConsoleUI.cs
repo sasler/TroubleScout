@@ -98,7 +98,8 @@ public static class ConsoleUI
     }
 
     /// <summary>
-    /// Display the status panel with connection and auth info
+    /// Display the status panel with connection and auth info.
+    /// Uses a compact Table layout for a cleaner appearance.
     /// </summary>
     public static void ShowStatusPanel(
         string targetServer,
@@ -107,13 +108,16 @@ public static class ConsoleUI
         string? model = null,
         ExecutionMode executionMode = ExecutionMode.Safe,
         IReadOnlyList<(string Label, string Value)>? usageFields = null,
-        IReadOnlyList<string>? additionalTargets = null)
+        IReadOnlyList<string>? additionalTargets = null,
+        string? defaultSessionTarget = null)
     {
-        var grid = new Grid();
-        grid.AddColumn(new GridColumn().PadRight(2));
-        grid.AddColumn(new GridColumn());
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[grey]Property[/]").NoWrap())
+            .AddColumn(new TableColumn("[grey]Value[/]"));
 
-        // --- Connection section ---
+        // --- Target server(s) ---
         if (additionalTargets?.Count > 0)
         {
             var allServers = new List<string> { targetServer };
@@ -122,36 +126,41 @@ public static class ConsoleUI
                 s.Equals("localhost", StringComparison.OrdinalIgnoreCase)
                     ? "[green]localhost[/]"
                     : $"[yellow]{Markup.Escape(s)}[/]");
-            grid.AddRow("[grey]Target Servers:[/]", string.Join(", ", serverMarkups));
+            table.AddRow("[bold]Target Servers[/]", string.Join(", ", serverMarkups));
         }
         else
         {
-            var serverStatus = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            var serverColor = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
                 ? "[green]localhost[/]"
                 : $"[yellow]{Markup.Escape(targetServer)}[/]";
-            grid.AddRow("[grey]Target Server:[/]", serverStatus);
+            table.AddRow("[bold]Target[/]", serverColor);
         }
 
-        var copilotStatus = copilotReady 
-            ? "[green]Connected[/]" 
-            : "[yellow]Not ready[/]";
-
-        grid.AddRow("[grey]Connection Mode:[/]", $"[blue]{Markup.Escape(connectionMode)}[/]");
-        grid.AddRow("[grey]Copilot Status:[/]", copilotStatus);
-        grid.AddRow("[grey]Execution Mode:[/]", GetExecutionModeMarkup(executionMode));
-
-        if (copilotReady)
+        // --- Connection + Mode on same conceptual level ---
+        table.AddRow("[bold]Connection[/]", $"[blue]{Markup.Escape(connectionMode)}[/]");
+        if (!string.IsNullOrWhiteSpace(defaultSessionTarget))
         {
-            var modelDisplay = !string.IsNullOrEmpty(model) && model != "default" 
-                ? $"[magenta]{Markup.Escape(model)}[/]" 
-                : "[grey]default[/]";
-            grid.AddRow("[grey]AI Model:[/]", modelDisplay);
+            var defaultSessionDisplay = defaultSessionTarget.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                ? "[green]localhost[/]"
+                : $"[yellow]{Markup.Escape(defaultSessionTarget)}[/]";
+            table.AddRow("[bold]Default session[/]", defaultSessionDisplay);
         }
 
-        // --- Usage / capability fields grouped by section ---
+        table.AddRow("[bold]Mode[/]", GetExecutionModeMarkup(executionMode));
+
+        // --- AI status ---
+        var copilotStatus = copilotReady
+            ? "[green]Connected[/]"
+            : "[yellow]Not ready[/]";
+        var modelDisplay = copilotReady && !string.IsNullOrEmpty(model) && model != "default"
+            ? $"[magenta]{Markup.Escape(model)}[/]"
+            : copilotReady ? "[grey]default[/]" : null;
+        var aiValue = modelDisplay != null ? $"{copilotStatus} — {modelDisplay}" : copilotStatus;
+        table.AddRow("[bold]AI[/]", aiValue);
+
+        // --- Usage / capability fields ---
         if (usageFields != null)
         {
-            bool separatorAdded = false;
             foreach (var (label, value) in usageFields)
             {
                 if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
@@ -159,38 +168,21 @@ public static class ConsoleUI
 
                 if (label == StatusSectionSeparator)
                 {
-                    grid.AddRow("[dim]---[/]", $"[dim]{Markup.Escape(value)}[/]");
-                    separatorAdded = true;
+                    table.AddEmptyRow();
                     continue;
-                }
-
-                // Render the combined "Context" field prominently
-                if (label == "Context" && !separatorAdded)
-                {
-                    grid.AddRow("[dim]---[/]", "[dim]Usage[/]");
                 }
 
                 var markup = IsContextField(label)
                     ? FormatContextValueMarkup(value)
                     : $"[cyan]{Markup.Escape(value)}[/]";
 
-                grid.AddRow(
-                    $"[grey]{Markup.Escape(label)}:[/]",
+                table.AddRow(
+                    $"[grey]{Markup.Escape(label)}[/]",
                     markup);
             }
         }
-        
-        var panel = new Panel(grid)
-            .Header("[bold cyan] Status [/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Grey);
-        
-        AnsiConsole.Write(panel);
-        
-        if (copilotReady)
-        {
-            AnsiConsole.MarkupLine("[grey]  Tip: Use /model to select AI model.[/]");
-        }
+
+        AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
     }
 
@@ -285,44 +277,13 @@ public static class ConsoleUI
     }
 
     /// <summary>
-    /// Display the welcome message and usage hints
+    /// Display a compact welcome hint after the status table.
+    /// The full command reference lives in /help.
     /// </summary>
     public static void ShowWelcomeMessage()
     {
-        var commandTable = new Table()
-            .Border(TableBorder.None)
-            .AddColumn(new TableColumn("[grey]Command[/]").NoWrap())
-            .AddColumn(new TableColumn("[grey]Action[/]"));
-
-        commandTable.AddRow("[cyan]/clear[/]", "Start new session");
-        commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after the editor closes");
-        commandTable.AddRow("[cyan]/status[/]", "Show current status");
-        commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
-        commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
-        commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers");
-        commandTable.AddRow("[cyan]/jea[/] [grey]<server> <configurationName>[/]", "Connect to a JEA constrained endpoint");
-        commandTable.AddRow("[cyan]/login[/]", "Start in-app GitHub Copilot login flow");
-        commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Configure OpenAI-compatible BYOK for this session");
-        commandTable.AddRow("[cyan]/byok clear[/]", "Remove saved BYOK settings for this profile");
-        commandTable.AddRow("[cyan]/help[/]", "Show full command help");
-        commandTable.AddRow("[cyan]/exit[/] [grey]or[/] [cyan]/quit[/]", "End the app");
-
-        var tips = new Rows(
-            new Markup("[grey]Describe your issue naturally and TroubleScout will investigate.[/]"),
-            new Markup("[grey]Example:[/] [italic]\"The server is slow and login takes too long\"[/]"),
-            new Markup(""),
-            commandTable,
-            new Markup(""),
-            new Markup("[grey]Tip:[/] Type [cyan]/[/] to show matching commands. Use [cyan]/help[/] for complete command list.")
-        );
-
-        var panel = new Panel(tips)
-            .Header("[bold cyan] How to Use [/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Grey);
-        
-        AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[grey]Describe your issue and TroubleScout will investigate.[/]");
+        AnsiConsole.MarkupLine("[grey]Type[/] [cyan]/help[/] [grey]for commands,[/] [cyan]/status[/] [grey]for session info,[/] [cyan]/exit[/] [grey]to quit.[/]");
     }
 
     /// <summary>
@@ -349,6 +310,7 @@ public static class ConsoleUI
         optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server(s) hostname or IP. Repeat for multiple: -s srv1 -s srv2 (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
+        optionsTable.AddRow("[cyan]--jea[/] [grey]<server> <configurationName>[/]", "Preconnect a single startup JEA endpoint session");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
         optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
@@ -378,6 +340,9 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with YOLO execution mode[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode yolo");
         AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Preconnect a JEA endpoint before starting[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server server1 --jea server2 JEA-Admins");
+        AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Use BYOK OpenAI-compatible endpoint[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --byok-openai --openai-api-key $env:MY_KEY");
         AnsiConsole.WriteLine();
@@ -404,7 +369,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
-        commandTable.AddRow("[cyan]/jea[/] [grey]<server> <configurationName>[/]", "Connect to a JEA constrained endpoint");
+        commandTable.AddRow("[cyan]/jea[/] [grey][[server]] [[configurationName]][/]", "Connect to a JEA constrained endpoint");
         commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
         commandTable.AddRow("[cyan]/byok clear[/]", "Clear saved BYOK settings for this profile");

@@ -2522,6 +2522,72 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void ParseStartupJea_ShouldReturnConfiguredSession()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1", "--jea", "server2", "JEA-Admins"]);
+
+        jea.HasError.Should().BeFalse();
+        jea.Session.Should().Be(("server2", "JEA-Admins"));
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenMissing_ShouldReturnNull()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1"]);
+
+        jea.HasError.Should().BeFalse();
+        jea.Session.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenDuplicated_ShouldReturnError()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--jea", "server1", "JEA-Admins", "--jea", "server2", "JEA-Readers"]);
+
+        jea.HasError.Should().BeTrue();
+        jea.Error.Should().Be("--jea can only be specified once.");
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenMissingConfiguration_ShouldReturnError()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--jea", "server1"]);
+
+        jea.HasError.Should().BeTrue();
+        jea.Error.Should().Be("--jea requires two values: <server> <configurationName>.");
+    }
+
+    [Fact]
+    public void BuildStartupTargetDisplay_WithLocalhostJea_ShouldIncludeDefaultSession()
+    {
+        var display = TroubleScout.Program.BuildStartupTargetDisplay(
+            ["localhost"],
+            ("server1", "JEA-Admins"));
+
+        display.Should().Be("server1 (JEA: JEA-Admins; default session: localhost)");
+    }
+
+    [Fact]
+    public void BuildStartupTargetDisplay_WithRemotePrimaryAndJea_ShouldKeepPrimaryDisplay()
+    {
+        var display = TroubleScout.Program.BuildStartupTargetDisplay(
+            ["server1"],
+            ("server2", "JEA-Admins"));
+
+        display.Should().Be("server1");
+    }
+
+    [Fact]
+    public void BuildStartupTargetDisplay_WithLocalhostJeaAndAdditionalServers_ShouldIncludeAdditionalSessions()
+    {
+        var display = TroubleScout.Program.BuildStartupTargetDisplay(
+            ["localhost", "server3", "server4"],
+            ("server1", "JEA-Admins"));
+
+        display.Should().Be("server1 (JEA: JEA-Admins; default session: localhost; additional sessions: server3, server4)");
+    }
+
+    [Fact]
     public void IsSlashCommandInvocation_Server_ShouldMatchServerCommand()
     {
         // Arrange
@@ -2738,6 +2804,115 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         parameters[1].ParameterType.Should().Be(typeof(bool));
         parameters[1].HasDefaultValue.Should().BeTrue("skipApproval should have a default value");
         parameters[1].DefaultValue.Should().Be(false, "skipApproval default should be false");
+    }
+
+    #endregion
+
+    #region JEA Primary Context Tests
+
+    [Fact]
+    public async Task EffectiveTargetServer_WithoutJea_ShouldReturnTargetServer()
+    {
+        // Arrange & Act
+        await using var session = new TroubleshootingSession("myserver");
+
+        // Assert
+        session.EffectiveTargetServer.Should().Be("myserver");
+    }
+
+    [Fact]
+    public async Task EffectiveTargetServer_WithJeaButNonLocalhost_ShouldReturnTargetServer()
+    {
+        // When the base target is NOT localhost, JEA session doesn't replace it
+        await using var session = new TroubleshootingSession(
+            "myserver",
+            initialJeaSession: ("server1", "JEA-Admins"));
+
+        // The JEA executor hasn't been connected yet (no InitializeAsync), so it stays as base
+        session.EffectiveTargetServer.Should().Be("myserver");
+    }
+
+    [Fact]
+    public async Task EffectiveConnectionMode_WithoutJea_ShouldReturnBaseConnectionMode()
+    {
+        await using var session = new TroubleshootingSession("localhost");
+
+        // Without JEA, effective connection mode should match the base executor's mode
+        session.EffectiveConnectionMode.Should().Contain("Local PowerShell");
+    }
+
+    [Fact]
+    public async Task CreateSystemMessage_WithJeaContext_ShouldIncludePrimaryJeaBlock()
+    {
+        // Arrange - create a session with a startup JEA session targeting localhost
+        await using var session = new TroubleshootingSession(
+            "localhost",
+            initialJeaSession: ("server1", "JEA-Admins"));
+
+        var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(session, "_additionalExecutors");
+        additionalExecutors["server1"] = new PowerShellExecutor("server1", "JEA-Admins");
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var config = method!.Invoke(session, ["localhost", new[] { "server1" }]);
+        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+
+        content.Should().NotBeNullOrWhiteSpace();
+        content.Should().Contain("## Primary JEA Endpoint: server1 (Configuration: JEA-Admins)");
+        content.Should().Contain("assume they mean the current JEA target: server1");
+        content.Should().Contain("run_powershell with sessionName: \"server1\"");
+        content.Should().Contain("Bootstrap/default session: localhost");
+        content.Should().NotContain("Primary (default): localhost");
+        session.DefaultSessionTarget.Should().Be("localhost");
+    }
+
+    [Fact]
+    public async Task EffectiveTargetServers_WithoutJea_ShouldMatchAllTargetServers()
+    {
+        await using var session = new TroubleshootingSession("localhost");
+
+        // Without JEA, effective target servers should be the same as AllTargetServers
+        session.EffectiveTargetServers.Should().BeEquivalentTo(session.AllTargetServers);
+    }
+
+    [Fact]
+    public async Task EffectiveTargetServer_WhenStartupJeaIsReplacedByNormalSession_ShouldRevertToLocalhost()
+    {
+        await using var session = new TroubleshootingSession(
+            "localhost",
+            initialJeaSession: ("server1", "JEA-Admins"));
+
+        var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(session, "_additionalExecutors");
+        additionalExecutors["server1"] = new PowerShellExecutor("server1");
+
+        session.EffectiveTargetServer.Should().Be("localhost");
+        session.DefaultSessionTarget.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ReconnectAsync_WithLocalhostDuringStartupJeaFocus_ShouldResetFocusToLocalhost()
+    {
+        await using var session = new TroubleshootingSession(
+            "localhost",
+            initialJeaSession: ("server1", "JEA-Admins"));
+
+        var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(session, "_additionalExecutors");
+        additionalExecutors["server1"] = new PowerShellExecutor("server1", "JEA-Admins");
+
+        session.EffectiveTargetServer.Should().Be("server1");
+
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ReconnectAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var reconnectTask = (Task<bool>)method!.Invoke(session, ["localhost", null])!;
+        var result = await reconnectTask;
+
+        result.Should().BeTrue();
+        session.EffectiveTargetServer.Should().Be("localhost");
+        session.DefaultSessionTarget.Should().BeNull();
     }
 
     #endregion

@@ -91,6 +91,9 @@ Preserve this model for all changes.
 
 - **`/server` slash command** (not `/connect`) — accepts one or more server names separated by spaces or commas: `/server srv1 srv2` or `/server srv1,srv2`. Replaces the former `/connect` command.
 - **Multi-server `--server` flag** — repeatable (`--server srv1 --server srv2`) or comma-separated (`--server srv1,srv2`); all servers connect at startup via `InitializeAsync`.
+- **`/jea` guided flow** — `/jea` can be entered with or without parameters. When arguments are omitted, `RunInteractiveLoopAsync` prompts first for the server name and then for the configuration name. Because the user explicitly invoked `/jea`, the TUI does not ask for a second Safe-mode approval prompt before connecting.
+- **Single-session `--jea` flag** — `--jea <server> <configurationName>` preconnects one startup JEA session during `InitializeAsync`, which is useful for headless runs and JEA smoke tests.
+- **No-language JEA execution** — `Services/PowerShellExecutor.cs` must avoid `AddScript(...)` for JEA sessions. Build JEA commands with the PowerShell command API so no-language endpoints can connect and run allowed cmdlets; unsupported language constructs should fail clearly instead of surfacing the raw runspace syntax error.
 - **ESC cancellation** — a background poller in `RunInteractiveLoopAsync` cancels the active `CancellationTokenSource`; the token is passed to `_copilotSession.SendAsync` for true RPC-level cancellation. Poller skips `ReadKey` while `LiveThinkingIndicator.IsApprovalInProgress` is true.
 - **Reasoning display** — `AssistantReasoningEvent` handled in `SendMessageAsync` event switch; routed to `ConsoleUI.WriteReasoningText()` (ANSI 256-colour dark grey 238, falls back to plain text when stdout is redirected).
 - **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Prompt` or `SelectionPrompt` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
@@ -107,6 +110,7 @@ After editing any `.cs` files:
 2. `dotnet test`
 3. End-to-end smoke test:
    - `dotnet run -- --server localhost --prompt "how is this computer doing?"`
+   - For JEA-related changes, also validate the startup CLI path with `--jea <server> <configurationName>` using environment-appropriate test values.
 
 Also ensure analyzer/compiler issues remain clean.
 

@@ -1,4 +1,5 @@
 using System.Management.Automation;
+using System.Management.Automation.Language;
 using System.Management.Automation.Runspaces;
 using System.Text;
 
@@ -532,9 +533,16 @@ public class PowerShellExecutor : IDisposable
                     using var ps = PowerShell.Create();
                     ps.Runspace = _runspace;
                     var timeout = CommandTimeoutOverride ?? GetCommandTimeout(command);
-                    
-                    // Serialize runspace usage to avoid concurrent pipeline execution.
-                    var wrappedCommand = $@"
+
+                    // JEA endpoints often use NoLanguage mode, so avoid AddScript/script blocks there.
+                    if (IsJeaSession)
+                    {
+                        ConfigureJeaPipeline(ps, command);
+                    }
+                    else
+                    {
+                        // Serialize runspace usage to avoid concurrent pipeline execution.
+                        var wrappedCommand = $@"
                         $ErrorActionPreference = 'Continue'
                         $ConfirmPreference = 'None'
                         $PSDefaultParameterValues['*:Confirm'] = $false
@@ -546,8 +554,10 @@ public class PowerShellExecutor : IDisposable
                             $__tsOutput.TrimEnd()
                         }}
                     ";
-                    
-                    ps.AddScript(wrappedCommand);
+
+                        ps.AddScript(wrappedCommand);
+                    }
+
                     var asyncResult = ps.BeginInvoke();
                     if (!asyncResult.AsyncWaitHandle.WaitOne(timeout))
                     {
@@ -582,11 +592,12 @@ public class PowerShellExecutor : IDisposable
                             errors.AppendLine(error.ToString());
                         }
 
-                        var outputText = output.ToString();
+                        var outputText = IsJeaSession ? output.ToString().TrimEnd() : output.ToString();
                         return new PowerShellResult(false, outputText, errors.ToString());
                     }
 
-                    return new PowerShellResult(true, output.ToString());
+                    var finalOutput = IsJeaSession ? output.ToString().TrimEnd() : output.ToString();
+                    return new PowerShellResult(true, finalOutput);
                 }
                 catch (Exception ex)
                 {
@@ -661,6 +672,13 @@ public class PowerShellExecutor : IDisposable
         try
         {
             await InitializeAsync();
+
+            if (IsJeaSession)
+            {
+                _actualComputerName = _targetServer.Split('.')[0];
+                return (true, null);
+            }
+
             var result = await ExecuteAsync("$env:COMPUTERNAME", trackInHistory: false);
             
             if (!result.Success)
@@ -699,17 +717,83 @@ public class PowerShellExecutor : IDisposable
 
     public async Task<IReadOnlySet<string>> DiscoverJeaCommandsAsync()
     {
-        var result = await ExecuteAsync("Get-Command | Select-Object -ExpandProperty Name", trackInHistory: false);
-        if (!result.Success)
+        if (_disposed)
         {
-            throw new InvalidOperationException($"Failed to discover JEA commands: {result.Error}");
+            throw new ObjectDisposedException(nameof(PowerShellExecutor));
         }
 
-        _jeaAllowedCommands = result.Output
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(command => command.Trim())
-            .Where(command => !string.IsNullOrWhiteSpace(command))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (_runspace == null)
+        {
+            await InitializeAsync();
+        }
+
+        await _executionLock.WaitAsync();
+        try
+        {
+            if (_runspace!.RunspaceStateInfo.State != RunspaceState.Opened)
+            {
+                throw new InvalidOperationException($"Remote session to {_targetServer} has been disconnected. Please restart TroubleScout.");
+            }
+
+            var discoveredCommands = await Task.Run(() =>
+            {
+                using var ps = PowerShell.Create();
+                ps.Runspace = _runspace;
+
+                if (!TryBuildJeaPipeline(ps, "Get-Command", out var parseError))
+                {
+                    throw new InvalidOperationException(parseError);
+                }
+
+                var asyncResult = ps.BeginInvoke();
+                var timeout = CommandTimeoutOverride ?? DefaultCommandTimeout;
+                if (!asyncResult.AsyncWaitHandle.WaitOne(timeout))
+                {
+                    try
+                    {
+                        ps.Stop();
+                    }
+                    catch
+                    {
+                        // Ignore stop failures during timeout handling.
+                    }
+
+                    throw new InvalidOperationException($"JEA command discovery timed out after {timeout.TotalSeconds:0} seconds.");
+                }
+
+                var results = ps.EndInvoke(asyncResult);
+                if (ps.HadErrors)
+                {
+                    var errors = new StringBuilder();
+                    foreach (var error in ps.Streams.Error)
+                    {
+                        errors.AppendLine(error.ToString());
+                    }
+
+                    throw new InvalidOperationException(errors.ToString().Trim());
+                }
+
+                return results
+                    .Select(result => result?.BaseObject switch
+                    {
+                        CommandInfo commandInfo => commandInfo.Name,
+                        _ => result?.Properties["Name"]?.Value?.ToString()
+                    })
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!.Trim())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            });
+
+            _jeaAllowedCommands = discoveredCommands;
+        }
+        catch (Exception ex) when (ex is not InvalidOperationException)
+        {
+            throw new InvalidOperationException($"Failed to discover JEA commands: {ex.Message}", ex);
+        }
+        finally
+        {
+            _executionLock.Release();
+        }
 
         return _jeaAllowedCommands;
     }
@@ -720,6 +804,150 @@ public class PowerShellExecutor : IDisposable
             .Where(command => !string.IsNullOrWhiteSpace(command))
             .Select(command => command.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void ConfigureJeaPipeline(PowerShell ps, string command)
+    {
+        if (!TryBuildJeaPipeline(ps, command, out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+
+        if (_jeaAllowedCommands?.Contains("Out-String") == true)
+        {
+            ps.AddCommand("Out-String").AddParameter("Width", 200);
+        }
+    }
+
+    internal static bool TryBuildJeaPipeline(PowerShell ps, string command, out string error)
+    {
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            error = "JEA command cannot be empty.";
+            return false;
+        }
+
+        Token[] tokens;
+        ParseError[] parseErrors;
+        var ast = Parser.ParseInput(command, out tokens, out parseErrors);
+        if (parseErrors.Length > 0)
+        {
+            error = parseErrors[0].Message;
+            return false;
+        }
+
+        if (ast.EndBlock is null)
+        {
+            error = "JEA command could not be parsed.";
+            return false;
+        }
+
+        var statements = ast.EndBlock.Statements;
+        if (statements.Count != 1 || statements[0] is not PipelineAst pipelineAst)
+        {
+            error = "JEA commands must be a single pipeline or command.";
+            return false;
+        }
+
+        if (pipelineAst.PipelineElements.Count == 0)
+        {
+            error = "JEA command did not contain any pipeline elements.";
+            return false;
+        }
+
+        if (pipelineAst.Background)
+        {
+            error = "JEA commands do not support background execution.";
+            return false;
+        }
+
+        for (var commandIndex = 0; commandIndex < pipelineAst.PipelineElements.Count; commandIndex++)
+        {
+            if (pipelineAst.PipelineElements[commandIndex] is not CommandAst commandAst)
+            {
+                error = "JEA commands only support command pipelines.";
+                return false;
+            }
+
+            var commandName = commandAst.GetCommandName();
+            if (string.IsNullOrWhiteSpace(commandName))
+            {
+                error = "JEA commands must start each pipeline segment with a cmdlet name.";
+                return false;
+            }
+
+            if (commandAst.Redirections.Count > 0)
+            {
+                error = "JEA commands do not support redirection.";
+                return false;
+            }
+
+            ps.AddCommand(commandName);
+
+            var elements = commandAst.CommandElements;
+            for (var elementIndex = 1; elementIndex < elements.Count; elementIndex++)
+            {
+                var element = elements[elementIndex];
+
+                if (element is CommandParameterAst parameterAst)
+                {
+                    Ast? parameterArgument = parameterAst.Argument;
+                    if (parameterArgument is null &&
+                        elementIndex + 1 < elements.Count &&
+                        elements[elementIndex + 1] is not CommandParameterAst)
+                    {
+                        parameterArgument = elements[++elementIndex];
+                    }
+
+                    if (parameterArgument is null)
+                    {
+                        ps.AddParameter(parameterAst.ParameterName);
+                        continue;
+                    }
+
+                    if (!TryGetJeaArgumentValue(parameterArgument, out var parameterValue, out error))
+                    {
+                        error = $"Unsupported JEA parameter value for -{parameterAst.ParameterName}: {error}";
+                        return false;
+                    }
+
+                    ps.AddParameter(parameterAst.ParameterName, parameterValue);
+                    continue;
+                }
+
+                if (!TryGetJeaArgumentValue(element, out var argumentValue, out error))
+                {
+                    error = $"Unsupported JEA argument '{element.Extent.Text}': {error}";
+                    return false;
+                }
+
+                ps.AddArgument(argumentValue);
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryGetJeaArgumentValue(Ast ast, out object value, out string error)
+    {
+        error = string.Empty;
+        value = string.Empty;
+
+        switch (ast)
+        {
+            case StringConstantExpressionAst stringAst:
+                value = stringAst.Value;
+                return true;
+
+            case ConstantExpressionAst constantAst:
+                value = constantAst.Value?.ToString() ?? string.Empty;
+                return true;
+        }
+
+        error = "language-mode expressions are not supported in JEA commands.";
+        return false;
     }
 
     /// <summary>

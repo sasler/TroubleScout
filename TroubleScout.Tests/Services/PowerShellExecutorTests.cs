@@ -1,4 +1,6 @@
 using FluentAssertions;
+using System.Management.Automation;
+using System.Reflection;
 using TroubleScout.Services;
 using TroubleScout.Tests.Fixtures;
 using Xunit;
@@ -403,7 +405,7 @@ Get-Process
     public void ValidateCommand_JeaSession_AllowedCommand_ShouldAutoApprove()
     {
         // Arrange
-        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        using var executor = new PowerShellExecutor("server01", "JEA-Admins");
         executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
 
         // Act
@@ -418,7 +420,7 @@ Get-Process
     public void ValidateCommand_JeaSession_BlockedCommand_ShouldBlock()
     {
         // Arrange
-        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        using var executor = new PowerShellExecutor("server01", "JEA-Admins");
         executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
 
         // Act
@@ -434,7 +436,7 @@ Get-Process
     public void ValidateCommand_JeaSession_BlockedListStillApplies()
     {
         // Arrange
-        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        using var executor = new PowerShellExecutor("server01", "JEA-Admins");
         executor.SetJeaAllowedCommandsForTesting(["Get-Credential"]);
 
         // Act
@@ -450,7 +452,7 @@ Get-Process
     public void ValidateCommand_JeaSession_Pipeline_AllAllowed_ShouldAutoApprove()
     {
         // Arrange
-        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        using var executor = new PowerShellExecutor("server01", "JEA-Admins");
         executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Where-Object", "Select-Object"]);
 
         // Act
@@ -465,7 +467,7 @@ Get-Process
     public void ValidateCommand_JeaSession_Pipeline_SomeBlocked_ShouldBlock()
     {
         // Arrange
-        using var executor = new PowerShellExecutor("server01", "JEA-InfraMgmt");
+        using var executor = new PowerShellExecutor("server01", "JEA-Admins");
         executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Where-Object"]);
 
         // Act
@@ -509,6 +511,126 @@ Get-Process
         result.IsAllowed.Should().BeFalse();
         result.RequiresApproval.Should().BeFalse();
         result.Reason.Should().Contain("discovery has not completed");
+    }
+
+    [Fact]
+    public void TryBuildJeaPipeline_SimplePipeline_ShouldBuildCommandSequence()
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(
+            ps,
+            "Get-Command | Select-Object -ExpandProperty Name",
+            out var error);
+
+        success.Should().BeTrue();
+        error.Should().BeEmpty();
+        ps.Commands.Commands.Should().HaveCount(2);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Command");
+        ps.Commands.Commands[1].CommandText.Should().Be("Select-Object");
+    }
+
+    [Fact]
+    public void TryBuildJeaPipeline_WithLiteralParameterValue_ShouldPreserveParameter()
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(
+            ps,
+            "Get-Service -Name Spooler",
+            out var error);
+
+        success.Should().BeTrue();
+        error.Should().BeEmpty();
+        ps.Commands.Commands.Should().HaveCount(1);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Service");
+        var nameParameter = ps.Commands.Commands[0].Parameters.Single(parameter => parameter.Name == "Name");
+        nameParameter.Value.Should().Be("Spooler");
+    }
+
+    [Fact]
+    public void TryBuildJeaPipeline_WithScriptBlock_ShouldRejectNoLanguageSyntax()
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(
+            ps,
+            "Get-Service | Where-Object {$_.Status -eq 'Running'}",
+            out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("language-mode expressions are not supported");
+    }
+
+    [Theory]
+    [InlineData("Get-Service -ComputerName $_.Name")]
+    [InlineData("Get-Service -Name (Get-Content servers.txt)")]
+    public void TryBuildJeaPipeline_WithUnsupportedExpression_ShouldRejectNoLanguageSyntax(string command)
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(ps, command, out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("language-mode expressions are not supported");
+    }
+
+    [Theory]
+    [InlineData("Get-Service > services.txt")]
+    [InlineData("Get-Service 2> errors.txt")]
+    public void TryBuildJeaPipeline_WithRedirection_ShouldReject(string command)
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(ps, command, out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("do not support redirection");
+    }
+
+    [Fact]
+    public void TryBuildJeaPipeline_WithBackgroundOperator_ShouldReject()
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(ps, "Get-Service &", out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("do not support background execution");
+    }
+
+    [Fact]
+    public void ConfigureJeaPipeline_WhenOutStringIsNotAllowed_ShouldNotAppendFormatter()
+    {
+        using var executor = new PowerShellExecutor("server1", "JEA-Admins");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
+        using var ps = PowerShell.Create();
+
+        var method = typeof(PowerShellExecutor).GetMethod("ConfigureJeaPipeline", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(executor, [ps, "Get-Service"]);
+
+        ps.Commands.Commands.Should().HaveCount(1);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Service");
+    }
+
+    [Fact]
+    public void ConfigureJeaPipeline_WhenOutStringIsAllowed_ShouldAppendFormatter()
+    {
+        using var executor = new PowerShellExecutor("server1", "JEA-Admins");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Out-String"]);
+        using var ps = PowerShell.Create();
+
+        var method = typeof(PowerShellExecutor).GetMethod("ConfigureJeaPipeline", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(executor, [ps, "Get-Service"]);
+
+        ps.Commands.Commands.Should().HaveCount(2);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Service");
+        ps.Commands.Commands[1].CommandText.Should().Be("Out-String");
+        ps.Commands.Commands[1].Parameters.Should().ContainSingle(parameter => parameter.Name == "Width" && Equals(parameter.Value, 200));
     }
 
     #endregion

@@ -99,7 +99,7 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 **Validate the WinGet manifest for a release locally:**
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.1
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.2
 ```
 
 ## Usage
@@ -122,6 +122,9 @@ dotnet run -- --server myserver.domain.com
 TroubleScout.exe --server srv1 --server srv2 --server srv3
 # or comma-separated
 TroubleScout.exe --server srv1,srv2,srv3
+
+# Preconnect a single startup JEA session
+TroubleScout.exe --server server1 --jea server2 JEA-Admins
 ```
 
 ### Headless Mode
@@ -137,6 +140,7 @@ dotnet run -- --server localhost --prompt "Check why the SQL Server service is s
 ### Command Line Options
 
 - `--server` (`-s`): Target server name or IP (default: localhost); **repeatable** or comma-separated for multi-server (e.g., `--server srv1 --server srv2` or `--server srv1,srv2`)
+- `--jea`: Preconnect a single JEA session at startup (`--jea server1 JEA-Admins`)
 - `--model` (`-m`): AI model to use (e.g., gpt-4.1, claude-sonnet-4.6)
 - `--prompt` (`-p`): Initial prompt for headless mode
 - `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
@@ -400,6 +404,6 @@ All pull requests require:
 
 ## Release Process
 
-Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the **Release** workflow completes. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.8.1` release flow and beyond.
+Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the **Release** workflow completes. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.8.2` release flow and beyond.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.

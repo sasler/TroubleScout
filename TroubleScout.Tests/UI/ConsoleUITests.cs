@@ -74,6 +74,7 @@ public class ConsoleUITests
         output.Should().Contain("OPTIONS");
         output.Should().Contain("--help");
         output.Should().Contain("--server");
+        output.Should().Contain("--jea");
         output.Should().Contain("--prompt");
         output.Should().Contain("--model");
         output.Should().Contain("1.2.3");
@@ -91,6 +92,7 @@ public class ConsoleUITests
         output.Should().Contain("USAGE");
         output.Should().Contain("OPTIONS");
         output.Should().Contain("--help");
+        output.Should().Contain("--jea");
         output.Should().NotContain("Version:");
     }
 
@@ -171,8 +173,8 @@ public class ConsoleUITests
             additionalTargets: new[] { "ServerA", "ServerB" });
         var output = AnsiConsole.ExportText();
 
-        // Assert
-        output.Should().Contain("Target Servers:");
+        // Assert — new Table layout uses "Target Servers" as column value
+        output.Should().Contain("Target Servers");
         output.Should().Contain("PrimaryServer");
         output.Should().Contain("ServerA");
         output.Should().Contain("ServerB");
@@ -188,11 +190,9 @@ public class ConsoleUITests
             additionalTargets: null);
         var output = AnsiConsole.ExportText();
 
-        // Assert – look for singular label, ensuring no plural variant on the same line
-        output.Should().Contain("Target Server:");
-        // The plural form "Target Servers:" should not appear without the "WithAdditional" test
-        var lines = output.Split('\n');
-        lines.Should().Contain(line => line.Contains("Target Server:") && !line.Contains("Target Servers:"));
+        // Assert — singular label in the Table column
+        output.Should().Contain("Target");
+        output.Should().Contain("PrimaryServer");
     }
 
     #endregion
@@ -722,7 +722,7 @@ public class ConsoleUITests
     #region Status Panel Section Separator Tests
 
     [Fact]
-    public void ShowStatusPanel_WithSectionSeparators_ShouldRenderSectionHeaders()
+    public void ShowStatusPanel_WithSectionSeparators_ShouldRenderFieldValues()
     {
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
@@ -738,7 +738,7 @@ public class ConsoleUITests
         var output = AnsiConsole.ExportText();
 
         output.Should().Contain("Provider");
-        output.Should().Contain("Usage");
+        output.Should().Contain("GitHub Copilot");
         output.Should().Contain("25,000/100,000 (25%)");
     }
 
@@ -766,4 +766,65 @@ public class ConsoleUITests
             (int)type.GetField("Item1")!.GetValue(result)!,
             (int)type.GetField("Item2")!.GetValue(result)!);
     }
+
+    #region ShowStatusPanel JEA Connection Mode Tests
+
+    [Fact]
+    public void ShowStatusPanel_WithJeaConnectionMode_ShouldRenderJeaLabelAndDefaultSession()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowStatusPanel(
+            "server1", "JEA (JEA-Admins)", true, "gpt-4.1", ExecutionMode.Safe, null,
+            additionalTargets: null, defaultSessionTarget: "localhost");
+        var output = AnsiConsole.ExportText();
+
+        // Assert — JEA connection mode should appear
+        output.Should().Contain("JEA (JEA-Admins)");
+        output.Should().Contain("server1");
+        output.Should().Contain("Default session");
+        output.Should().Contain("localhost");
+    }
+
+    [Fact]
+    public void ShowStatusPanel_CompactAiRow_ShouldCombineStatusAndModel()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowStatusPanel(
+            "localhost", "Local PowerShell", true, "gpt-4.1", ExecutionMode.Safe);
+        var output = AnsiConsole.ExportText();
+
+        // Assert — AI row should contain both status and model
+        output.Should().Contain("Connected");
+        output.Should().Contain("gpt-4.1");
+        // Should NOT have separate "AI Model:" or "Copilot Status:" labels (old format)
+        output.Should().NotContain("Copilot Status");
+        output.Should().NotContain("AI Model");
+    }
+
+    #endregion
+
+    #region ShowWelcomeMessage Compact Tests
+
+    [Fact]
+    public void ShowWelcomeMessage_ShouldBeCompactAndMentionHelp()
+    {
+        // Arrange & Act
+        AnsiConsole.Record();
+        ConsoleUI.ShowWelcomeMessage();
+        var output = AnsiConsole.ExportText();
+
+        // Assert — compact welcome should mention /help and /status but NOT show
+        // the full command table (that now lives in ShowHelp)
+        output.Should().Contain("/help");
+        output.Should().Contain("/status");
+        output.Should().Contain("/exit");
+        // Should NOT contain the verbose command table entries from the old welcome
+        output.Should().NotContain("/settings");
+        output.Should().NotContain("/model");
+        output.Should().NotContain("/server");
+    }
+
+    #endregion
 }

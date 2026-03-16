@@ -6,6 +6,14 @@ using TroubleScout.UI;
 // Parse command line arguments manually for simplicity
 // Server list is pre-populated by ParseServers; the switch only handles the missing-value error case.
 var servers = TroubleScout.Program.ParseServers(args);
+var startupJeaParseResult = TroubleScout.Program.ParseStartupJea(args);
+if (startupJeaParseResult.HasError)
+{
+    Console.WriteLine(startupJeaParseResult.Error);
+    return 1;
+}
+
+(string ServerName, string ConfigurationName)? startupJea = startupJeaParseResult.Session;
 string? prompt = null;
 string? model = null;
 bool modelSpecifiedByCli = false;
@@ -37,6 +45,13 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--prompt" or "-p":
             Console.WriteLine("--prompt (-p) requires a value: the text prompt to send.");
+            return 1;
+        case "--jea" when i + 2 < args.Length:
+            // Parsed and validated up-front by ParseStartupJea; just skip the consumed values here.
+            i += 2;
+            break;
+        case "--jea":
+            Console.WriteLine("--jea requires two values: <server> <configurationName>.");
             return 1;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
@@ -175,12 +190,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
+    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
+    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
 }
 
 return Environment.ExitCode;
@@ -266,7 +281,8 @@ static async Task RunInteractiveModeAsync(
     string? byokOpenAiBaseUrl,
     string? byokOpenAiApiKey,
     bool byokExplicitlyRequested = false,
-    bool modelExplicitlyRequested = false)
+    bool modelExplicitlyRequested = false,
+    (string ServerName, string ConfigurationName)? initialJeaSession = null)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
@@ -275,7 +291,7 @@ static async Task RunInteractiveModeAsync(
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
     // Immediate startup feedback before the potentially slow initialization
-    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    var serverDisplay = TroubleScout.Program.BuildStartupTargetDisplay(servers, initialJeaSession);
     ConsoleUI.ShowStartupProgress(serverDisplay);
 
     await using var session = new TroubleshootingSession(
@@ -291,7 +307,8 @@ static async Task RunInteractiveModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional);
+        additional,
+        initialJeaSession);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -306,10 +323,10 @@ static async Task RunInteractiveModeAsync(
     }
 
     // Show status panel once with full info
-    var additionalTargets = session.AllTargetServers.Count > 1
-        ? session.AllTargetServers.Skip(1).ToList()
+    var additionalTargets = session.EffectiveTargetServers.Count > 1
+        ? session.EffectiveTargetServers.Skip(1).ToList()
         : null;
-    ConsoleUI.ShowStatusPanel(primary, session.ConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets);
+    ConsoleUI.ShowStatusPanel(session.EffectiveTargetServer, session.EffectiveConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets, session.DefaultSessionTarget);
     
     // Show welcome and help hints
     ConsoleUI.ShowWelcomeMessage();
@@ -336,13 +353,14 @@ static async Task RunHeadlessModeAsync(
     string? byokOpenAiBaseUrl,
     string? byokOpenAiApiKey,
     bool byokExplicitlyRequested = false,
-    bool modelExplicitlyRequested = false)
+    bool modelExplicitlyRequested = false,
+    (string ServerName, string ConfigurationName)? initialJeaSession = null)
 {
     var primary = servers[0];
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
 
     // Immediate startup feedback before the potentially slow initialization
-    var serverDisplay = servers.Count > 1 ? string.Join(", ", servers) : primary;
+    var serverDisplay = TroubleScout.Program.BuildStartupTargetDisplay(servers, initialJeaSession);
     ConsoleUI.ShowStartupProgress(serverDisplay);
 
     await using var session = new TroubleshootingSession(
@@ -358,7 +376,8 @@ static async Task RunHeadlessModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional);
+        additional,
+        initialJeaSession);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -394,6 +413,13 @@ namespace TroubleScout
     /// </summary>
     public partial class Program
     {
+        public readonly record struct StartupJeaParseResult(
+            (string ServerName, string ConfigurationName)? Session,
+            string? Error)
+        {
+            public bool HasError => !string.IsNullOrWhiteSpace(Error);
+        }
+
         /// <summary>
         /// Parse --server / -s flags from CLI args, supporting repeated flags and comma-separated values.
         /// </summary>
@@ -414,6 +440,57 @@ namespace TroubleScout
             if (servers.Count == 0)
                 servers = new List<string> { "localhost" };
             return servers;
+        }
+
+        public static StartupJeaParseResult ParseStartupJea(string[] args)
+        {
+            (string ServerName, string ConfigurationName)? session = null;
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (!args[i].Equals("--jea", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (i + 2 >= args.Length)
+                {
+                    return new StartupJeaParseResult(session, "--jea requires two values: <server> <configurationName>.");
+                }
+
+                if (session.HasValue)
+                {
+                    return new StartupJeaParseResult(session, "--jea can only be specified once.");
+                }
+
+                session = (args[i + 1], args[i + 2]);
+                i += 2;
+            }
+
+            return new StartupJeaParseResult(session, null);
+        }
+
+        public static string BuildStartupTargetDisplay(
+            IReadOnlyList<string> servers,
+            (string ServerName, string ConfigurationName)? initialJeaSession)
+        {
+            var primary = servers.Count > 0 ? servers[0] : "localhost";
+            if (initialJeaSession.HasValue && primary.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                var additionalSessions = servers
+                    .Skip(1)
+                    .Where(server => !server.Equals(initialJeaSession.Value.ServerName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (additionalSessions.Count == 0)
+                {
+                    return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost)";
+                }
+
+                return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost; additional sessions: {string.Join(", ", additionalSessions)})";
+            }
+
+            return servers.Count > 1 ? string.Join(", ", servers) : primary;
         }
     }
 }
