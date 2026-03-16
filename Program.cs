@@ -6,6 +6,7 @@ using TroubleScout.UI;
 // Parse command line arguments manually for simplicity
 // Server list is pre-populated by ParseServers; the switch only handles the missing-value error case.
 var servers = TroubleScout.Program.ParseServers(args);
+(string ServerName, string ConfigurationName)? startupJea = null;
 string? prompt = null;
 string? model = null;
 bool modelSpecifiedByCli = false;
@@ -37,6 +38,18 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--prompt" or "-p":
             Console.WriteLine("--prompt (-p) requires a value: the text prompt to send.");
+            return 1;
+        case "--jea" when i + 2 < args.Length:
+            if (startupJea.HasValue)
+            {
+                Console.WriteLine("--jea can only be specified once.");
+                return 1;
+            }
+
+            startupJea = (args[++i], args[++i]);
+            break;
+        case "--jea":
+            Console.WriteLine("--jea requires two values: <server> <configurationName>.");
             return 1;
         case "--model" or "-m" when i + 1 < args.Length:
             model = args[++i];
@@ -175,12 +188,12 @@ disabledSkills = disabledSkills
 if (!string.IsNullOrWhiteSpace(prompt))
 {
     // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
+    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
 }
 else
 {
     // Interactive mode with full TUI
-    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli);
+    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
 }
 
 return Environment.ExitCode;
@@ -266,7 +279,8 @@ static async Task RunInteractiveModeAsync(
     string? byokOpenAiBaseUrl,
     string? byokOpenAiApiKey,
     bool byokExplicitlyRequested = false,
-    bool modelExplicitlyRequested = false)
+    bool modelExplicitlyRequested = false,
+    (string ServerName, string ConfigurationName)? initialJeaSession = null)
 {
     // Show the full TUI
     ConsoleUI.ShowBanner(appVersion);
@@ -291,7 +305,8 @@ static async Task RunInteractiveModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional);
+        additional,
+        initialJeaSession);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -336,7 +351,8 @@ static async Task RunHeadlessModeAsync(
     string? byokOpenAiBaseUrl,
     string? byokOpenAiApiKey,
     bool byokExplicitlyRequested = false,
-    bool modelExplicitlyRequested = false)
+    bool modelExplicitlyRequested = false,
+    (string ServerName, string ConfigurationName)? initialJeaSession = null)
 {
     var primary = servers[0];
     var additional = servers.Count > 1 ? servers.Skip(1).ToList() : null;
@@ -358,7 +374,8 @@ static async Task RunHeadlessModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional);
+        additional,
+        initialJeaSession);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>
@@ -414,6 +431,19 @@ namespace TroubleScout
             if (servers.Count == 0)
                 servers = new List<string> { "localhost" };
             return servers;
+        }
+
+        public static (string ServerName, string ConfigurationName)? ParseStartupJea(string[] args)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--jea" && i + 2 < args.Length)
+                {
+                    return (args[i + 1], args[i + 2]);
+                }
+            }
+
+            return null;
         }
     }
 }

@@ -2522,6 +2522,22 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void ParseStartupJea_ShouldReturnConfiguredSession()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1", "--jea", "server2", "JEA-Admins"]);
+
+        jea.Should().Be(("server2", "JEA-Admins"));
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenMissing_ShouldReturnNull()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1"]);
+
+        jea.Should().BeNull();
+    }
+
+    [Fact]
     public void IsSlashCommandInvocation_Server_ShouldMatchServerCommand()
     {
         // Arrange

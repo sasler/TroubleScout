@@ -74,6 +74,7 @@ public class ConsoleUITests
         output.Should().Contain("OPTIONS");
         output.Should().Contain("--help");
         output.Should().Contain("--server");
+        output.Should().Contain("--jea");
         output.Should().Contain("--prompt");
         output.Should().Contain("--model");
         output.Should().Contain("1.2.3");
@@ -91,6 +92,7 @@ public class ConsoleUITests
         output.Should().Contain("USAGE");
         output.Should().Contain("OPTIONS");
         output.Should().Contain("--help");
+        output.Should().Contain("--jea");
         output.Should().NotContain("Version:");
     }
 

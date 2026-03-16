@@ -4,6 +4,23 @@ All notable changes to TroubleScout will be documented in this file.
 
 ## [v1.8.1] - 2026-03-14
 
+## [v1.8.2] - 2026-03-16
+
+### ✨ Features
+
+- 🔐 **Add startup `--jea` support** — TroubleScout can now preconnect a single JEA endpoint at launch with `--jea <server> <configurationName>`, making headless validation and smoke testing possible without going through the interactive TUI first.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Fix JEA no-language runspaces** — JEA command execution now avoids the script-wrapper path that failed on no-language endpoints, so command discovery and constrained command execution can succeed.
+- 🐛 **Remove redundant `/jea` approval prompt** — explicitly choosing `/jea` no longer triggers an extra Safe-mode confirmation before the session is established.
+- 🐛 **Guide `/jea` input interactively** — entering `/jea` without parameters now prompts for the server name and configuration name instead of failing with usage-only output.
+
+### 📝 Documentation & UX
+
+- 📝 **Use generic JEA examples** — help text and docs now use placeholders like `server1` and `JEA-Admins` instead of real-looking infrastructure names.
+- 📝 **Document JEA CLI parity** — README, release guidance, and AGENTS guidance now reflect the `--jea` startup flag and the updated `/jea` UX.
+
 ### ✨ Features
 
 - 🚀 **Automated WinGet PR workflow** — published GitHub Releases can now trigger a dedicated `.github/workflows/winget.yml` job that uses `winget-releaser` to open or update the `microsoft/winget-pkgs` manifest PR for `sasler.TroubleScout`.

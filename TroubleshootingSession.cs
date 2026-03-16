@@ -67,6 +67,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _runtimeSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _configurationWarnings = new();
     private readonly IReadOnlyList<string> _additionalInitialServers;
+    private readonly (string ServerName, string ConfigurationName)? _initialJeaSession;
     private readonly bool _debugMode;
     private ExecutionMode _executionMode;
     private bool _useByokOpenAi;
@@ -290,13 +291,17 @@ public class TroubleshootingSession : IAsyncDisposable
         string? byokOpenAiApiKey = null,
         bool byokExplicitlyRequested = false,
         bool modelExplicitlyRequested = false,
-        IReadOnlyList<string>? additionalInitialServers = null)
+        IReadOnlyList<string>? additionalInitialServers = null,
+        (string ServerName, string ConfigurationName)? initialJeaSession = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _additionalInitialServers = (additionalInitialServers ?? Array.Empty<string>())
             .Where(s => !string.IsNullOrWhiteSpace(s) && !s.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        _initialJeaSession = initialJeaSession is { } session
+            ? (session.ServerName.Trim(), session.ConfigurationName.Trim())
+            : null;
         _requestedModel = model;
         _mcpConfigPath = mcpConfigPath;
         _skillDirectories = skillDirectories?.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
@@ -334,7 +339,8 @@ public class TroubleshootingSession : IAsyncDisposable
         ExecutionMode executionMode = ExecutionMode.Safe,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
-        string? byokOpenAiApiKey = null)
+        string? byokOpenAiApiKey = null,
+        (string ServerName, string ConfigurationName)? initialJeaSession = null)
         : this(
             servers.Count > 0 ? servers[0] : "localhost",
             model,
@@ -346,7 +352,8 @@ public class TroubleshootingSession : IAsyncDisposable
             useByokOpenAi,
             byokOpenAiBaseUrl,
             byokOpenAiApiKey,
-            additionalInitialServers: servers.Count > 1 ? servers.Skip(1).ToList() : null)
+            additionalInitialServers: servers.Count > 1 ? servers.Skip(1).ToList() : null,
+            initialJeaSession: initialJeaSession)
     {
     }
 
@@ -471,6 +478,22 @@ public class TroubleshootingSession : IAsyncDisposable
             if (_additionalExecutors.Count > 0)
             {
                 _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+            }
+
+            if (_initialJeaSession is { } initialJeaSession)
+            {
+                updateStatus?.Invoke($"Connecting to JEA endpoint {initialJeaSession.ConfigurationName} on {initialJeaSession.ServerName}...");
+                var (jeaSuccess, jeaError) = await ConnectJeaServerAsync(
+                    initialJeaSession.ServerName,
+                    initialJeaSession.ConfigurationName,
+                    skipApproval: true);
+                if (!jeaSuccess)
+                {
+                    ConsoleUI.ShowError(
+                        "JEA Connection Failed",
+                        jeaError ?? $"Unable to connect to JEA endpoint '{initialJeaSession.ConfigurationName}' on {initialJeaSession.ServerName}");
+                    return false;
+                }
             }
 
             await WarnIfPowerShellVersionIsOldAsync();
@@ -2841,26 +2864,34 @@ public class TroubleshootingSession : IAsyncDisposable
             if (IsSlashCommandInvocation(lowerInput, "/jea"))
             {
                 var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 3)
-                {
-                    ConsoleUI.ShowWarning("Usage: /jea <server> <configurationName>");
-                    ConsoleUI.ShowInfo("Example: /jea NLAPPLAB301 JEA-InfraMgmt");
-                    continue;
-                }
+                var serverName = parts.Length > 1 ? parts[1] : null;
+                var configurationName = parts.Length > 2 ? string.Join(' ', parts.Skip(2)) : null;
 
-                var serverName = parts[1];
-                var configurationName = string.Join(' ', parts.Skip(2));
-
-                if (_executionMode == ExecutionMode.Safe)
+                if (string.IsNullOrWhiteSpace(serverName))
                 {
-                    var approval = ConsoleUI.PromptCommandApproval(
-                        $"Enter-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",
-                        $"TroubleScout wants to establish a constrained JEA session to {serverName} using configuration {configurationName}");
-                    if (approval != ApprovalResult.Approved)
+                    ConsoleUI.ShowInfo("Enter the server name for the JEA session:");
+                    serverName = ConsoleUI.GetUserInput().Trim();
+                    if (string.IsNullOrWhiteSpace(serverName))
                     {
-                        ConsoleUI.ShowWarning($"JEA connection to {serverName} was denied.");
+                        ConsoleUI.ShowWarning("Server name cannot be empty.");
                         continue;
                     }
+                }
+
+                if (string.IsNullOrWhiteSpace(configurationName))
+                {
+                    ConsoleUI.ShowInfo("Enter the JEA configuration name:");
+                    configurationName = ConsoleUI.GetUserInput().Trim();
+                    if (string.IsNullOrWhiteSpace(configurationName))
+                    {
+                        ConsoleUI.ShowWarning("Configuration name cannot be empty.");
+                        continue;
+                    }
+                }
+
+                if (parts.Length < 3)
+                {
+                    ConsoleUI.ShowInfo("Example: /jea server1 JEA-Admins");
                 }
 
                 var success = await ConsoleUI.RunWithSpinnerAsync(
@@ -4538,7 +4569,7 @@ public class TroubleshootingSession : IAsyncDisposable
         if (!skipApproval && _executionMode == ExecutionMode.Safe)
         {
             var approval = ConsoleUI.PromptCommandApproval(
-                $"Enter-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",
+                $"New-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",
                 $"TroubleScout wants to establish a constrained JEA session to {serverName} using configuration {configurationName}");
             if (approval != ApprovalResult.Approved)
                 return (false, $"JEA connection to {serverName} was denied by user.");

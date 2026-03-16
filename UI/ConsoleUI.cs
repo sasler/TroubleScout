@@ -300,7 +300,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/model[/]", "Switch AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Switch execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers");
-        commandTable.AddRow("[cyan]/jea[/] [grey]<server> <configurationName>[/]", "Connect to a JEA constrained endpoint");
+        commandTable.AddRow("[cyan]/jea[/] [grey][[server]] [[configurationName]][/]", "Connect to a JEA constrained endpoint");
         commandTable.AddRow("[cyan]/login[/]", "Start in-app GitHub Copilot login flow");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Configure OpenAI-compatible BYOK for this session");
         commandTable.AddRow("[cyan]/byok clear[/]", "Remove saved BYOK settings for this profile");
@@ -349,6 +349,7 @@ public static class ConsoleUI
         optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server(s) hostname or IP. Repeat for multiple: -s srv1 -s srv2 (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
+        optionsTable.AddRow("[cyan]--jea[/] [grey]<server> <configurationName>[/]", "Preconnect a single startup JEA endpoint session");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
         optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
@@ -378,6 +379,9 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with YOLO execution mode[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode yolo");
         AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("  [grey]# Preconnect a JEA endpoint before starting[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server server1 --jea server2 JEA-Admins");
+        AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Use BYOK OpenAI-compatible endpoint[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --byok-openai --openai-api-key $env:MY_KEY");
         AnsiConsole.WriteLine();
@@ -404,7 +408,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
-        commandTable.AddRow("[cyan]/jea[/] [grey]<server> <configurationName>[/]", "Connect to a JEA constrained endpoint");
+        commandTable.AddRow("[cyan]/jea[/] [grey][[server]] [[configurationName]][/]", "Connect to a JEA constrained endpoint");
         commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
         commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
         commandTable.AddRow("[cyan]/byok clear[/]", "Clear saved BYOK settings for this profile");
