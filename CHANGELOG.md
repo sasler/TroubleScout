@@ -2,8 +2,6 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
-## [v1.8.1] - 2026-03-14
-
 ## [v1.8.2] - 2026-03-16
 
 ### ✨ Features
@@ -20,6 +18,8 @@ All notable changes to TroubleScout will be documented in this file.
 
 - 📝 **Use generic JEA examples** — help text and docs now use placeholders like `server1` and `JEA-Admins` instead of real-looking infrastructure names.
 - 📝 **Document JEA CLI parity** — README, release guidance, and AGENTS guidance now reflect the `--jea` startup flag and the updated `/jea` UX.
+
+## [v1.8.1] - 2026-03-14
 
 ### ✨ Features
 

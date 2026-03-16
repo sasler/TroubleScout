@@ -6,7 +6,14 @@ using TroubleScout.UI;
 // Parse command line arguments manually for simplicity
 // Server list is pre-populated by ParseServers; the switch only handles the missing-value error case.
 var servers = TroubleScout.Program.ParseServers(args);
-(string ServerName, string ConfigurationName)? startupJea = null;
+var startupJeaParseResult = TroubleScout.Program.ParseStartupJea(args);
+if (startupJeaParseResult.HasError)
+{
+    Console.WriteLine(startupJeaParseResult.Error);
+    return 1;
+}
+
+(string ServerName, string ConfigurationName)? startupJea = startupJeaParseResult.Session;
 string? prompt = null;
 string? model = null;
 bool modelSpecifiedByCli = false;
@@ -40,13 +47,8 @@ for (int i = 0; i < args.Length; i++)
             Console.WriteLine("--prompt (-p) requires a value: the text prompt to send.");
             return 1;
         case "--jea" when i + 2 < args.Length:
-            if (startupJea.HasValue)
-            {
-                Console.WriteLine("--jea can only be specified once.");
-                return 1;
-            }
-
-            startupJea = (args[++i], args[++i]);
+            // Parsed and validated up-front by ParseStartupJea; just skip the consumed values here.
+            i += 2;
             break;
         case "--jea":
             Console.WriteLine("--jea requires two values: <server> <configurationName>.");
@@ -411,6 +413,13 @@ namespace TroubleScout
     /// </summary>
     public partial class Program
     {
+        public readonly record struct StartupJeaParseResult(
+            (string ServerName, string ConfigurationName)? Session,
+            string? Error)
+        {
+            public bool HasError => !string.IsNullOrWhiteSpace(Error);
+        }
+
         /// <summary>
         /// Parse --server / -s flags from CLI args, supporting repeated flags and comma-separated values.
         /// </summary>
@@ -433,17 +442,32 @@ namespace TroubleScout
             return servers;
         }
 
-        public static (string ServerName, string ConfigurationName)? ParseStartupJea(string[] args)
+        public static StartupJeaParseResult ParseStartupJea(string[] args)
         {
+            (string ServerName, string ConfigurationName)? session = null;
+
             for (int i = 0; i < args.Length; i++)
             {
-                if (args[i] == "--jea" && i + 2 < args.Length)
+                if (!args[i].Equals("--jea", StringComparison.Ordinal))
                 {
-                    return (args[i + 1], args[i + 2]);
+                    continue;
                 }
+
+                if (i + 2 >= args.Length)
+                {
+                    return new StartupJeaParseResult(session, "--jea requires two values: <server> <configurationName>.");
+                }
+
+                if (session.HasValue)
+                {
+                    return new StartupJeaParseResult(session, "--jea can only be specified once.");
+                }
+
+                session = (args[i + 1], args[i + 2]);
+                i += 2;
             }
 
-            return null;
+            return new StartupJeaParseResult(session, null);
         }
 
         public static string BuildStartupTargetDisplay(
@@ -453,7 +477,17 @@ namespace TroubleScout
             var primary = servers.Count > 0 ? servers[0] : "localhost";
             if (initialJeaSession.HasValue && primary.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             {
-                return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost)";
+                var additionalSessions = servers
+                    .Skip(1)
+                    .Where(server => !server.Equals(initialJeaSession.Value.ServerName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (additionalSessions.Count == 0)
+                {
+                    return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost)";
+                }
+
+                return $"{initialJeaSession.Value.ServerName} (JEA: {initialJeaSession.Value.ConfigurationName}; default session: localhost; additional sessions: {string.Join(", ", additionalSessions)})";
             }
 
             return servers.Count > 1 ? string.Join(", ", servers) : primary;

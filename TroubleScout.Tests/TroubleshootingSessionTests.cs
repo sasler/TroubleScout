@@ -2526,7 +2526,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1", "--jea", "server2", "JEA-Admins"]);
 
-        jea.Should().Be(("server2", "JEA-Admins"));
+        jea.HasError.Should().BeFalse();
+        jea.Session.Should().Be(("server2", "JEA-Admins"));
     }
 
     [Fact]
@@ -2534,7 +2535,26 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         var jea = TroubleScout.Program.ParseStartupJea(["--server", "srv1"]);
 
-        jea.Should().BeNull();
+        jea.HasError.Should().BeFalse();
+        jea.Session.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenDuplicated_ShouldReturnError()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--jea", "server1", "JEA-Admins", "--jea", "server2", "JEA-Readers"]);
+
+        jea.HasError.Should().BeTrue();
+        jea.Error.Should().Be("--jea can only be specified once.");
+    }
+
+    [Fact]
+    public void ParseStartupJea_WhenMissingConfiguration_ShouldReturnError()
+    {
+        var jea = TroubleScout.Program.ParseStartupJea(["--jea", "server1"]);
+
+        jea.HasError.Should().BeTrue();
+        jea.Error.Should().Be("--jea requires two values: <server> <configurationName>.");
     }
 
     [Fact]
@@ -2555,6 +2575,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             ("server2", "JEA-Admins"));
 
         display.Should().Be("server1");
+    }
+
+    [Fact]
+    public void BuildStartupTargetDisplay_WithLocalhostJeaAndAdditionalServers_ShouldIncludeAdditionalSessions()
+    {
+        var display = TroubleScout.Program.BuildStartupTargetDisplay(
+            ["localhost", "server3", "server4"],
+            ("server1", "JEA-Admins"));
+
+        display.Should().Be("server1 (JEA: JEA-Admins; default session: localhost; additional sessions: server3, server4)");
     }
 
     [Fact]

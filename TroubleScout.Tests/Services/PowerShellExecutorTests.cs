@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Management.Automation;
+using System.Reflection;
 using TroubleScout.Services;
 using TroubleScout.Tests.Fixtures;
 using Xunit;
@@ -572,6 +573,64 @@ Get-Process
 
         success.Should().BeFalse();
         error.Should().Contain("language-mode expressions are not supported");
+    }
+
+    [Theory]
+    [InlineData("Get-Service > services.txt")]
+    [InlineData("Get-Service 2> errors.txt")]
+    public void TryBuildJeaPipeline_WithRedirection_ShouldReject(string command)
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(ps, command, out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("do not support redirection");
+    }
+
+    [Fact]
+    public void TryBuildJeaPipeline_WithBackgroundOperator_ShouldReject()
+    {
+        using var ps = PowerShell.Create();
+
+        var success = PowerShellExecutor.TryBuildJeaPipeline(ps, "Get-Service &", out var error);
+
+        success.Should().BeFalse();
+        error.Should().Contain("do not support background execution");
+    }
+
+    [Fact]
+    public void ConfigureJeaPipeline_WhenOutStringIsNotAllowed_ShouldNotAppendFormatter()
+    {
+        using var executor = new PowerShellExecutor("server1", "JEA-Admins");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service"]);
+        using var ps = PowerShell.Create();
+
+        var method = typeof(PowerShellExecutor).GetMethod("ConfigureJeaPipeline", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(executor, [ps, "Get-Service"]);
+
+        ps.Commands.Commands.Should().HaveCount(1);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Service");
+    }
+
+    [Fact]
+    public void ConfigureJeaPipeline_WhenOutStringIsAllowed_ShouldAppendFormatter()
+    {
+        using var executor = new PowerShellExecutor("server1", "JEA-Admins");
+        executor.SetJeaAllowedCommandsForTesting(["Get-Service", "Out-String"]);
+        using var ps = PowerShell.Create();
+
+        var method = typeof(PowerShellExecutor).GetMethod("ConfigureJeaPipeline", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(executor, [ps, "Get-Service"]);
+
+        ps.Commands.Commands.Should().HaveCount(2);
+        ps.Commands.Commands[0].CommandText.Should().Be("Get-Service");
+        ps.Commands.Commands[1].CommandText.Should().Be("Out-String");
+        ps.Commands.Commands[1].Parameters.Should().ContainSingle(parameter => parameter.Name == "Width" && Equals(parameter.Value, 200));
     }
 
     #endregion

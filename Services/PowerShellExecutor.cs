@@ -806,14 +806,17 @@ public class PowerShellExecutor : IDisposable
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static void ConfigureJeaPipeline(PowerShell ps, string command)
+    private void ConfigureJeaPipeline(PowerShell ps, string command)
     {
         if (!TryBuildJeaPipeline(ps, command, out var error))
         {
             throw new InvalidOperationException(error);
         }
 
-        ps.AddCommand("Out-String").AddParameter("Width", 200);
+        if (_jeaAllowedCommands?.Contains("Out-String") == true)
+        {
+            ps.AddCommand("Out-String").AddParameter("Width", 200);
+        }
     }
 
     internal static bool TryBuildJeaPipeline(PowerShell ps, string command, out string error)
@@ -854,6 +857,12 @@ public class PowerShellExecutor : IDisposable
             return false;
         }
 
+        if (pipelineAst.Background)
+        {
+            error = "JEA commands do not support background execution.";
+            return false;
+        }
+
         for (var commandIndex = 0; commandIndex < pipelineAst.PipelineElements.Count; commandIndex++)
         {
             if (pipelineAst.PipelineElements[commandIndex] is not CommandAst commandAst)
@@ -866,6 +875,12 @@ public class PowerShellExecutor : IDisposable
             if (string.IsNullOrWhiteSpace(commandName))
             {
                 error = "JEA commands must start each pipeline segment with a cmdlet name.";
+                return false;
+            }
+
+            if (commandAst.Redirections.Count > 0)
+            {
+                error = "JEA commands do not support redirection.";
                 return false;
             }
 
