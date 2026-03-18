@@ -306,6 +306,16 @@ public class TroubleshootingSession : IAsyncDisposable
             - When presenting diagnostic data, include the source server name in your explanation
             """;
 
+        var troubleshootingApproach = $"""
+            ## Troubleshooting Approach
+            1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
+            2. **Gather Data**: {dataCollectionGuidance}
+            3. **Verify Source**: {sourceVerificationGuidance}
+            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
+            5. **Diagnose**: Form hypotheses about the root cause based on evidence
+            6. **Recommend**: Provide clear, actionable next steps
+            """;
+
         var safetyGuidance = """
             ## Safety
             - Only read-only Get-* commands execute automatically
@@ -329,6 +339,8 @@ public class TroubleshootingSession : IAsyncDisposable
                 investigationApproach = customInvestigation;
             if (_configuredSystemPromptOverrides.TryGetValue("response_format", out var customFormat) && !string.IsNullOrWhiteSpace(customFormat))
                 responseFormat = customFormat;
+            if (_configuredSystemPromptOverrides.TryGetValue("troubleshooting_approach", out var customTroubleshootingApproach) && !string.IsNullOrWhiteSpace(customTroubleshootingApproach))
+                troubleshootingApproach = customTroubleshootingApproach;
             if (_configuredSystemPromptOverrides.TryGetValue("safety", out var customSafety) && !string.IsNullOrWhiteSpace(customSafety))
                 safetyGuidance = customSafety;
         }
@@ -355,14 +367,8 @@ public class TroubleshootingSession : IAsyncDisposable
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
-            ## Troubleshooting Approach
-            1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
-            2. **Gather Data**: {dataCollectionGuidance}
-            3. **Verify Source**: {sourceVerificationGuidance}
-            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
-            5. **Diagnose**: Form hypotheses about the root cause based on evidence
-            6. **Recommend**: Provide clear, actionable next steps
-            
+            {troubleshootingApproach}
+
             {investigationApproach}
             
             {responseFormat}
@@ -2606,9 +2612,27 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private void ApplySystemPromptSettings(IReadOnlyDictionary<string, string>? overrides, string? append)
     {
-        _configuredSystemPromptOverrides = overrides?
-            .Where(entry => !string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
-            .ToDictionary(entry => entry.Key.Trim(), entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+        if (overrides == null)
+        {
+            _configuredSystemPromptOverrides = null;
+        }
+        else
+        {
+            var normalizedOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in overrides)
+            {
+                var normalizedKey = entry.Key?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedKey) || string.IsNullOrWhiteSpace(entry.Value))
+                {
+                    continue;
+                }
+
+                normalizedOverrides[normalizedKey] = entry.Value;
+            }
+
+            _configuredSystemPromptOverrides = normalizedOverrides.Count > 0 ? normalizedOverrides : null;
+        }
+
         _configuredSystemPromptAppend = string.IsNullOrWhiteSpace(append) ? null : append;
     }
 
@@ -2758,16 +2782,40 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
+                var sessionReloadSucceeded = true;
+                string? sessionReloadError = null;
                 if (_copilotClient != null && _copilotSession != null)
                 {
                     await _copilotSession.DisposeAsync();
                     _copilotSession = null;
-                    await CreateCopilotSessionAsync(
-                        string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
-                        null);
+                    try
+                    {
+                        sessionReloadSucceeded = await CreateCopilotSessionAsync(
+                            string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
+                            null);
+                    }
+                    catch (Exception ex)
+                    {
+                        sessionReloadSucceeded = false;
+                        sessionReloadError = TrimSingleLine(ex.Message);
+                    }
                 }
 
-                ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns and system prompt settings have been applied.");
+                if (sessionReloadSucceeded)
+                {
+                    ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns and system prompt settings have been applied.");
+                }
+                else
+                {
+                    var message = "Settings were reloaded, but the AI session could not be recreated. Use /login or /model to reconnect.";
+                    if (!string.IsNullOrWhiteSpace(sessionReloadError))
+                    {
+                        message += $" {sessionReloadError}";
+                    }
+
+                    ConsoleUI.ShowWarning(message);
+                }
+
                 continue;
             }
 
@@ -3465,7 +3513,6 @@ public class TroubleshootingSession : IAsyncDisposable
             || mode.Equals("rerank", StringComparison.OrdinalIgnoreCase)
             || mode.Equals("video_generation", StringComparison.OrdinalIgnoreCase)
             || mode.Equals("realtime", StringComparison.OrdinalIgnoreCase)
-            || mode.Equals("responses", StringComparison.OrdinalIgnoreCase)
             || mode.Equals("ocr", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -4343,9 +4390,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
-        _sessionId = CreateSessionId();
-        _lastUsage = null;
-        _toolInvocationCount = 0;
+        ResetStateForNewAiSession();
 
         if (_configurationWarnings.Count > 0)
         {
@@ -4360,6 +4405,14 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return true;
+    }
+
+    private void ResetStateForNewAiSession()
+    {
+        _sessionId = CreateSessionId();
+        _lastUsage = null;
+        _toolInvocationCount = 0;
+        _sessionUsageTracker.Reset();
     }
 
     private static string? GetByokWireApi(string? model)

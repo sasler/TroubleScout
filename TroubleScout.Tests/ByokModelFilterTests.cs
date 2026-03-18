@@ -36,6 +36,15 @@ public class ByokModelFilterTests
     }
 
     [Fact]
+    public void ParseByokModelsResponse_KeepsApiModeResponses()
+    {
+        var json = BuildModelsJsonWithMode(("gpt-5", "responses"));
+        var result = InvokeParse(json);
+
+        Assert.Contains(result.Models, m => m.Id == "gpt-5");
+    }
+
+    [Fact]
     public void ParseByokModelsResponse_KeepsUnknownModels()
     {
         var json = BuildModelsJson(("my-custom-finetune", null));

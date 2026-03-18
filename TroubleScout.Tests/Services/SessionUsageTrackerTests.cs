@@ -51,6 +51,7 @@ public class SessionUsageTrackerTests
         var display = tracker.GetCostEstimateDisplay();
         Assert.NotNull(display);
         Assert.StartsWith("~$", display);
+        Assert.EndsWith(" est.", display);
     }
 
     [Fact]

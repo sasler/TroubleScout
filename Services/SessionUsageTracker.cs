@@ -65,7 +65,7 @@ internal sealed class SessionUsageTracker
     {
         if (_estimatedCostUsd > 0)
         {
-            return $"~${_estimatedCostUsd.ToString("0.####", CultureInfo.InvariantCulture)}";
+            return $"~${_estimatedCostUsd.ToString("0.####", CultureInfo.InvariantCulture)} est.";
         }
 
         if (_estimatedPremiumRequests > 0)

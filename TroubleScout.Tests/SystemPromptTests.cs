@@ -5,10 +5,7 @@ using Xunit;
 
 namespace TroubleScout.Tests;
 
-[CollectionDefinition("SystemPromptSettings", DisableParallelization = true)]
-public class SystemPromptSettingsCollection { }
-
-[Collection("SystemPromptSettings")]
+[Collection("AppSettings")]
 public class SystemPromptTests : IDisposable
 {
     private readonly string _testDirectory;
@@ -103,6 +100,54 @@ public class SystemPromptTests : IDisposable
         var content = InvokeCreateSystemMessageContent(session, "localhost");
 
         content.TrimEnd().Should().EndWith(appendText);
+    }
+
+    [Fact]
+    public async Task SystemPromptOverride_ReplacesTroubleshootingApproachSection()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            SystemPromptOverrides = new Dictionary<string, string>
+            {
+                ["troubleshooting_approach"] = """
+                ## Troubleshooting Approach
+                1. Use the custom troubleshooting flow.
+                """
+            }
+        });
+
+        await using var session = new TroubleshootingSession("localhost");
+
+        var content = InvokeCreateSystemMessageContent(session, "localhost");
+
+        content.Should().Contain("Use the custom troubleshooting flow.");
+        content.Should().NotContain("1. **Understand the Problem**");
+    }
+
+    [Fact]
+    public async Task SystemPromptOverride_NormalizesDuplicateKeys_LastValueWins()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            SystemPromptOverrides = new Dictionary<string, string>
+            {
+                [" safety "] = """
+                ## Safety
+                - Old safety text.
+                """,
+                ["Safety"] = """
+                ## Safety
+                - New safety text.
+                """
+            }
+        });
+
+        await using var session = new TroubleshootingSession("localhost");
+
+        var content = InvokeCreateSystemMessageContent(session, "localhost");
+
+        content.Should().Contain("New safety text.");
+        content.Should().NotContain("Old safety text.");
     }
 
     private static string InvokeCreateSystemMessageContent(TroubleshootingSession session, string targetServer)

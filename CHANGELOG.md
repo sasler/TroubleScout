@@ -22,8 +22,6 @@ All notable changes to TroubleScout will be documented in this file.
 - 📝 **Clarify shell approval messaging** — when a PowerShell shell command still needs approval, the prompt now explains whether it is blocked, ambiguous, or simply not classified as read-only instead of always implying that every shell command is mutating.
 - 📝 **AGENTS.md TDD workflow** — added a Development Workflow (TDD) section documenting the required test-driven development process for coding agents.
 
-- 📝 **Clarify shell approval messaging** — when a PowerShell shell command still needs approval, the prompt now explains whether it is blocked, ambiguous, or simply not classified as read-only instead of always implying that every shell command is mutating.
-
 ## [v1.8.2] - 2026-03-16
 
 ### ✨ Features

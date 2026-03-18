@@ -1312,8 +1312,11 @@ public static class ConsoleUI
         {
             var sessIn = info.SessionInputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionInputTokens.Value, int.MaxValue)) : "?";
             var sessOut = info.SessionOutputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionOutputTokens.Value, int.MaxValue)) : "?";
-            var costPart = !string.IsNullOrWhiteSpace(info.SessionCostEstimate) ? $" ({Markup.Escape(info.SessionCostEstimate)})" : string.Empty;
-            parts.Add($"[grey]Session:[/] [cyan]{sessIn}[/][grey] in /[/] [cyan]{sessOut}[/][grey] out[/]{costPart}");
+            parts.Add($"[grey]Session:[/] [cyan]{sessIn}[/][grey] in /[/] [cyan]{sessOut}[/][grey] out[/]");
+            if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
+            {
+                parts.Add(Markup.Escape(info.SessionCostEstimate));
+            }
         }
         else if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
         {
