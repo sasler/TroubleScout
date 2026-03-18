@@ -4365,15 +4365,15 @@ public class TroubleshootingSession : IAsyncDisposable
             return null;
         }
 
-        var command = TryReadShellCommandText(request);
-        if (string.IsNullOrWhiteSpace(command) || !LooksLikePowerShellCommand(command))
+        var fullCommand = TryReadShellCommandText(request, truncateForDisplay: false);
+        if (string.IsNullOrWhiteSpace(fullCommand) || !LooksLikePowerShellCommand(fullCommand))
         {
             return null;
         }
 
-        var validation = PowerShellExecutor.ValidateStandaloneCommand(command, _executionMode, _configuredSafeCommands);
+        var validation = PowerShellExecutor.ValidateStandaloneCommand(fullCommand, _executionMode, _configuredSafeCommands);
         return new ShellPermissionAssessment(
-            command,
+            TrimPermissionPreview(fullCommand),
             validation,
             validation.Reason ?? BuildPermissionPromptReason("shell"),
             BuildShellPermissionImpactText(validation));
@@ -4400,7 +4400,7 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             case "shell":
             {
-                var command = TryReadShellCommandText(request);
+                var command = TryReadShellCommandText(request, truncateForDisplay: true);
                 return !string.IsNullOrWhiteSpace(command)
                     ? command
                     : "Shell command";
@@ -4505,10 +4505,10 @@ public class TroubleshootingSession : IAsyncDisposable
         return "This PowerShell command was recognized as read-only.";
     }
 
-    private static string? TryReadShellCommandText(PermissionRequest request)
+    private static string? TryReadShellCommandText(PermissionRequest request, bool truncateForDisplay)
     {
         var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
-            ?? ReadPermissionExtensionString(request.ExtensionData,
+            ?? ReadRawPermissionExtensionString(request.ExtensionData,
                 "fullCommandText",
                 "command",
                 "commandLine",
@@ -4517,7 +4517,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 "shellCommand",
                 "rawCommand",
                 "text")
-            ?? ReadNestedPermissionExtensionString(request.ExtensionData,
+            ?? ReadNestedRawPermissionExtensionString(request.ExtensionData,
                 "command",
                 "payload",
                 "input",
@@ -4526,7 +4526,9 @@ public class TroubleshootingSession : IAsyncDisposable
 
         return string.IsNullOrWhiteSpace(command)
             ? null
-            : TrimPermissionPreview(command);
+            : truncateForDisplay
+                ? TrimPermissionPreview(command)
+                : command.Trim();
     }
 
     private static bool LooksLikePowerShellCommand(string command)
@@ -4538,21 +4540,75 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         if (trimmed.StartsWith("$", StringComparison.Ordinal) ||
-            trimmed.StartsWith("@", StringComparison.Ordinal) ||
+            trimmed.StartsWith("@(", StringComparison.Ordinal) ||
+            trimmed.StartsWith("@{", StringComparison.Ordinal) ||
             trimmed.StartsWith("[", StringComparison.Ordinal))
         {
             return true;
         }
 
-        var firstToken = trimmed
-            .Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+        var firstCommandSegment = trimmed
+            .Split(['|', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(segment => segment.Trim())
             .FirstOrDefault();
+
+        var firstToken = firstCommandSegment?
+            .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+
         if (string.IsNullOrWhiteSpace(firstToken) || firstToken.StartsWith("-", StringComparison.Ordinal))
         {
             return false;
         }
 
         return Regex.IsMatch(firstToken, "^[A-Za-z][A-Za-z0-9]*-[A-Za-z][A-Za-z0-9]*$");
+    }
+
+    private static string? ReadRawPermissionExtensionString(
+        IReadOnlyDictionary<string, object>? extensionData,
+        params string[] candidateKeys)
+    {
+        if (extensionData == null || extensionData.Count == 0)
+            return null;
+
+        foreach (var candidateKey in candidateKeys)
+        {
+            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
+                continue;
+
+            var text = ConvertPermissionExtensionValueToRawString(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadNestedRawPermissionExtensionString(
+        IReadOnlyDictionary<string, object>? extensionData,
+        params string[] candidateKeys)
+    {
+        if (extensionData == null || extensionData.Count == 0)
+            return null;
+
+        foreach (var candidateKey in candidateKeys)
+        {
+            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
+                continue;
+
+            if (value == null)
+                continue;
+
+            var text = ExtractNestedRawCommandText(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
     }
 
     private static string? ReadPermissionExtensionString(
@@ -4640,6 +4696,43 @@ public class TroubleshootingSession : IAsyncDisposable
         return null;
     }
 
+    private static string? ExtractNestedRawCommandText(object value)
+    {
+        if (value is JsonElement json)
+        {
+            return ExtractNestedRawCommandText(json);
+        }
+
+        if (value is IReadOnlyDictionary<string, object> readOnlyDictionary)
+        {
+            return ReadRawPermissionExtensionString(readOnlyDictionary,
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        if (value is IDictionary<string, object> dictionary)
+        {
+            return ReadRawPermissionExtensionString(
+                dictionary.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text");
+        }
+
+        return null;
+    }
+
     private static string? ExtractNestedCommandText(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.String)
@@ -4660,6 +4753,37 @@ public class TroubleshootingSession : IAsyncDisposable
             if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
             {
                 var text = ExtractNestedCommandText(value);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractNestedRawCommandText(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var text = element.GetString();
+            return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in new[]
+                 {
+                     "fullCommandText", "command", "commandLine", "commandText", "cmd", "shellCommand", "rawCommand", "text"
+                 })
+        {
+            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
+            {
+                var text = ExtractNestedRawCommandText(value);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     return text;
@@ -4702,6 +4826,22 @@ public class TroubleshootingSession : IAsyncDisposable
         return string.IsNullOrWhiteSpace(rawText)
             ? null
             : TrimSingleLine(rawText);
+    }
+
+    private static string? ConvertPermissionExtensionValueToRawString(object? value)
+    {
+        string? rawText = value switch
+        {
+            null => null,
+            string text => text,
+            JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
+            JsonElement json => ExtractNestedRawCommandText(json) ?? json.GetRawText(),
+            _ => value.ToString()
+        };
+
+        return string.IsNullOrWhiteSpace(rawText)
+            ? null
+            : rawText.Trim();
     }
 
     private static string TrimPermissionPreview(string text)

@@ -1758,6 +1758,74 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void EvaluateShellPermissionRequest_LongCommandWithMutatingSuffix_ShouldUseFullCommandForValidation()
+    {
+        // Arrange
+        var longPath = new string('a', 220);
+        var command = $"Get-ChildItem -Path 'C:\\{longPath}' | Select-Object Name,Length,LastWriteTime; Restart-Service -Name spooler";
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = command
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().NotBeNull();
+        assessment!.Command.Should().Contain("...");
+        assessment.Validation.IsAllowed.Should().BeTrue();
+        assessment.Validation.RequiresApproval.Should().BeTrue();
+        assessment.PromptReason.Should().Contain("Safe mode");
+    }
+
+    [Fact]
+    public void EvaluateShellPermissionRequest_NoSpacePipeline_ShouldStillLookLikePowerShell()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Get-Process|Sort-Object CPU"
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().NotBeNull();
+        assessment!.Validation.IsAllowed.Should().BeTrue();
+        assessment.Validation.RequiresApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public void EvaluateShellPermissionRequest_BatchAtEchoCommand_ShouldReturnNull()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "@echo off"
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().BeNull();
+    }
+
+    [Fact]
     public void DescribePermissionRequest_ShellRequest_ShouldPreferConcreteCommand()
     {
         // Arrange
