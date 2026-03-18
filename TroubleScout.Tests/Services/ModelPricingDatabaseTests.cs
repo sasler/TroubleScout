@@ -45,6 +45,46 @@ public class ModelPricingDatabaseTests
     }
 
     [Fact]
+    public void TryGetPrice_BedrockAnthropicVariant_MatchesCanonicalModel()
+    {
+        var found = ModelPricingDatabase.TryGetPrice("bedrock/global.anthropic.claude-sonnet-4-6-v1:0", out var inputPrice, out var outputPrice);
+
+        Assert.True(found);
+        Assert.Equal(3.00m, inputPrice);
+        Assert.Equal(15.00m, outputPrice);
+    }
+
+    [Fact]
+    public void TryGetPrice_BedrockNovaVariant_MatchesCanonicalModel()
+    {
+        var found = ModelPricingDatabase.TryGetPrice("bedrock/amazon.nova-pro-v1:0", out var inputPrice, out var outputPrice);
+
+        Assert.True(found);
+        Assert.Equal(0.80m, inputPrice);
+        Assert.Equal(3.20m, outputPrice);
+    }
+
+    [Fact]
+    public void TryGetPrice_DeepSeekReasoner_UsesR1Pricing()
+    {
+        var found = ModelPricingDatabase.TryGetPrice("deepseek-reasoner", out var inputPrice, out var outputPrice);
+
+        Assert.True(found);
+        Assert.Equal(0.55m, inputPrice);
+        Assert.Equal(2.19m, outputPrice);
+    }
+
+    [Fact]
+    public void TryGetPrice_DeepSeekChat_UsesV3Pricing()
+    {
+        var found = ModelPricingDatabase.TryGetPrice("deepseek-chat", out var inputPrice, out var outputPrice);
+
+        Assert.True(found);
+        Assert.Equal(0.27m, inputPrice);
+        Assert.Equal(1.10m, outputPrice);
+    }
+
+    [Fact]
     public void TryGetMode_ChatModel_ReturnsChat()
     {
         var found = ModelPricingDatabase.TryGetMode("gpt-4o", out var mode);
@@ -84,6 +124,17 @@ public class ModelPricingDatabaseTests
         var isNonChat = ModelPricingDatabase.IsNonChatModel("some-random-model");
 
         Assert.False(isNonChat);
+    }
+
+    [Theory]
+    [InlineData("azure/sora-2")]
+    [InlineData("azure_ai/flux.1-pro")]
+    [InlineData("bedrock/cohere.rerank-v3-5:0")]
+    public void IsNonChatModel_NonChatProviderVariant_ReturnsTrue(string modelId)
+    {
+        var isNonChat = ModelPricingDatabase.IsNonChatModel(modelId);
+
+        Assert.True(isNonChat);
     }
 
     [Fact]

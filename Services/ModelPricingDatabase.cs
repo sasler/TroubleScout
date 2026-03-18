@@ -19,6 +19,21 @@ internal static class ModelPricingDatabase
         "realtime"
     };
 
+    private static readonly HashSet<string> IgnoredLeadingSegments = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "global",
+        "us",
+        "eu",
+        "apac",
+        "anthropic",
+        "amazon",
+        "cohere",
+        "meta",
+        "openai",
+        "google",
+        "microsoft"
+    };
+
     private static readonly Dictionary<string, ModelPricingEntry> Entries = new(StringComparer.OrdinalIgnoreCase)
     {
         ["gpt-3.5-turbo"] = new(0.50m, 1.50m, "chat"),
@@ -46,9 +61,12 @@ internal static class ModelPricingDatabase
         ["gpt-image-1.5"] = new(0m, 0m, "image_generation"),
         ["dall-e-2"] = new(0m, 0m, "image_generation"),
         ["dall-e-3"] = new(0m, 0m, "image_generation"),
+        ["flux"] = new(0m, 0m, "image_generation"),
         ["text-embedding-3-large"] = new(0m, 0m, "embedding"),
         ["text-embedding-3-small"] = new(0m, 0m, "embedding"),
         ["text-embedding-ada-002"] = new(0m, 0m, "embedding"),
+        ["rerank"] = new(0m, 0m, "rerank"),
+        ["sora"] = new(0m, 0m, "video_generation"),
         ["whisper-1"] = new(0m, 0m, "audio_transcription"),
         ["gpt-4o-mini-tts"] = new(0m, 0m, "audio_speech"),
         ["gpt-4o-transcribe"] = new(0m, 0m, "audio_transcription"),
@@ -93,14 +111,15 @@ internal static class ModelPricingDatabase
         ["gemini-3-pro-preview"] = new(2.00m, 12.00m, "chat"),
         ["gemini-3.1-pro-preview"] = new(2.00m, 12.00m, "chat"),
 
-        ["deepseek-chat"] = new(0.28m, 0.42m, "chat"),
-        ["deepseek-reasoner"] = new(0.28m, 0.42m, "chat"),
+        ["deepseek-chat"] = new(0.27m, 1.10m, "chat"),
+        ["deepseek-reasoner"] = new(0.55m, 2.19m, "chat"),
         ["deepseek-r1"] = new(0.55m, 2.19m, "chat"),
         ["deepseek-v3"] = new(0.27m, 1.10m, "chat"),
 
         ["mistral-large-latest"] = new(0.50m, 1.50m, "chat"),
         ["mistral-small-latest"] = new(0.06m, 0.18m, "chat"),
         ["mistral-medium-latest"] = new(0.40m, 2.00m, "chat"),
+        ["nova-pro"] = new(0.80m, 3.20m, "chat"),
         ["codestral-latest"] = new(1.00m, 3.00m, "chat"),
 
         ["llama-3.1-8b"] = new(0.10m, 0.10m, "chat"),
@@ -215,6 +234,19 @@ internal static class ModelPricingDatabase
 
     private static bool IsBaseModelMatch(string candidateModelId, string knownModelId)
     {
+        if (StartsWithKnownModel(candidateModelId, knownModelId))
+        {
+            return true;
+        }
+
+        var normalizedCandidateModelId = NormalizeForComparison(candidateModelId);
+        var normalizedKnownModelId = NormalizeForComparison(knownModelId);
+
+        return StartsWithKnownModel(normalizedCandidateModelId, normalizedKnownModelId);
+    }
+
+    private static bool StartsWithKnownModel(string candidateModelId, string knownModelId)
+    {
         if (!candidateModelId.StartsWith(knownModelId, StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -227,8 +259,50 @@ internal static class ModelPricingDatabase
 
         return candidateModelId[knownModelId.Length] switch
         {
-            '-' or '.' or ':' or '@' => true,
+            '-' or '.' or ':' or '@' or '/' or '_' or ' ' => true,
             _ => false
         };
+    }
+
+    private static string NormalizeForComparison(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder(value.Length);
+        var lastWasSeparator = false;
+
+        foreach (var character in value.Trim().ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(character);
+                lastWasSeparator = false;
+            }
+            else if (!lastWasSeparator)
+            {
+                builder.Append('-');
+                lastWasSeparator = true;
+            }
+        }
+
+        var normalized = builder.ToString().Trim('-');
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return normalized;
+        }
+
+        var segments = normalized
+            .Split('-', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+
+        while (segments.Count > 0 && IgnoredLeadingSegments.Contains(segments[0]))
+        {
+            segments.RemoveAt(0);
+        }
+
+        return string.Join('-', segments);
     }
 }

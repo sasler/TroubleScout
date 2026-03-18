@@ -60,6 +60,32 @@ public class ByokModelFilterTests
         Assert.Contains(result.Models, m => m.Id == "gpt-5-mini");
     }
 
+    [Fact]
+    public void ParseByokModelsResponse_FiltersSoraFluxAndRerankFamilies()
+    {
+        var json = BuildModelsJson(
+            ("azure/sora-2", null),
+            ("azure_ai/flux.1-kontext-pro", null),
+            ("bedrock/cohere.rerank-v3-5:0", null),
+            ("bedrock/global.anthropic.claude-sonnet-4-6-v1:0", null));
+
+        var result = InvokeParse(json);
+
+        Assert.DoesNotContain(result.Models, m => m.Id == "azure/sora-2");
+        Assert.DoesNotContain(result.Models, m => m.Id == "azure_ai/flux.1-kontext-pro");
+        Assert.DoesNotContain(result.Models, m => m.Id == "bedrock/cohere.rerank-v3-5:0");
+        Assert.Contains(result.Models, m => m.Id == "bedrock/global.anthropic.claude-sonnet-4-6-v1:0");
+    }
+
+    [Fact]
+    public void ParseByokModelsResponse_DoesNotFilterChatModelWhenDisplayNameLooksNonChat()
+    {
+        var json = BuildModelsJson(("custom-chat-model", "Flux Assistant"));
+        var result = InvokeParse(json);
+
+        Assert.Contains(result.Models, m => m.Id == "custom-chat-model");
+    }
+
     private static string BuildModelsJson(params (string Id, string? Name)[] models)
     {
         return JsonSerializer.Serialize(new

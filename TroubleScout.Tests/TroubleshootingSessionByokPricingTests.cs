@@ -55,6 +55,33 @@ public class TroubleshootingSessionByokPricingTests
         Assert.False(result.PricingByModelId.ContainsKey("dall-e-3"));
     }
 
+    [Fact]
+    public void ParseByokModelsResponse_WithBedrockFallbackPricing_AddsEstimatedPrice()
+    {
+        const string json = """
+            {
+              "data": [
+                {
+                  "id": "bedrock/global.anthropic.claude-sonnet-4-6-v1:0",
+                  "name": "Claude Sonnet 4.6"
+                },
+                {
+                  "id": "bedrock/amazon.nova-pro-v1:0",
+                  "name": "Amazon Nova Pro"
+                }
+              ]
+            }
+            """;
+
+        using var document = JsonDocument.Parse(json);
+
+        var result = InvokeParseByokModelsResponse(document.RootElement);
+
+        Assert.Equal(2, result.Models.Count);
+        Assert.Equal("~$3/M in, ~$15/M out", result.PricingByModelId["bedrock/global.anthropic.claude-sonnet-4-6-v1:0"].DisplayText);
+        Assert.Equal("~$0.8/M in, ~$3.2/M out", result.PricingByModelId["bedrock/amazon.nova-pro-v1:0"].DisplayText);
+    }
+
     private static (List<ModelInfo> Models, Dictionary<string, TestByokPriceInfo> PricingByModelId) InvokeParseByokModelsResponse(JsonElement rootElement)
     {
         var method = typeof(TroubleshootingSession).GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic);

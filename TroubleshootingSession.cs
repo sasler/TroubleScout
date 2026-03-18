@@ -3382,6 +3382,8 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            var modelName = ReadJsonStringProperty(modelElement, "name", "display_name", "displayName");
+
             if (ModelPricingDatabase.IsNonChatModel(modelId))
             {
                 continue;
@@ -3396,7 +3398,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var model = new ModelInfo
             {
                 Id = modelId,
-                Name = ReadJsonStringProperty(modelElement, "name", "display_name", "displayName") ?? ToModelDisplayName(modelId)
+                Name = modelName ?? ToModelDisplayName(modelId)
             };
 
             var capabilities = BuildByokCapabilities(modelElement);
