@@ -113,6 +113,19 @@ public class PowerShellExecutor : IDisposable
             .ToList();
     }
 
+    internal static CommandValidation ValidateStandaloneCommand(
+        string command,
+        ExecutionMode executionMode,
+        IReadOnlyList<string>? safeCommands = null)
+    {
+        using var executor = new PowerShellExecutor("localhost")
+        {
+            ExecutionMode = executionMode
+        };
+        executor.SetCustomSafeCommands(safeCommands);
+        return executor.ValidateCommand(command);
+    }
+
     internal static bool IsLocalhostName(string server)
     {
         return string.IsNullOrEmpty(server) ||
