@@ -114,6 +114,27 @@ After editing any `.cs` files:
 
 Also ensure analyzer/compiler issues remain clean.
 
+## Development Workflow (TDD)
+
+All coding tasks must follow this workflow for each logical unit of work:
+
+1. **Write failing tests** — only tests that actually matter. Less is better. Focus on behavior, not implementation details.
+2. **Implement** — write the minimum code to make the tests pass.
+3. **Run tests, fix, repeat** — `dotnet build && dotnet test` until all tests pass.
+4. **Run smoke tests** — `dotnet run -- --server localhost --prompt "how is this computer doing?"`. If anything fails, go back to step 2. The app was fully functional before your changes — any errors are regressions you introduced.
+5. **Code review** — send to a subagent with a different model for review. If implementation used GPT, use the latest Sonnet model for review; if it used Claude, use the latest GPT model.
+6. **Apply valid suggestions** — implement the review feedback, then repeat from step 3.
+7. **Commit and move to next task**.
+
+### Model Selection for Agents
+
+| Task                    | Model        |
+|-------------------------|--------------|
+| Coding / implementation | GPT 5.4      |
+| Code review             | Sonnet 4.6   |
+| UI / design tasks       | Opus 4.6     |
+| App smoke tests         | GPT 4.1 (GitHub) — free tier |
+
 ## Git Workflow Rules
 
 - Never work directly on `main`.
