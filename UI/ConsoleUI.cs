@@ -1590,6 +1590,7 @@ public static class ConsoleUI
         var table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
+            .Expand()
             .AddColumn(new TableColumn("[bold] [/]").Width(2))
             .AddColumn(new TableColumn("[bold]Model[/]"));
 
@@ -1642,7 +1643,8 @@ public static class ConsoleUI
         var detailsPanel = new Panel(detailsGrid)
             .Header("[bold cyan] Model details [/]")
             .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Grey);
+            .BorderColor(Color.Grey)
+            .Expand();
 
         var instructions = new Markup("[grey]Use [cyan]Up/Down[/] to browse, [green]Enter[/] to select, [yellow]Esc[/] to keep the current model.[/]");
 
@@ -1650,7 +1652,8 @@ public static class ConsoleUI
             new Panel(table)
                 .Header("[bold cyan] Select AI model [/]") 
                 .Border(BoxBorder.Rounded)
-                .BorderColor(Color.Cyan),
+                .BorderColor(Color.Cyan)
+                .Expand(),
             detailsPanel,
             instructions);
     }

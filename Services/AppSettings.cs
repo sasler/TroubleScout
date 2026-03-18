@@ -12,6 +12,8 @@ public sealed class AppSettings
     public string? ByokOpenAiApiKey { get; set; }
     public string? ByokOpenAiApiKeyEncrypted { get; set; }
     public List<string>? SafeCommands { get; set; }
+    public Dictionary<string, string>? SystemPromptOverrides { get; set; }
+    public string? SystemPromptAppend { get; set; }
 }
 
 public static class AppSettingsStore
@@ -117,7 +119,9 @@ public static class AppSettingsStore
             ByokOpenAiApiKey = null,
             ByokOpenAiApiKeyEncrypted = TryEncrypt(settings.ByokOpenAiApiKey),
             SafeCommands = settings.SafeCommands?.Where(command => !string.IsNullOrWhiteSpace(command)).Select(command => command.Trim()).ToList()
-                ?? DefaultSafeCommands.ToList()
+                ?? DefaultSafeCommands.ToList(),
+            SystemPromptOverrides = settings.SystemPromptOverrides,
+            SystemPromptAppend = settings.SystemPromptAppend
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
