@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace TroubleScout.Services;
 
 internal sealed class SessionUsageTracker
@@ -63,12 +65,12 @@ internal sealed class SessionUsageTracker
     {
         if (_estimatedCostUsd > 0)
         {
-            return $"~${_estimatedCostUsd:0.####}";
+            return $"~${_estimatedCostUsd.ToString("0.####", CultureInfo.InvariantCulture)}";
         }
 
         if (_estimatedPremiumRequests > 0)
         {
-            return $"~{_estimatedPremiumRequests:0.#} premium reqs";
+            return $"~{_estimatedPremiumRequests.ToString("0.#", CultureInfo.InvariantCulture)} premium reqs";
         }
 
         return null;
