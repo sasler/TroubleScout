@@ -59,6 +59,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private List<ModelInfo> _availableModels = new();
     private readonly Dictionary<string, ModelSource> _modelSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ByokPriceInfo> _byokPricing = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SessionUsageTracker _sessionUsageTracker = new();
     private readonly string? _mcpConfigPath;
     private readonly List<string> _skillDirectories;
     private readonly List<string> _disabledSkills;
@@ -3381,6 +3382,17 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            if (ModelPricingDatabase.IsNonChatModel(modelId))
+            {
+                continue;
+            }
+
+            var apiMode = ReadJsonStringProperty(modelElement, "mode", "type", "object_type");
+            if (!string.IsNullOrWhiteSpace(apiMode) && IsNonChatApiMode(apiMode))
+            {
+                continue;
+            }
+
             var model = new ModelInfo
             {
                 Id = modelId,
@@ -3438,6 +3450,21 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return new ByokModelDiscoveryResult(discovered, pricing);
+    }
+
+    private static bool IsNonChatApiMode(string mode)
+    {
+        return mode.Equals("image_generation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("embedding", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("audio_transcription", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("audio_speech", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("completion", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("moderation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("rerank", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("video_generation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("realtime", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("responses", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("ocr", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> ConfigureByokOpenAiAsync(string baseUrl, string apiKey, string? model, Action<string>? updateStatus)
@@ -5140,7 +5167,12 @@ public class TroubleshootingSession : IAsyncDisposable
             OutputTokens: outputTokens,
             TotalTokens: totalTokens,
             ToolInvocations: _toolInvocationCount,
-            SessionId: _sessionId);
+            SessionId: _sessionId)
+        {
+            SessionInputTokens = _sessionUsageTracker.TotalInputTokens > 0 ? _sessionUsageTracker.TotalInputTokens : null,
+            SessionOutputTokens = _sessionUsageTracker.TotalOutputTokens > 0 ? _sessionUsageTracker.TotalOutputTokens : null,
+            SessionCostEstimate = _sessionUsageTracker.GetCostEstimateDisplay()
+        };
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
@@ -5253,6 +5285,27 @@ public class TroubleshootingSession : IAsyncDisposable
         fields.Add((label, value));
     }
 
+    private ByokPriceInfo? GetActiveByokPricing()
+    {
+        if (!_useByokOpenAi || string.IsNullOrWhiteSpace(_selectedModel))
+        {
+            return null;
+        }
+
+        return _byokPricing.TryGetValue(_selectedModel, out var price) ? price : null;
+    }
+
+    private double? GetActivePremiumMultiplier()
+    {
+        if (_useByokOpenAi)
+        {
+            return null;
+        }
+
+        var model = GetSelectedModelInfo();
+        return model?.Billing?.Multiplier;
+    }
+
     private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
     {
         var data = usageEvt.Data;
@@ -5290,6 +5343,14 @@ public class TroubleshootingSession : IAsyncDisposable
         if (snapshot.HasAny)
         {
             _lastUsage = snapshot;
+
+            var pricing = GetActiveByokPricing();
+            var multiplier = GetActivePremiumMultiplier();
+            _sessionUsageTracker.RecordTurn(
+                snapshot.InputTokens ?? snapshot.PromptTokens,
+                snapshot.OutputTokens ?? snapshot.CompletionTokens,
+                pricing,
+                multiplier);
         }
     }
 

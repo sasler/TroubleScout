@@ -51,7 +51,7 @@ public class TroubleshootingSessionByokPricingTests
 
         var result = InvokeParseByokModelsResponse(document.RootElement);
 
-        Assert.Single(result.Models);
+        Assert.Empty(result.Models);
         Assert.False(result.PricingByModelId.ContainsKey("dall-e-3"));
     }
 

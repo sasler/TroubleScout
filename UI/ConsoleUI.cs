@@ -29,6 +29,9 @@ public sealed record StatusBarInfo(
     int ToolInvocations,
     string? SessionId)
 {
+    public long? SessionInputTokens { get; init; }
+    public long? SessionOutputTokens { get; init; }
+    public string? SessionCostEstimate { get; init; }
     public static StatusBarInfo Empty => new(null, null, null, null, null, 0, null);
 }
 
@@ -1303,6 +1306,18 @@ public static class ConsoleUI
         if (info.ToolInvocations > 0)
         {
             parts.Add($"[grey]Tools:[/] [cyan]{info.ToolInvocations}[/]");
+        }
+
+        if (info.SessionInputTokens.HasValue || info.SessionOutputTokens.HasValue)
+        {
+            var sessIn = info.SessionInputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionInputTokens.Value, int.MaxValue)) : "?";
+            var sessOut = info.SessionOutputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionOutputTokens.Value, int.MaxValue)) : "?";
+            var costPart = !string.IsNullOrWhiteSpace(info.SessionCostEstimate) ? $" ({Markup.Escape(info.SessionCostEstimate)})" : string.Empty;
+            parts.Add($"[grey]Session:[/] [cyan]{sessIn}[/][grey] in /[/] [cyan]{sessOut}[/][grey] out[/]{costPart}");
+        }
+        else if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
+        {
+            parts.Add($"[grey]Session:[/] {Markup.Escape(info.SessionCostEstimate)}");
         }
 
         if (parts.Count == 0)
