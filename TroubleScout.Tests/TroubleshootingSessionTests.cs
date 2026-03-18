@@ -1646,6 +1646,118 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task PermissionHandler_ShellReadOnlyPowerShellCommand_ShouldApproveInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending"
+            }
+        };
+
+        // Act
+        var result = await handler(request, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+    }
+
+    [Fact]
+    public async Task PermissionHandler_ShellBlockedPowerShellCommand_ShouldDenyInSafeMode()
+    {
+        // Arrange
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Get-Credential"
+            }
+        };
+
+        // Act
+        var result = await handler(request, new PermissionInvocation());
+
+        // Assert
+        result.Kind.Should().Be(PermissionRequestResultKind.DeniedInteractivelyByUser);
+    }
+
+    [Fact]
+    public void EvaluateShellPermissionRequest_ReadOnlyPipeline_ShouldReturnSafeValidation()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending"
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().NotBeNull();
+        assessment!.Command.Should().Contain("Get-ChildItem");
+        assessment.Validation.IsAllowed.Should().BeTrue();
+        assessment.Validation.RequiresApproval.Should().BeFalse();
+        assessment.ImpactText.Should().Contain("recognized as read-only");
+    }
+
+    [Fact]
+    public void EvaluateShellPermissionRequest_MutatingPowerShellCommand_ShouldRequireApproval()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "Restart-Service -Name spooler"
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().NotBeNull();
+        assessment!.Validation.IsAllowed.Should().BeTrue();
+        assessment.Validation.RequiresApproval.Should().BeTrue();
+        assessment.PromptReason.Should().Contain("Safe mode");
+        assessment.ImpactText.Should().Contain("not classified as read-only");
+    }
+
+    [Fact]
+    public void EvaluateShellPermissionRequest_NonPowerShellShellCommand_ShouldReturnNull()
+    {
+        // Arrange
+        var request = new PermissionRequest
+        {
+            Kind = "shell",
+            ExtensionData = new Dictionary<string, object>
+            {
+                ["command"] = "cmd /c dir"
+            }
+        };
+
+        // Act
+        var assessment = _session.EvaluateShellPermissionRequest(request);
+
+        // Assert
+        assessment.Should().BeNull();
+    }
+
+    [Fact]
     public void DescribePermissionRequest_ShellRequest_ShouldPreferConcreteCommand()
     {
         // Arrange

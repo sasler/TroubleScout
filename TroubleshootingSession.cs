@@ -35,6 +35,7 @@ public class TroubleshootingSession : IAsyncDisposable
     }
     internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
     private sealed record ByokModelDiscoveryResult(List<ModelInfo> Models, Dictionary<string, ByokPriceInfo> PricingByModelId);
+    internal sealed record ShellPermissionAssessment(string Command, CommandValidation Validation, string PromptReason, string ImpactText);
 
     private const string CopilotCliRepoUrl = "https://github.com/github/copilot-cli";
     private const string CopilotCliInstallUrl = "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli";
@@ -4308,6 +4309,40 @@ public class TroubleshootingSession : IAsyncDisposable
                     });
                 }
 
+                if (kind == "shell")
+                {
+                    var shellAssessment = EvaluateShellPermissionRequest(req);
+                    if (shellAssessment != null)
+                    {
+                        if (shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
+                        {
+                            return Task.FromResult(new PermissionRequestResult
+                            {
+                                Kind = PermissionRequestResultKind.Approved
+                            });
+                        }
+
+                        if (!shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
+                        {
+                            return Task.FromResult(new PermissionRequestResult
+                            {
+                                Kind = PermissionRequestResultKind.DeniedInteractivelyByUser
+                            });
+                        }
+
+                        var shellApproval = ConsoleUI.PromptCommandApproval(
+                            shellAssessment.Command,
+                            shellAssessment.PromptReason,
+                            impact: shellAssessment.ImpactText);
+                        return Task.FromResult(new PermissionRequestResult
+                        {
+                            Kind = shellApproval == ApprovalResult.Approved
+                                ? PermissionRequestResultKind.Approved
+                                : PermissionRequestResultKind.DeniedInteractivelyByUser
+                        });
+                    }
+                }
+
                 // In Safe mode: MCP, shell, file-write require user approval
                 var description = DescribePermissionRequest(req);
                 var approval = ConsoleUI.PromptCommandApproval(
@@ -4321,6 +4356,27 @@ public class TroubleshootingSession : IAsyncDisposable
                 });
             }
         };
+    }
+
+    internal ShellPermissionAssessment? EvaluateShellPermissionRequest(PermissionRequest request)
+    {
+        if (NormalizePermissionKind(request.Kind) != "shell")
+        {
+            return null;
+        }
+
+        var command = TryReadShellCommandText(request);
+        if (string.IsNullOrWhiteSpace(command) || !LooksLikePowerShellCommand(command))
+        {
+            return null;
+        }
+
+        var validation = PowerShellExecutor.ValidateStandaloneCommand(command, _executionMode, _configuredSafeCommands);
+        return new ShellPermissionAssessment(
+            command,
+            validation,
+            validation.Reason ?? BuildPermissionPromptReason("shell"),
+            BuildShellPermissionImpactText(validation));
     }
 
     private static string NormalizePermissionKind(string? kind)
@@ -4344,24 +4400,9 @@ public class TroubleshootingSession : IAsyncDisposable
         {
             case "shell":
             {
-                var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
-                    ?? ReadPermissionExtensionString(extensionData,
-                        "fullCommandText",
-                        "command",
-                        "commandLine",
-                        "commandText",
-                        "cmd",
-                        "shellCommand",
-                        "rawCommand",
-                        "text")
-                    ?? ReadNestedPermissionExtensionString(extensionData,
-                        "command",
-                        "payload",
-                        "input",
-                        "request",
-                        "details");
+                var command = TryReadShellCommandText(request);
                 return !string.IsNullOrWhiteSpace(command)
-                    ? TrimPermissionPreview(command)
+                    ? command
                     : "Shell command";
             }
             case "mcp":
@@ -4442,6 +4483,76 @@ public class TroubleshootingSession : IAsyncDisposable
             "custom-tool" => "Allow this custom tool invocation?",
             _ => $"Allow this tool operation in Safe mode? (kind: {Markup.Escape(kind)})"
         };
+    }
+
+    private static string BuildShellPermissionImpactText(CommandValidation validation)
+    {
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            return "This PowerShell command is blocked by TroubleScout safety rules.";
+        }
+
+        if (validation.RequiresApproval)
+        {
+            if (validation.Reason?.Contains("parse", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return "This PowerShell command could not be confidently classified as read-only.";
+            }
+
+            return "This PowerShell command is not classified as read-only and may modify system state, services, or configuration.";
+        }
+
+        return "This PowerShell command was recognized as read-only.";
+    }
+
+    private static string? TryReadShellCommandText(PermissionRequest request)
+    {
+        var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
+            ?? ReadPermissionExtensionString(request.ExtensionData,
+                "fullCommandText",
+                "command",
+                "commandLine",
+                "commandText",
+                "cmd",
+                "shellCommand",
+                "rawCommand",
+                "text")
+            ?? ReadNestedPermissionExtensionString(request.ExtensionData,
+                "command",
+                "payload",
+                "input",
+                "request",
+                "details");
+
+        return string.IsNullOrWhiteSpace(command)
+            ? null
+            : TrimPermissionPreview(command);
+    }
+
+    private static bool LooksLikePowerShellCommand(string command)
+    {
+        var trimmed = command.TrimStart();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith("$", StringComparison.Ordinal) ||
+            trimmed.StartsWith("@", StringComparison.Ordinal) ||
+            trimmed.StartsWith("[", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var firstToken = trimmed
+            .Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(firstToken) || firstToken.StartsWith("-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(firstToken, "^[A-Za-z][A-Za-z0-9]*-[A-Za-z][A-Za-z0-9]*$");
     }
 
     private static string? ReadPermissionExtensionString(

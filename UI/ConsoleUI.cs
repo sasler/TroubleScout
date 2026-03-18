@@ -1316,7 +1316,11 @@ public static class ConsoleUI
     /// <summary>
     /// Display a command that requires approval
     /// </summary>
-    public static ApprovalResult PromptCommandApproval(string command, string reason, string? agentIntent = null)
+    public static ApprovalResult PromptCommandApproval(
+        string command,
+        string reason,
+        string? agentIntent = null,
+        string? impact = null)
     {
         LiveThinkingIndicator.PauseForApproval();
         try
@@ -1335,7 +1339,7 @@ public static class ConsoleUI
             }
 
             rows.Add(new Markup(""));
-            rows.Add(new Markup("[red]This command can modify system state.[/]"));
+            rows.Add(new Markup($"[red]{Markup.Escape(impact ?? "This command can modify system state.")}[/]"));
 
             var panel = new Panel(new Rows(rows))
             .Header("[bold yellow] Approval Required [/]")
@@ -1357,7 +1361,7 @@ public static class ConsoleUI
 
             if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
             {
-                ShowCommandExplanation(command, reason, agentIntent);
+                ShowCommandExplanation(command, reason, agentIntent, impact);
 
                 return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false)
                     ? ApprovalResult.Approved
@@ -1374,7 +1378,11 @@ public static class ConsoleUI
         }
     }
 
-    private static void ShowCommandExplanation(string command, string reason, string? agentIntent = null)
+    private static void ShowCommandExplanation(
+        string command,
+        string reason,
+        string? agentIntent = null,
+        string? impact = null)
     {
         AnsiConsole.WriteLine();
 
@@ -1389,7 +1397,7 @@ public static class ConsoleUI
 
         grid.AddRow("[grey]Command:[/]", $"[white]{Markup.Escape(command)}[/]");
         grid.AddRow("[grey]Safety rule:[/]", $"[white]{Markup.Escape(reason)}[/]");
-        grid.AddRow("[grey]Impact:[/]", "[yellow]This command may modify system state, services, or configuration.[/]");
+        grid.AddRow("[grey]Impact:[/]", $"[yellow]{Markup.Escape(impact ?? "This command may modify system state, services, or configuration.")}[/]");
 
         var explanationPanel = new Panel(grid)
             .Header("[bold cyan] Command Explanation [/]")

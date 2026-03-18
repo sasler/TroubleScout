@@ -2,6 +2,16 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.8.3] - 2026-03-18
+
+### 🐛 Bug Fixes
+
+- 🐛 **Auto-approve read-only PowerShell shell commands** — Safe mode now reuses TroubleScout's PowerShell safety validator for PowerShell-shaped `shell` permission requests, so read-only pipelines like `Get-ChildItem | Select-Object | Sort-Object` no longer trigger a misleading approval prompt.
+
+### 📝 Documentation & UX
+
+- 📝 **Clarify shell approval messaging** — when a PowerShell shell command still needs approval, the prompt now explains whether it is blocked, ambiguous, or simply not classified as read-only instead of always implying that every shell command is mutating.
+
 ## [v1.8.2] - 2026-03-16
 
 ### ✨ Features
