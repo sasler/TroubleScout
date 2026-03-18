@@ -59,6 +59,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private List<ModelInfo> _availableModels = new();
     private readonly Dictionary<string, ModelSource> _modelSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ByokPriceInfo> _byokPricing = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SessionUsageTracker _sessionUsageTracker = new();
     private readonly string? _mcpConfigPath;
     private readonly List<string> _skillDirectories;
     private readonly List<string> _disabledSkills;
@@ -85,6 +86,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private int _toolInvocationCount;
     private bool _isGitHubCopilotAuthenticated;
     private IReadOnlyList<string>? _configuredSafeCommands;
+    private IReadOnlyDictionary<string, string>? _configuredSystemPromptOverrides;
+    private string? _configuredSystemPromptAppend;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -276,6 +279,74 @@ public class TroubleshootingSession : IAsyncDisposable
             ? $"Always confirm the data comes from {effectivePrimary} by checking $env:COMPUTERNAME"
             : $"For the primary JEA endpoint, confirm the source from the targeted session/server name ({SanitizeServerNameForPrompt(effectivePrimary)}) rather than using $env:COMPUTERNAME on the constrained endpoint";
 
+        var investigationApproach = """
+            ## Investigation Approach
+            - When investigating an issue, exhaust ALL available diagnostic tools and data sources before asking the user for more information or permission to continue
+            - Do NOT pause to ask the user if you should continue investigating — keep working until you have a clear diagnosis or have exhausted all available tools
+            - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+            - Present your complete findings, analysis, and recommendations in one comprehensive response rather than stopping at each step to ask for permission
+            - If one diagnostic approach yields no results, try alternative approaches before concluding
+            - Gather data from ALL relevant sources (event logs, services, processes, performance counters, disk, network) in a single investigation pass
+            """;
+
+        var responseFormat = $"""
+            ## Response Format
+            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {effectivePrimary}...")
+            - Always format your response as Markdown
+            - Use short Markdown sections and bullet lists to keep output readable
+            - Separate distinct steps/findings with blank lines
+            - For tabular data, use compact Markdown tables (pipe syntax) and avoid fixed-width ASCII-art table alignment
+            - If a table would be too wide, reduce columns or use a concise bullet list instead of forcing alignment
+            - Be concise but thorough
+            - Use bullet points for lists
+            - Highlight critical findings with **bold**
+            - Use fenced code blocks for commands or command output when relevant
+            - For remediation commands (non-Get commands), explain what they do and why they're needed
+            - Always explain your reasoning
+            - When presenting diagnostic data, include the source server name in your explanation
+            """;
+
+        var troubleshootingApproach = $"""
+            ## Troubleshooting Approach
+            1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
+            2. **Gather Data**: {dataCollectionGuidance}
+            3. **Verify Source**: {sourceVerificationGuidance}
+            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
+            5. **Diagnose**: Form hypotheses about the root cause based on evidence
+            6. **Recommend**: Provide clear, actionable next steps
+            """;
+
+        var safetyGuidance = """
+            ## Safety
+            - Only read-only Get-* commands execute automatically
+            - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
+            - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
+            - In YOLO mode, remediation commands can execute without confirmation
+            - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+            - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
+            - Never claim a command was executed unless run_powershell returned execution output
+            - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
+            - If no tool was executed, clearly state that no command has been run yet
+            - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
+            - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
+            - Never suggest commands that could cause data loss without clear warnings
+            - Always consider the impact of recommended actions
+            """;
+
+        if (_configuredSystemPromptOverrides != null)
+        {
+            if (_configuredSystemPromptOverrides.TryGetValue("investigation_approach", out var customInvestigation) && !string.IsNullOrWhiteSpace(customInvestigation))
+                investigationApproach = customInvestigation;
+            if (_configuredSystemPromptOverrides.TryGetValue("response_format", out var customFormat) && !string.IsNullOrWhiteSpace(customFormat))
+                responseFormat = customFormat;
+            if (_configuredSystemPromptOverrides.TryGetValue("troubleshooting_approach", out var customTroubleshootingApproach) && !string.IsNullOrWhiteSpace(customTroubleshootingApproach))
+                troubleshootingApproach = customTroubleshootingApproach;
+            if (_configuredSystemPromptOverrides.TryGetValue("safety", out var customSafety) && !string.IsNullOrWhiteSpace(customSafety))
+                safetyGuidance = customSafety;
+        }
+
+        var appendSection = !string.IsNullOrWhiteSpace(_configuredSystemPromptAppend) ? $"\n\n{_configuredSystemPromptAppend}" : "";
+
         return new SystemMessageConfig
         {
             Content = $"""
@@ -296,43 +367,13 @@ public class TroubleshootingSession : IAsyncDisposable
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
-            ## Troubleshooting Approach
-            1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
-            2. **Gather Data**: {dataCollectionGuidance}
-            3. **Verify Source**: {sourceVerificationGuidance}
-            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
-            5. **Diagnose**: Form hypotheses about the root cause based on evidence
-            6. **Recommend**: Provide clear, actionable next steps
+            {troubleshootingApproach}
 
-            ## Response Format
-            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {effectivePrimary}...")
-            - Always format your response as Markdown
-            - Use short Markdown sections and bullet lists to keep output readable
-            - Separate distinct steps/findings with blank lines
-            - For tabular data, use compact Markdown tables (pipe syntax) and avoid fixed-width ASCII-art table alignment
-            - If a table would be too wide, reduce columns or use a concise bullet list instead of forcing alignment
-            - Be concise but thorough
-            - Use bullet points for lists
-            - Highlight critical findings with **bold**
-            - Use fenced code blocks for commands or command output when relevant
-            - For remediation commands (non-Get commands), explain what they do and why they're needed
-            - Always explain your reasoning
-            - When presenting diagnostic data, include the source server name in your explanation
-
-            ## Safety
-            - Only read-only Get-* commands execute automatically
-            - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
-            - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
-            - In YOLO mode, remediation commands can execute without confirmation
-            - For ANY mutating task, you MUST call the run_powershell tool with the exact command
-            - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
-            - Never claim a command was executed unless run_powershell returned execution output
-            - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
-            - If no tool was executed, clearly state that no command has been run yet
-            - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
-            - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
-            - Never suggest commands that could cause data loss without clear warnings
-            - Always consider the impact of recommended actions
+            {investigationApproach}
+            
+            {responseFormat}
+            
+            {safetyGuidance}
 
             ## Multi-Server Sessions & Double-Hop Avoidance
             - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
@@ -345,7 +386,7 @@ public class TroubleshootingSession : IAsyncDisposable
             {jeaSessionsBlock}
             Remember: Your goal is to help the user understand what's wrong with {effectivePrimary} and guide them to a solution, 
             not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
-            server you're working on.
+            server you're working on.{appendSection}
             """
         };
     }
@@ -397,10 +438,11 @@ public class TroubleshootingSession : IAsyncDisposable
             ? Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
             : byokOpenAiApiKey.Trim();
         _isGitHubCopilotAuthenticated = false;
+        var settings = AppSettingsStore.Load();
+        ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
-        var settings = AppSettingsStore.Load();
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _diagnosticTools = new DiagnosticTools(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
@@ -2563,7 +2605,35 @@ public class TroubleshootingSession : IAsyncDisposable
     private void ReloadSafeCommandsFromSettings()
     {
         var settings = AppSettingsStore.Load();
+        ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
+        _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
+    }
+
+    private void ApplySystemPromptSettings(IReadOnlyDictionary<string, string>? overrides, string? append)
+    {
+        if (overrides == null)
+        {
+            _configuredSystemPromptOverrides = null;
+        }
+        else
+        {
+            var normalizedOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in overrides)
+            {
+                var normalizedKey = entry.Key?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedKey) || string.IsNullOrWhiteSpace(entry.Value))
+                {
+                    continue;
+                }
+
+                normalizedOverrides[normalizedKey] = entry.Value;
+            }
+
+            _configuredSystemPromptOverrides = normalizedOverrides.Count > 0 ? normalizedOverrides : null;
+        }
+
+        _configuredSystemPromptAppend = string.IsNullOrWhiteSpace(append) ? null : append;
     }
 
     private static async Task<string?> TryOpenSettingsEditorAsync(string settingsPath)
@@ -2712,7 +2782,40 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
-                ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns have been applied.");
+                var sessionReloadSucceeded = true;
+                string? sessionReloadError = null;
+                if (_copilotClient != null && _copilotSession != null)
+                {
+                    await _copilotSession.DisposeAsync();
+                    _copilotSession = null;
+                    try
+                    {
+                        sessionReloadSucceeded = await CreateCopilotSessionAsync(
+                            string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
+                            null);
+                    }
+                    catch (Exception ex)
+                    {
+                        sessionReloadSucceeded = false;
+                        sessionReloadError = TrimSingleLine(ex.Message);
+                    }
+                }
+
+                if (sessionReloadSucceeded)
+                {
+                    ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns and system prompt settings have been applied.");
+                }
+                else
+                {
+                    var message = "Settings were reloaded, but the AI session could not be recreated. Use /login or /model to reconnect.";
+                    if (!string.IsNullOrWhiteSpace(sessionReloadError))
+                    {
+                        message += $" {sessionReloadError}";
+                    }
+
+                    ConsoleUI.ShowWarning(message);
+                }
+
                 continue;
             }
 
@@ -3327,10 +3430,23 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            var modelName = ReadJsonStringProperty(modelElement, "name", "display_name", "displayName");
+
+            if (ModelPricingDatabase.IsNonChatModel(modelId))
+            {
+                continue;
+            }
+
+            var apiMode = ReadJsonStringProperty(modelElement, "mode", "type", "object_type");
+            if (!string.IsNullOrWhiteSpace(apiMode) && IsNonChatApiMode(apiMode))
+            {
+                continue;
+            }
+
             var model = new ModelInfo
             {
                 Id = modelId,
-                Name = ReadJsonStringProperty(modelElement, "name", "display_name", "displayName") ?? ToModelDisplayName(modelId)
+                Name = modelName ?? ToModelDisplayName(modelId)
             };
 
             var capabilities = BuildByokCapabilities(modelElement);
@@ -3368,6 +3484,13 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             var priceInfo = ExtractByokPriceInfo(modelElement);
+            if (priceInfo == null
+                && !ModelPricingDatabase.IsNonChatModel(modelId)
+                && ModelPricingDatabase.TryGetPrice(modelId, out var fallbackInput, out var fallbackOutput))
+            {
+                priceInfo = new ByokPriceInfo(fallbackInput, fallbackOutput, FormatByokPriceDisplayEstimate(fallbackInput, fallbackOutput));
+            }
+
             if (priceInfo != null)
             {
                 pricing[modelId] = priceInfo;
@@ -3377,6 +3500,20 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return new ByokModelDiscoveryResult(discovered, pricing);
+    }
+
+    private static bool IsNonChatApiMode(string mode)
+    {
+        return mode.Equals("image_generation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("embedding", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("audio_transcription", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("audio_speech", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("completion", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("moderation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("rerank", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("video_generation", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("realtime", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("ocr", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> ConfigureByokOpenAiAsync(string baseUrl, string apiKey, string? model, Action<string>? updateStatus)
@@ -4253,9 +4390,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
-        _sessionId = CreateSessionId();
-        _lastUsage = null;
-        _toolInvocationCount = 0;
+        ResetStateForNewAiSession();
 
         if (_configurationWarnings.Count > 0)
         {
@@ -4270,6 +4405,14 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return true;
+    }
+
+    private void ResetStateForNewAiSession()
+    {
+        _sessionId = CreateSessionId();
+        _lastUsage = null;
+        _toolInvocationCount = 0;
+        _sessionUsageTracker.Reset();
     }
 
     private static string? GetByokWireApi(string? model)
@@ -5079,7 +5222,12 @@ public class TroubleshootingSession : IAsyncDisposable
             OutputTokens: outputTokens,
             TotalTokens: totalTokens,
             ToolInvocations: _toolInvocationCount,
-            SessionId: _sessionId);
+            SessionId: _sessionId)
+        {
+            SessionInputTokens = _sessionUsageTracker.TotalInputTokens > 0 ? _sessionUsageTracker.TotalInputTokens : null,
+            SessionOutputTokens = _sessionUsageTracker.TotalOutputTokens > 0 ? _sessionUsageTracker.TotalOutputTokens : null,
+            SessionCostEstimate = _sessionUsageTracker.GetCostEstimateDisplay()
+        };
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
@@ -5192,6 +5340,27 @@ public class TroubleshootingSession : IAsyncDisposable
         fields.Add((label, value));
     }
 
+    private ByokPriceInfo? GetActiveByokPricing()
+    {
+        if (!_useByokOpenAi || string.IsNullOrWhiteSpace(_selectedModel))
+        {
+            return null;
+        }
+
+        return _byokPricing.TryGetValue(_selectedModel, out var price) ? price : null;
+    }
+
+    private double? GetActivePremiumMultiplier()
+    {
+        if (_useByokOpenAi)
+        {
+            return null;
+        }
+
+        var model = GetSelectedModelInfo();
+        return model?.Billing?.Multiplier;
+    }
+
     private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
     {
         var data = usageEvt.Data;
@@ -5229,6 +5398,14 @@ public class TroubleshootingSession : IAsyncDisposable
         if (snapshot.HasAny)
         {
             _lastUsage = snapshot;
+
+            var pricing = GetActiveByokPricing();
+            var multiplier = GetActivePremiumMultiplier();
+            _sessionUsageTracker.RecordTurn(
+                snapshot.InputTokens ?? snapshot.PromptTokens,
+                snapshot.OutputTokens ?? snapshot.CompletionTokens,
+                pricing,
+                multiplier);
         }
     }
 
@@ -5846,6 +6023,11 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return null;
+    }
+
+    private static string FormatByokPriceDisplayEstimate(decimal inputPrice, decimal outputPrice)
+    {
+        return $"~${inputPrice.ToString("0.####", CultureInfo.InvariantCulture)}/M in, ~${outputPrice.ToString("0.####", CultureInfo.InvariantCulture)}/M out";
     }
 
     private static int? ReadIntProperty(object? instance, params string[] propertyNames)

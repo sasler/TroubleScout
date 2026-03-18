@@ -16,7 +16,8 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Natural Language Troubleshooting**: Describe your issue, and the AI analyzes and diagnoses problems
 - **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval with a three-option prompt (Yes / No / Explain)
 - **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
-- **Always-Visible Status Bar**: Compact post-response line showing model, provider, token usage, and tool count
+- **Always-Visible Status Bar**: Compact post-response line showing model, provider, token usage, session totals, and estimated cost
+- **Session Cost Tracking**: Cumulative token counts and cost estimates — BYOK shows `~$X.XX est.`, GitHub shows `~X.X premium reqs`
 - **Elapsed Timer**: Thinking indicator shows elapsed time and long-running warnings (30s/60s thresholds)
 - **Activity Watchdog**: Detects stalled operations and updates the user when the model goes quiet
 - **Local or Remote**: Works with localhost or remote servers via WinRM
@@ -26,7 +27,7 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
 - **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
-- **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing when available, context-window metadata, and a clearer selected-model summary
+- **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing (with LiteLLM fallback estimates), context-window metadata, and a clearer selected-model summary
 - **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
@@ -173,10 +174,35 @@ Available models depend on auth mode:
 In the interactive TUI, `/model` now:
 
 - Shows only models from providers that are currently connected
+- Filters out non-chat models (image generators, embedding, audio, etc.) for BYOK providers
 - Restores GitHub premium multipliers next to supported models
 - Shows BYOK pricing when the provider exposes pricing metadata in `/models`
+- Falls back to LiteLLM-based price estimates when API pricing is unavailable (shown with `~` prefix)
 - Lets you press `ESC` to keep the current model and return to the prompt
 - Shows a confirmation panel with provider, rate/pricing, context window, and capability details after selection
+- Uses full terminal width for consistent layout
+
+### Session Cost Tracking
+
+After each AI response, the status bar shows cumulative session usage:
+
+- **BYOK models**: `Session: 12.5k in / 8.2k out | ~$0.04 est.` — cost estimated from LiteLLM pricing data
+- **GitHub models**: `Session: 12.5k in / 8.2k out | ~2.5 premium reqs` — based on model multiplier
+
+### Customizing System Prompts
+
+System prompt sections can be customized via the `/settings` configuration file:
+
+```json
+{
+  "SystemPromptOverrides": {
+    "investigation_approach": "Your custom investigation instructions here"
+  },
+  "SystemPromptAppend": "Additional instructions appended to the system message"
+}
+```
+
+Available override keys: `investigation_approach`, `response_format`, `safety`, `troubleshooting_approach`.
 
 ### MCP Servers and Skills
 

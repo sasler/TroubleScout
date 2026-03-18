@@ -1526,6 +1526,24 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void ResetStateForNewAiSession_ShouldClearSessionUsageTracker()
+    {
+        var tracker = GetPrivateField<SessionUsageTracker>(_session, "_sessionUsageTracker");
+        var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, null);
+        tracker.RecordTurn(100, 50, pricing, 1.0);
+
+        var method = typeof(TroubleshootingSession).GetMethod("ResetStateForNewAiSession", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        method!.Invoke(_session, null);
+
+        tracker.TotalInputTokens.Should().Be(0);
+        tracker.TotalOutputTokens.Should().Be(0);
+        tracker.TotalTurns.Should().Be(0);
+        tracker.GetCostEstimateDisplay().Should().BeNull();
+    }
+
+    [Fact]
     public void SaveModelAndProviderState_WhenSwitchingToByok_ShouldPersistProviderAndModel()
     {
         ExecuteWithTemporarySettingsPath(_ =>

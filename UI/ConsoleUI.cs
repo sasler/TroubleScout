@@ -29,6 +29,9 @@ public sealed record StatusBarInfo(
     int ToolInvocations,
     string? SessionId)
 {
+    public long? SessionInputTokens { get; init; }
+    public long? SessionOutputTokens { get; init; }
+    public string? SessionCostEstimate { get; init; }
     public static StatusBarInfo Empty => new(null, null, null, null, null, 0, null);
 }
 
@@ -1305,6 +1308,21 @@ public static class ConsoleUI
             parts.Add($"[grey]Tools:[/] [cyan]{info.ToolInvocations}[/]");
         }
 
+        if (info.SessionInputTokens.HasValue || info.SessionOutputTokens.HasValue)
+        {
+            var sessIn = info.SessionInputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionInputTokens.Value, int.MaxValue)) : "?";
+            var sessOut = info.SessionOutputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionOutputTokens.Value, int.MaxValue)) : "?";
+            parts.Add($"[grey]Session:[/] [cyan]{sessIn}[/][grey] in /[/] [cyan]{sessOut}[/][grey] out[/]");
+            if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
+            {
+                parts.Add(Markup.Escape(info.SessionCostEstimate));
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
+        {
+            parts.Add($"[grey]Session:[/] {Markup.Escape(info.SessionCostEstimate)}");
+        }
+
         if (parts.Count == 0)
             return;
 
@@ -1590,6 +1608,7 @@ public static class ConsoleUI
         var table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
+            .Expand()
             .AddColumn(new TableColumn("[bold] [/]").Width(2))
             .AddColumn(new TableColumn("[bold]Model[/]"));
 
@@ -1642,7 +1661,8 @@ public static class ConsoleUI
         var detailsPanel = new Panel(detailsGrid)
             .Header("[bold cyan] Model details [/]")
             .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Grey);
+            .BorderColor(Color.Grey)
+            .Expand();
 
         var instructions = new Markup("[grey]Use [cyan]Up/Down[/] to browse, [green]Enter[/] to select, [yellow]Esc[/] to keep the current model.[/]");
 
@@ -1650,7 +1670,8 @@ public static class ConsoleUI
             new Panel(table)
                 .Header("[bold cyan] Select AI model [/]") 
                 .Border(BoxBorder.Rounded)
-                .BorderColor(Color.Cyan),
+                .BorderColor(Color.Cyan)
+                .Expand(),
             detailsPanel,
             instructions);
     }
