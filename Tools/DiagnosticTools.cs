@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
 using TroubleScout.Services;
@@ -11,6 +12,10 @@ namespace TroubleScout.Tools;
 /// </summary>
 public class DiagnosticTools
 {
+    private static readonly IReadOnlyDictionary<string, object?> SkipPermissionProperties =
+        new ReadOnlyDictionary<string, object?>(
+            new Dictionary<string, object?> { ["skip_permission"] = true });
+
     private readonly PowerShellExecutor _executor;
     private readonly Func<string, string, Task<bool>> _approvalCallback;
     private readonly List<PendingCommand> _pendingCommands = [];
@@ -51,6 +56,16 @@ public class DiagnosticTools
     private static bool IsWarnOutput(string? output)
     {
         return !string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith("[WARN]", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static AIFunction CreateReadOnlyTool(Delegate callback, string name, string description)
+    {
+        return AIFunctionFactory.Create(callback, new AIFunctionFactoryOptions
+        {
+            Name = name,
+            Description = description,
+            AdditionalProperties = SkipPermissionProperties
+        });
     }
 
     private void LogReadOnlyAction(string command, string output)
@@ -114,31 +129,31 @@ public class DiagnosticTools
             "run_powershell",
             "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands require approval in Safe mode or run automatically in YOLO mode.");
 
-        yield return AIFunctionFactory.Create(GetSystemInfoAsync,
+        yield return CreateReadOnlyTool(GetSystemInfoAsync,
             "get_system_info",
             "Get basic system information including OS version, hostname, uptime, and hardware specs.");
 
-        yield return AIFunctionFactory.Create(GetEventLogsAsync,
+        yield return CreateReadOnlyTool(GetEventLogsAsync,
             "get_event_logs",
             "Get recent Windows Event Log entries. Supports System, Application, and Security logs.");
 
-        yield return AIFunctionFactory.Create(GetServicesAsync,
+        yield return CreateReadOnlyTool(GetServicesAsync,
             "get_services",
             "Get Windows services status. Can filter by status (Running, Stopped) or search by name.");
 
-        yield return AIFunctionFactory.Create(GetProcessesAsync,
+        yield return CreateReadOnlyTool(GetProcessesAsync,
             "get_processes",
             "Get running processes with CPU and memory usage. Can filter by name or sort by resource usage.");
 
-        yield return AIFunctionFactory.Create(GetDiskSpaceAsync,
+        yield return CreateReadOnlyTool(GetDiskSpaceAsync,
             "get_disk_space",
             "Get disk space information for all volumes including free space and health status.");
 
-        yield return AIFunctionFactory.Create(GetNetworkInfoAsync,
+        yield return CreateReadOnlyTool(GetNetworkInfoAsync,
             "get_network_info",
             "Get network adapter information including IP addresses, status, and configuration.");
 
-        yield return AIFunctionFactory.Create(GetPerformanceCountersAsync,
+        yield return CreateReadOnlyTool(GetPerformanceCountersAsync,
             "get_performance_counters",
             "Get performance counter values for CPU, memory, disk, and network metrics.");
 
