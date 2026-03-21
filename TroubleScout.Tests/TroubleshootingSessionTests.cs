@@ -205,11 +205,13 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         commands.Should().Contain("/report");
         commands.Should().Contain("/model");
         commands.Should().Contain("/mode");
+        commands.Should().Contain("/reasoning");
     }
 
     [Theory]
     [InlineData("/mode", "/mode", true)]
     [InlineData("/mode safe", "/mode", true)]
+    [InlineData("/reasoning high", "/reasoning", true)]
     [InlineData("/model", "/mode", false)]
     [InlineData("/modeX", "/mode", false)]
     [InlineData("/server srv01", "/server", true)]
@@ -277,7 +279,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Act
         var config = method!.Invoke(_session, ["localhost", null]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
@@ -1592,6 +1594,208 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSessionConfig_ShouldIncludeEarlyEventHandler()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        config.OnEvent.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void EarlyEventHandler_SessionStart_ShouldCaptureSelectedModelAndCopilotVersion()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        config.OnEvent.Should().NotBeNull();
+        config.OnEvent!(new SessionStartEvent
+        {
+            Data = new SessionStartData
+            {
+                SessionId = "session-1",
+                Version = 2,
+                Producer = "copilot",
+                CopilotVersion = "1.0.10",
+                StartTime = DateTimeOffset.UtcNow,
+                SelectedModel = "claude-sonnet-4.6",
+                ReasoningEffort = "high"
+            }
+        });
+
+        GetPrivateField<string>(_session, "_selectedModel").Should().Be("claude-sonnet-4.6");
+        GetPrivateField<string>(_session, "_copilotVersion").Should().Be("1.0.10");
+        GetPrivateField<string>(_session, "_selectedReasoningEffort").Should().Be("high");
+    }
+
+    [Fact]
+    public void EarlyEventHandler_SessionModelChange_ShouldCaptureNewModel()
+    {
+        SetPrivateField(_session, "_selectedModel", "gpt-4.1");
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        config.OnEvent.Should().NotBeNull();
+        config.OnEvent!(new SessionModelChangeEvent
+        {
+            Data = new SessionModelChangeData
+            {
+                PreviousModel = "gpt-4.1",
+                NewModel = "gpt-5-mini",
+                PreviousReasoningEffort = "medium",
+                ReasoningEffort = "high"
+            }
+        });
+
+        GetPrivateField<string>(_session, "_selectedModel").Should().Be("gpt-5-mini");
+        GetPrivateField<string>(_session, "_selectedReasoningEffort").Should().Be("high");
+    }
+
+    [Fact]
+    public void EarlyEventHandler_AssistantUsage_ShouldRecordUsageOnce()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        config.OnEvent.Should().NotBeNull();
+
+        config.OnEvent!(new AssistantUsageEvent
+        {
+            Data = new AssistantUsageData
+            {
+                Model = "gpt-4.1",
+                InputTokens = 120,
+                OutputTokens = 30
+            }
+        });
+
+        var tracker = GetPrivateField<SessionUsageTracker>(_session, "_sessionUsageTracker");
+        tracker.TotalInputTokens.Should().Be(120);
+        tracker.TotalOutputTokens.Should().Be(30);
+        tracker.TotalTurns.Should().Be(1);
+    }
+
+    [Fact]
+    public void BuildSessionConfig_WhenReasoningEffortConfiguredAndSupported_ShouldApplyReasoningEffort()
+    {
+        ExecuteWithTemporarySettingsPath(_ =>
+        {
+            AppSettingsStore.Save(new AppSettings
+            {
+                ReasoningEffort = "high"
+            });
+
+            var session = new TroubleshootingSession("localhost");
+            SetPrivateField(session, "_availableModels", new List<ModelInfo>
+            {
+                new ModelInfo
+                {
+                    Id = "gpt-5",
+                    Name = "GPT 5",
+                    SupportedReasoningEfforts = ["low", "medium", "high"],
+                    DefaultReasoningEffort = "medium",
+                    Capabilities = new ModelCapabilities
+                    {
+                        Supports = new ModelSupports
+                        {
+                            ReasoningEffort = true
+                        }
+                    }
+                }
+            });
+
+            var config = InvokeBuildSessionConfig(session, "gpt-5");
+
+            config.ReasoningEffort.Should().Be("high");
+        });
+    }
+
+    [Fact]
+    public void BuildSessionConfig_WhenReasoningEffortConfiguredButUnsupported_ShouldNotApplyReasoningEffort()
+    {
+        ExecuteWithTemporarySettingsPath(_ =>
+        {
+            AppSettingsStore.Save(new AppSettings
+            {
+                ReasoningEffort = "high"
+            });
+
+            var session = new TroubleshootingSession("localhost");
+            SetPrivateField(session, "_availableModels", new List<ModelInfo>
+            {
+                new ModelInfo
+                {
+                    Id = "gpt-4.1",
+                    Name = "GPT 4.1",
+                    SupportedReasoningEfforts = ["low"],
+                    Capabilities = new ModelCapabilities
+                    {
+                        Supports = new ModelSupports
+                        {
+                            ReasoningEffort = true
+                        }
+                    }
+                }
+            });
+
+            var config = InvokeBuildSessionConfig(session, "gpt-4.1");
+
+            config.ReasoningEffort.Should().BeNull();
+        });
+    }
+
+    [Fact]
+    public void GetStatusFields_WhenReasoningIsActive_ShouldIncludeReasoningField()
+    {
+        SetPrivateField(_session, "_selectedModel", "gpt-5");
+        SetPrivateField(_session, "_selectedReasoningEffort", "high");
+        SetPrivateField(_session, "_availableModels", new List<ModelInfo>
+        {
+            new ModelInfo
+            {
+                Id = "gpt-5",
+                Name = "GPT 5",
+                SupportedReasoningEfforts = ["low", "medium", "high"],
+                DefaultReasoningEffort = "medium",
+                Capabilities = new ModelCapabilities
+                {
+                    Supports = new ModelSupports
+                    {
+                        ReasoningEffort = true
+                    }
+                }
+            }
+        });
+
+        var fields = _session.GetStatusFields();
+
+        fields.Should().Contain(field => field.Label == "Reasoning" && field.Value == "high");
+    }
+
+    [Fact]
+    public void BuildStatusBarInfo_WhenReasoningIsActive_ShouldIncludeReasoningEffort()
+    {
+        SetPrivateField(_session, "_selectedModel", "gpt-5");
+        SetPrivateField(_session, "_selectedReasoningEffort", "high");
+        SetPrivateField(_session, "_availableModels", new List<ModelInfo>
+        {
+            new ModelInfo
+            {
+                Id = "gpt-5",
+                Name = "GPT 5",
+                SupportedReasoningEfforts = ["low", "medium", "high"],
+                DefaultReasoningEffort = "medium",
+                Capabilities = new ModelCapabilities
+                {
+                    Supports = new ModelSupports
+                    {
+                        ReasoningEffort = true
+                    }
+                }
+            }
+        });
+
+        var info = _session.BuildStatusBarInfo();
+
+        info.ReasoningEffort.Should().Be("high");
+    }
+
+    [Fact]
     public async Task PermissionHandler_FileRead_ShouldApproveInSafeMode()
     {
         // Arrange - default session is Safe mode
@@ -1669,14 +1873,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending"
-            }
-        };
+        var request = CreateShellPermissionRequest("Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending");
 
         // Act
         var result = await handler(request, new PermissionInvocation());
@@ -1691,14 +1888,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Get-Credential"
-            }
-        };
+        var request = CreateShellPermissionRequest("Get-Credential");
 
         // Act
         var result = await handler(request, new PermissionInvocation());
@@ -1711,14 +1901,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void EvaluateShellPermissionRequest_ReadOnlyPipeline_ShouldReturnSafeValidation()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending"
-            }
-        };
+        var request = CreateShellPermissionRequest("Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending");
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1735,14 +1918,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void EvaluateShellPermissionRequest_MutatingPowerShellCommand_ShouldRequireApproval()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Restart-Service -Name spooler"
-            }
-        };
+        var request = CreateShellPermissionRequest("Restart-Service -Name spooler");
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1759,14 +1935,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void EvaluateShellPermissionRequest_NonPowerShellShellCommand_ShouldReturnNull()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "cmd /c dir"
-            }
-        };
+        var request = CreateShellPermissionRequest("cmd /c dir");
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1781,14 +1950,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var longPath = new string('a', 220);
         var command = $"Get-ChildItem -Path 'C:\\{longPath}' | Select-Object Name,Length,LastWriteTime; Restart-Service -Name spooler";
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = command
-            }
-        };
+        var request = CreateShellPermissionRequest(command);
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1805,14 +1967,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void EvaluateShellPermissionRequest_NoSpacePipeline_ShouldStillLookLikePowerShell()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Get-Process|Sort-Object CPU"
-            }
-        };
+        var request = CreateShellPermissionRequest("Get-Process|Sort-Object CPU");
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1827,14 +1982,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void EvaluateShellPermissionRequest_BatchAtEchoCommand_ShouldReturnNull()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "@echo off"
-            }
-        };
+        var request = CreateShellPermissionRequest("@echo off");
 
         // Act
         var assessment = _session.EvaluateShellPermissionRequest(request);
@@ -1847,14 +1995,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void DescribePermissionRequest_ShellRequest_ShouldPreferConcreteCommand()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["command"] = "Restart-Service Spooler"
-            }
-        };
+        var request = CreateShellPermissionRequest("Restart-Service Spooler");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1867,14 +2008,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void DescribePermissionRequest_ShellRequest_ShouldUseFullCommandTextPropertyWhenAvailable()
     {
         // Arrange
-        var request = new PermissionRequest { Kind = "shell" };
-        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-        if (property == null || !property.CanWrite)
-        {
-            return;
-        }
-
-        property.SetValue(request, "Clear-RecycleBin -Force");
+        var request = CreateShellPermissionRequest("Clear-RecycleBin -Force");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1887,14 +2021,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void DescribePermissionRequest_ShellRequest_ShouldTrimReflectedCommandPreview()
     {
         // Arrange
-        var request = new PermissionRequest { Kind = "shell" };
-        var property = typeof(PermissionRequest).GetProperty("FullCommandText", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-        if (property == null || !property.CanWrite)
-        {
-            return;
-        }
-
-        property.SetValue(request, "Clear-RecycleBin -Force\r\n-Confirm:$false");
+        var request = CreateShellPermissionRequest("Clear-RecycleBin -Force\r\n-Confirm:$false");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1904,23 +2031,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public void DescribePermissionRequest_ShellRequest_ShouldReadNestedCommandPayload()
+    public void DescribePermissionRequest_ShellRequest_ShouldReadFullCommandTextFromTypedRequest()
     {
         // Arrange
-        using var commandJson = JsonDocument.Parse("""
-            {
-              "commandLine": "Clear-RecycleBin -Force"
-            }
-            """);
-
-        var request = new PermissionRequest
-        {
-            Kind = "shell",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["payload"] = commandJson.RootElement.Clone()
-            }
-        };
+        var request = CreateShellPermissionRequest("Clear-RecycleBin -Force");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1933,16 +2047,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void DescribePermissionRequest_McpRequest_ShouldIncludeServerAndTool()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "mcp",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["serverName"] = "context7",
-                ["toolName"] = "query-docs",
-                ["arguments"] = "{\"libraryId\":\"/github/copilot-sdk\"}"
-            }
-        };
+        var request = CreateMcpPermissionRequest("context7", "query-docs", "{\"libraryId\":\"/github/copilot-sdk\"}");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1956,16 +2061,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void DescribePermissionRequest_McpRequest_ShouldIgnoreEmptyArguments()
     {
         // Arrange
-        var request = new PermissionRequest
-        {
-            Kind = "mcp",
-            ExtensionData = new Dictionary<string, object>
-            {
-                ["serverName"] = "context7",
-                ["toolName"] = "query-docs",
-                ["arguments"] = "   "
-            }
-        };
+        var request = CreateMcpPermissionRequest("context7", "query-docs", "   ");
 
         // Act
         var actual = InvokeDescribePermissionRequest(request);
@@ -1981,7 +2077,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var config = InvokeCreateSystemMessage(_session, "localhost");
 
         // Assert
-        config.Content.Should().Contain("Never say you will keep monitoring");
+        GetCombinedPromptContent(config).Should().Contain("Never say you will keep monitoring");
     }
 
     [Fact]
@@ -2067,6 +2163,34 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         return (string)method!.Invoke(null, [request])!;
     }
 
+    private static PermissionRequestShell CreateShellPermissionRequest(string command)
+    {
+        return new PermissionRequestShell
+        {
+            Kind = "shell",
+            FullCommandText = command,
+            Intention = "Inspect system state",
+            Commands = [],
+            PossiblePaths = [],
+            PossibleUrls = [],
+            HasWriteFileRedirection = false,
+            CanOfferSessionApproval = false
+        };
+    }
+
+    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string toolName, object? args)
+    {
+        return new PermissionRequestMcp
+        {
+            Kind = "mcp",
+            ServerName = serverName,
+            ToolName = toolName,
+            ToolTitle = toolName,
+            Args = args,
+            ReadOnly = true
+        };
+    }
+
     private static SystemMessageConfig InvokeCreateSystemMessage(TroubleshootingSession session, string targetServer)
     {
         var method = typeof(TroubleshootingSession)
@@ -2074,6 +2198,24 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("CreateSystemMessage should exist on TroubleshootingSession");
         return (SystemMessageConfig)method!.Invoke(session, [targetServer, new List<string>()])!;
+    }
+
+    private static string GetCombinedPromptContent(SystemMessageConfig config)
+    {
+        var sections = config.Sections?
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(entry => entry.Value.Content)
+            .Where(content => !string.IsNullOrWhiteSpace(content))
+            .ToList()
+            ?? [];
+
+        if (!string.IsNullOrWhiteSpace(config.Content))
+        {
+            sections.Add(config.Content);
+        }
+
+        sections.Should().NotBeEmpty();
+        return string.Join("\n\n", sections);
     }
 
     private static string InvokeBuildPromptForExecutionSafety(string userMessage)
@@ -2439,7 +2581,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Act
         var config = method!.Invoke(_session, ["SERVER-A", additionalServers]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         // Assert — should contain connected-sessions listing
         content.Should().NotBeNullOrWhiteSpace();
@@ -2461,7 +2603,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Act — no additional servers
         var config = method!.Invoke(_session, ["SERVER-A", null]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         // Assert — should NOT contain the connected-sessions block
         content.Should().NotBeNullOrWhiteSpace();
@@ -2576,7 +2718,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Act
         var config = method!.Invoke(_session, ["test-server", null]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
@@ -2594,7 +2736,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Act
         var config = method!.Invoke(_session, ["test-server", null]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
@@ -3055,7 +3197,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         var config = method!.Invoke(session, ["localhost", new[] { "server1" }]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        var content = GetCombinedPromptContent((SystemMessageConfig)config!);
 
         content.Should().NotBeNullOrWhiteSpace();
         content.Should().Contain("## Primary JEA Endpoint: server1 (Configuration: JEA-Admins)");

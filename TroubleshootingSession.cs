@@ -88,6 +88,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private IReadOnlyList<string>? _configuredSafeCommands;
     private IReadOnlyDictionary<string, string>? _configuredSystemPromptOverrides;
     private string? _configuredSystemPromptAppend;
+    private string? _configuredReasoningEffort;
+    private string? _selectedReasoningEffort;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -116,6 +118,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/clear",
         "/settings",
         "/model",
+        "/reasoning",
         "/mode",
         "/server",
         "/jea",
@@ -345,17 +348,18 @@ public class TroubleshootingSession : IAsyncDisposable
                 safetyGuidance = customSafety;
         }
 
-        var appendSection = !string.IsNullOrWhiteSpace(_configuredSystemPromptAppend) ? $"\n\n{_configuredSystemPromptAppend}" : "";
-
-        return new SystemMessageConfig
-        {
-            Content = $"""
-            You are TroubleScout, an expert Windows Server troubleshooting assistant. 
+        var identity = """
+            You are TroubleScout, an expert Windows Server troubleshooting assistant.
             Your role is to diagnose issues on Windows servers by analyzing system data and providing actionable insights.
+            """;
 
+        var environmentContext = $"""
             ## Target Server Context
             {targetContextGuidance}
             {primaryJeaBlock}
+            """;
+
+        var toolInstructions = $"""
             ## Your Capabilities
             - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
             - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
@@ -367,14 +371,6 @@ public class TroubleshootingSession : IAsyncDisposable
             - Identify patterns, anomalies, and potential root causes
             - Provide clear, prioritized recommendations
 
-            {troubleshootingApproach}
-
-            {investigationApproach}
-            
-            {responseFormat}
-            
-            {safetyGuidance}
-
             ## Multi-Server Sessions & Double-Hop Avoidance
             - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
             - If you need data from a different server, use connect_server(serverName) to establish a DIRECT session from this client.
@@ -384,10 +380,44 @@ public class TroubleshootingSession : IAsyncDisposable
             - Always indicate which server each piece of data comes from.
             {connectedSessionsBlock}
             {jeaSessionsBlock}
-            Remember: Your goal is to help the user understand what's wrong with {effectivePrimary} and guide them to a solution, 
-            not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which 
-            server you're working on.{appendSection}
-            """
+            """;
+
+        var guidelines = $"""
+            {troubleshootingApproach}
+
+            {investigationApproach}
+
+            {responseFormat}
+            """;
+
+        var customInstructions = $"""
+            Remember: Your goal is to help the user understand what's wrong with {effectivePrimary} and guide them to a solution,
+            not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which
+            server you're working on.
+            """;
+
+        return new SystemMessageConfig
+        {
+            Mode = SystemMessageMode.Customize,
+            Content = string.IsNullOrWhiteSpace(_configuredSystemPromptAppend) ? null : _configuredSystemPromptAppend,
+            Sections = new Dictionary<string, SectionOverride>(StringComparer.OrdinalIgnoreCase)
+            {
+                [SystemPromptSections.Identity] = CreateSystemPromptSection(identity),
+                [SystemPromptSections.EnvironmentContext] = CreateSystemPromptSection(environmentContext),
+                [SystemPromptSections.ToolInstructions] = CreateSystemPromptSection(toolInstructions),
+                [SystemPromptSections.Guidelines] = CreateSystemPromptSection(guidelines),
+                [SystemPromptSections.Safety] = CreateSystemPromptSection(safetyGuidance),
+                [SystemPromptSections.CustomInstructions] = CreateSystemPromptSection(customInstructions)
+            }
+        };
+    }
+
+    private static SectionOverride CreateSystemPromptSection(string content)
+    {
+        return new SectionOverride
+        {
+            Action = SectionOverrideAction.Replace,
+            Content = content
         };
     }
 
@@ -440,6 +470,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _isGitHubCopilotAuthenticated = false;
         var settings = AppSettingsStore.Load();
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
+        ApplyReasoningEffortSetting(settings.ReasoningEffort);
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
@@ -574,6 +605,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
     public string ActiveProviderDisplayName => _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot";
+    public string? SelectedReasoningEffort => GetReasoningDisplay(GetSelectedModelInfo());
     public string CopilotVersion => _copilotVersion ?? "unknown";
     public IReadOnlyList<string> ConfiguredMcpServers => _configuredMcpServers;
     public IReadOnlyList<string> RuntimeMcpServers => _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
@@ -1768,18 +1800,108 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private ModelInfo? GetSelectedModelInfo()
     {
-        if (string.IsNullOrWhiteSpace(_selectedModel))
+        return GetModelInfo(_selectedModel);
+    }
+
+    private ModelInfo? GetModelInfo(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
         {
             return null;
         }
 
-        var selected = _availableModels.FirstOrDefault(model => model.Id.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase));
+        var selected = _availableModels.FirstOrDefault(model => model.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         if (selected != null)
         {
             return selected;
         }
 
-        return _availableModels.FirstOrDefault(model => model.Name.Equals(_selectedModel, StringComparison.OrdinalIgnoreCase));
+        return _availableModels.FirstOrDefault(model => model.Name.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? NormalizeReasoningEffort(string? reasoningEffort)
+    {
+        if (string.IsNullOrWhiteSpace(reasoningEffort))
+        {
+            return null;
+        }
+
+        var normalized = reasoningEffort.Trim().ToLowerInvariant();
+        return normalized is "auto" or "default" ? null : normalized;
+    }
+
+    private void ApplyReasoningEffortSetting(string? reasoningEffort)
+    {
+        _configuredReasoningEffort = NormalizeReasoningEffort(reasoningEffort);
+    }
+
+    private static bool SupportsReasoningEffort(ModelInfo? model) =>
+        model?.Capabilities?.Supports?.ReasoningEffort == true;
+
+    private static IReadOnlyList<string> GetSupportedReasoningEfforts(ModelInfo? model)
+    {
+        if (model?.SupportedReasoningEfforts is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        return model.SupportedReasoningEfforts
+            .Select(NormalizeReasoningEffort)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? GetDefaultReasoningEffort(ModelInfo? model) =>
+        NormalizeReasoningEffort(model?.DefaultReasoningEffort);
+
+    private string? ResolveConfiguredReasoningEffort(string? modelId)
+    {
+        var configured = NormalizeReasoningEffort(_configuredReasoningEffort);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        var model = GetModelInfo(modelId);
+        if (!SupportsReasoningEffort(model))
+        {
+            return null;
+        }
+
+        var supported = GetSupportedReasoningEfforts(model);
+        if (supported.Count == 0 || supported.Contains(configured, StringComparer.OrdinalIgnoreCase))
+        {
+            return configured;
+        }
+
+        return null;
+    }
+
+    private string? GetReasoningDisplay(ModelInfo? model)
+    {
+        if (!SupportsReasoningEffort(model))
+        {
+            return null;
+        }
+
+        var active = NormalizeReasoningEffort(_selectedReasoningEffort);
+        if (!string.IsNullOrWhiteSpace(active))
+        {
+            return active;
+        }
+
+        var configured = ResolveConfiguredReasoningEffort(model?.Id);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        var defaultReasoning = GetDefaultReasoningEffort(model);
+        return string.IsNullOrWhiteSpace(defaultReasoning)
+            ? "auto"
+            : $"auto ({defaultReasoning})";
     }
 
     private IReadOnlyList<(string Label, string Value)> GetSelectedModelDetails()
@@ -1828,6 +1950,12 @@ public class TroubleshootingSession : IAsyncDisposable
         if (capabilities.Count > 0)
         {
             details.Add(("Capabilities", string.Join(", ", capabilities)));
+        }
+
+        var reasoningDisplay = GetReasoningDisplay(model);
+        if (!string.IsNullOrWhiteSpace(reasoningDisplay))
+        {
+            details.Add(("Reasoning", reasoningDisplay));
         }
 
         if (model.SupportedReasoningEfforts is { Count: > 0 })
@@ -2187,19 +2315,9 @@ public class TroubleshootingSession : IAsyncDisposable
             subscription = _copilotSession.On(evt =>
             {
                 Interlocked.Exchange(ref lastEventTimeTicks, DateTime.UtcNow.Ticks);
-                CaptureCapabilityUsage(evt);
 
                 switch (evt)
                 {
-                    case SessionStartEvent startEvt:
-                        _selectedModel = startEvt.Data.SelectedModel;
-                        _copilotVersion = startEvt.Data.CopilotVersion;
-                        break;
-
-                    case SessionModelChangeEvent modelChangeEvt:
-                        _selectedModel = modelChangeEvt.Data.NewModel;
-                        break;
-
                     case AssistantTurnStartEvent:
                         // AI has started processing
                         if (hasStartedStreaming)
@@ -2347,13 +2465,6 @@ public class TroubleshootingSession : IAsyncDisposable
                     case SessionIdleEvent:
                         // Session finished processing
                         done.TrySetResult(true);
-                        break;
-                    case AssistantUsageEvent usageEvt:
-                        CaptureUsageMetrics(usageEvt);
-                        if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
-                        {
-                            _selectedModel = usageEvt.Data.Model;
-                        }
                         break;
                 }
             });
@@ -2579,6 +2690,13 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
+    private static void SaveReasoningEffortState(string? reasoningEffort)
+    {
+        var settings = AppSettingsStore.Load();
+        settings.ReasoningEffort = NormalizeReasoningEffort(reasoningEffort);
+        AppSettingsStore.Save(settings);
+    }
+
     private static void SaveByokSettings(bool enabled, string? baseUrl, string? apiKey)
     {
         var settings = AppSettingsStore.Load();
@@ -2606,6 +2724,7 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         var settings = AppSettingsStore.Load();
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
+        ApplyReasoningEffortSetting(settings.ReasoningEffort);
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _systemMessageConfig = CreateSystemMessage(_targetServer, _additionalExecutors.Keys.ToList());
     }
@@ -2623,6 +2742,11 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 var normalizedKey = entry.Key?.Trim();
                 if (string.IsNullOrWhiteSpace(normalizedKey) || string.IsNullOrWhiteSpace(entry.Value))
+                {
+                    continue;
+                }
+
+                if (AppSettingsStore.IsDefaultSystemPromptOverride(normalizedKey, entry.Value))
                 {
                     continue;
                 }
@@ -3001,6 +3125,88 @@ public class TroubleshootingSession : IAsyncDisposable
                     ConsoleUI.SetExecutionMode(_executionMode);
                     ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
                     ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
+                }
+
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/reasoning"))
+            {
+                var currentModel = GetSelectedModelInfo();
+                if (currentModel == null)
+                {
+                    ConsoleUI.ShowWarning("No active model is selected yet. Use /model first.");
+                    continue;
+                }
+
+                if (!SupportsReasoningEffort(currentModel))
+                {
+                    ConsoleUI.ShowInfo($"The current model '{SelectedModel}' does not expose reasoning-effort controls.");
+                    continue;
+                }
+
+                var supportedEfforts = GetSupportedReasoningEfforts(currentModel);
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                string? requestedReasoningEffort;
+
+                if (parts.Length < 2)
+                {
+                    requestedReasoningEffort = ConsoleUI.PromptReasoningEffort(
+                        _configuredReasoningEffort,
+                        supportedEfforts,
+                        GetDefaultReasoningEffort(currentModel));
+                }
+                else
+                {
+                    requestedReasoningEffort = NormalizeReasoningEffort(parts[1]);
+                    if (!string.IsNullOrWhiteSpace(requestedReasoningEffort)
+                        && supportedEfforts.Count > 0
+                        && !supportedEfforts.Contains(requestedReasoningEffort, StringComparer.OrdinalIgnoreCase))
+                    {
+                        ConsoleUI.ShowWarning($"Unsupported reasoning effort '{parts[1].Trim()}'. Supported values: {string.Join(", ", supportedEfforts)} or auto.");
+                        continue;
+                    }
+                }
+
+                var previousReasoningEffort = _configuredReasoningEffort;
+                var normalizedReasoningEffort = NormalizeReasoningEffort(requestedReasoningEffort);
+                if (string.Equals(previousReasoningEffort, normalizedReasoningEffort, StringComparison.OrdinalIgnoreCase))
+                {
+                    ConsoleUI.ShowInfo($"Reasoning remains: {GetReasoningDisplay(currentModel)}");
+                    continue;
+                }
+
+                ApplyReasoningEffortSetting(normalizedReasoningEffort);
+                SaveReasoningEffortState(normalizedReasoningEffort);
+
+                if (_copilotSession != null)
+                {
+                    var targetModel = string.IsNullOrWhiteSpace(_selectedModel) ? currentModel.Id : _selectedModel;
+                    var spinnerLabel = string.IsNullOrWhiteSpace(normalizedReasoningEffort)
+                        ? "Restoring automatic reasoning..."
+                        : $"Applying reasoning {normalizedReasoningEffort}...";
+
+                    var success = await ConsoleUI.RunWithSpinnerAsync(spinnerLabel, async updateStatus =>
+                    {
+                        updateStatus("Restarting AI session...");
+                        await _copilotSession.DisposeAsync();
+                        _copilotSession = null;
+                        return await CreateCopilotSessionAsync(targetModel, updateStatus);
+                    });
+
+                    if (success)
+                    {
+                        ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
+                    }
+                    else
+                    {
+                        ApplyReasoningEffortSetting(previousReasoningEffort);
+                        SaveReasoningEffortState(previousReasoningEffort);
+                    }
+                }
+                else
+                {
+                    ConsoleUI.ShowSuccess($"Reasoning preference saved: {GetReasoningDisplay(currentModel) ?? "auto"}");
                 }
 
                 continue;
@@ -4391,6 +4597,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         ResetStateForNewAiSession();
+        _selectedReasoningEffort = NormalizeReasoningEffort(config.ReasoningEffort);
 
         if (_configurationWarnings.Count > 0)
         {
@@ -4422,15 +4629,59 @@ public class TroubleshootingSession : IAsyncDisposable
             : null;
     }
 
+    private void HandleSessionLifecycleStateEvent(SessionEvent evt)
+    {
+        CaptureCapabilityUsage(evt);
+
+        switch (evt)
+        {
+            case SessionStartEvent startEvt:
+                if (!string.IsNullOrWhiteSpace(startEvt.Data?.SelectedModel))
+                {
+                    _selectedModel = startEvt.Data.SelectedModel;
+                }
+
+                _selectedReasoningEffort = NormalizeReasoningEffort(startEvt.Data?.ReasoningEffort);
+
+                if (!string.IsNullOrWhiteSpace(startEvt.Data?.CopilotVersion))
+                {
+                    _copilotVersion = startEvt.Data.CopilotVersion;
+                }
+
+                break;
+
+            case SessionModelChangeEvent modelChangeEvt:
+                if (!string.IsNullOrWhiteSpace(modelChangeEvt.Data?.NewModel))
+                {
+                    _selectedModel = modelChangeEvt.Data.NewModel;
+                }
+
+                _selectedReasoningEffort = NormalizeReasoningEffort(modelChangeEvt.Data?.ReasoningEffort);
+
+                break;
+
+            case AssistantUsageEvent usageEvt:
+                CaptureUsageMetrics(usageEvt);
+                if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
+                {
+                    _selectedModel = usageEvt.Data.Model;
+                }
+
+                break;
+        }
+    }
+
     internal SessionConfig BuildSessionConfig(string? model)
     {
         return new SessionConfig
         {
             Model = model,
+            ReasoningEffort = ResolveConfiguredReasoningEffort(model),
             SystemMessage = _systemMessageConfig,
             Streaming = true,
             Tools = _diagnosticTools.GetTools().ToList(),
             ClientName = "TroubleScout",
+            OnEvent = HandleSessionLifecycleStateEvent,
             OnPermissionRequest = (req, inv) =>
             {
                 // Read-only operations and our own custom tools are always auto-approved
@@ -4537,7 +4788,6 @@ public class TroubleshootingSession : IAsyncDisposable
     private static string DescribePermissionRequest(PermissionRequest request)
     {
         var kind = NormalizePermissionKind(request.Kind);
-        var extensionData = request.ExtensionData;
 
         switch (kind)
         {
@@ -4550,9 +4800,13 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             case "mcp":
             {
-                var serverName = ReadPermissionExtensionString(extensionData, "mcpServerName", "serverName", "server", "name");
-                var toolName = ReadPermissionExtensionString(extensionData, "toolName", "tool", "method");
-                var arguments = ReadPermissionExtensionString(extensionData, "arguments", "params", "input");
+                var serverName = request is PermissionRequestMcp mcpRequest
+                    ? mcpRequest.ServerName?.Trim()
+                    : ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
+                var toolName = request is PermissionRequestMcp typedMcp
+                    ? typedMcp.ToolName?.Trim() ?? typedMcp.ToolTitle?.Trim()
+                    : ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
+                var arguments = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
 
                 var target = string.IsNullOrWhiteSpace(serverName)
                     ? toolName
@@ -4571,29 +4825,37 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             case "write":
             {
-                var path = ReadPermissionExtensionString(extensionData, "path", "filePath", "target", "uri");
+                var path = request is PermissionRequestWrite writeRequest
+                    ? writeRequest.FileName?.Trim()
+                    : ReadStringProperty(request, "FileName", "Path", "FilePath", "Target", "Uri");
                 return !string.IsNullOrWhiteSpace(path)
                     ? $"Write file: {path}"
                     : "File write";
             }
             case "read":
             {
-                var path = ReadPermissionExtensionString(extensionData, "path", "filePath", "target", "uri");
+                var path = request is PermissionRequestRead readRequest
+                    ? readRequest.Path?.Trim()
+                    : ReadStringProperty(request, "Path", "FilePath", "Target", "Uri");
                 return !string.IsNullOrWhiteSpace(path)
                     ? $"Read file: {path}"
                     : "File read";
             }
             case "url":
             {
-                var url = ReadPermissionExtensionString(extensionData, "url", "uri");
+                var url = request is PermissionRequestUrl urlRequest
+                    ? urlRequest.Url?.Trim()
+                    : ReadStringProperty(request, "Url", "Uri");
                 return !string.IsNullOrWhiteSpace(url)
                     ? $"Fetch URL: {url}"
                     : "URL fetch";
             }
             case "custom-tool":
             {
-                var toolName = ReadPermissionExtensionString(extensionData, "toolName", "tool", "name");
-                var arguments = ReadPermissionExtensionString(extensionData, "arguments", "params", "input");
+                var toolName = request is PermissionRequestCustomTool customToolRequest
+                    ? customToolRequest.ToolName?.Trim()
+                    : ReadStringProperty(request, "ToolName", "Tool", "Name");
+                var arguments = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
 
                 if (!string.IsNullOrWhiteSpace(toolName) && !string.IsNullOrWhiteSpace(arguments))
                 {
@@ -4606,7 +4868,8 @@ public class TroubleshootingSession : IAsyncDisposable
             }
             default:
             {
-                var preview = ReadPermissionExtensionString(extensionData, "command", "toolName", "path", "url", "uri");
+                var preview = ReadPermissionObjectString(request, "FullCommandText", "Command", "ToolName", "Path", "Url", "Uri")
+                    ?? ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
                 return !string.IsNullOrWhiteSpace(preview)
                     ? TrimPermissionPreview(preview)
                     : $"Tool operation ({kind})";
@@ -4650,28 +4913,93 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static string? TryReadShellCommandText(PermissionRequest request, bool truncateForDisplay)
     {
-        var command = ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
-            ?? ReadRawPermissionExtensionString(request.ExtensionData,
-                "fullCommandText",
-                "command",
-                "commandLine",
-                "commandText",
-                "cmd",
-                "shellCommand",
-                "rawCommand",
-                "text")
-            ?? ReadNestedRawPermissionExtensionString(request.ExtensionData,
-                "command",
-                "payload",
-                "input",
-                "request",
-                "details");
+        var command = request is PermissionRequestShell shellRequest
+            ? shellRequest.FullCommandText?.Trim()
+            : ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
+              ?? ReadPermissionObjectRawString(request,
+                  "FullCommandText",
+                  "Command",
+                  "CommandLine",
+                  "CommandText",
+                  "Cmd",
+                  "ShellCommand",
+                  "RawCommand",
+                  "Text")
+              ?? ReadNestedPermissionObjectRawString(request,
+                  "Command",
+                  "Payload",
+                  "Input",
+                  "Request",
+                  "Details");
 
         return string.IsNullOrWhiteSpace(command)
             ? null
             : truncateForDisplay
                 ? TrimPermissionPreview(command)
                 : command.Trim();
+    }
+
+    private static string? ReadPermissionObjectString(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in propertyNames)
+        {
+            var text = ConvertPermissionExtensionValueToString(GetPropertyValue(instance, propertyName));
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return TrimPermissionPreview(text);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadPermissionObjectRawString(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in propertyNames)
+        {
+            var text = ConvertPermissionExtensionValueToRawString(GetPropertyValue(instance, propertyName));
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadNestedPermissionObjectRawString(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in propertyNames)
+        {
+            var value = GetPropertyValue(instance, propertyName);
+            if (value == null)
+            {
+                continue;
+            }
+
+            var text = ExtractNestedRawCommandText(value);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
     }
 
     private static bool LooksLikePowerShellCommand(string command)
@@ -4991,7 +5319,7 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         const int maxLength = 180;
 
-        var singleLine = TrimSingleLine(text);
+        var singleLine = Regex.Replace(text.Trim(), @"\s*[\r\n]+\s*", " ");
         return singleLine.Length <= maxLength
             ? singleLine
             : singleLine[..maxLength].TrimEnd() + "...";
@@ -5224,6 +5552,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ToolInvocations: _toolInvocationCount,
             SessionId: _sessionId)
         {
+            ReasoningEffort = GetReasoningDisplay(GetSelectedModelInfo()),
             SessionInputTokens = _sessionUsageTracker.TotalInputTokens > 0 ? _sessionUsageTracker.TotalInputTokens : null,
             SessionOutputTokens = _sessionUsageTracker.TotalOutputTokens > 0 ? _sessionUsageTracker.TotalOutputTokens : null,
             SessionCostEstimate = _sessionUsageTracker.GetCostEstimateDisplay()
@@ -5240,6 +5569,11 @@ public class TroubleshootingSession : IAsyncDisposable
         fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
         fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
+        var reasoningDisplay = GetReasoningDisplay(GetSelectedModelInfo());
+        if (!string.IsNullOrWhiteSpace(reasoningDisplay))
+        {
+            fields.Add(("Reasoning", reasoningDisplay));
+        }
         fields.Add(("Session ID", _sessionId));
 
         // -- Usage section --

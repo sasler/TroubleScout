@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluentAssertions;
+using GitHub.Copilot.SDK;
 using TroubleScout.Services;
 using Xunit;
 
@@ -45,8 +46,10 @@ public class SystemPromptTests : IDisposable
     {
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var config = InvokeCreateSystemMessage(session, "localhost");
+        var content = GetCombinedPromptContent(config);
 
+        config.Mode.Should().Be(SystemMessageMode.Customize);
         content.Should().Contain("exhaust ALL available diagnostic tools");
     }
 
@@ -55,7 +58,7 @@ public class SystemPromptTests : IDisposable
     {
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("Do NOT pause to ask the user");
     }
@@ -76,7 +79,7 @@ public class SystemPromptTests : IDisposable
 
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("Use the custom investigation workflow.");
         content.Should().NotContain("exhaust ALL available diagnostic tools");
@@ -97,7 +100,7 @@ public class SystemPromptTests : IDisposable
 
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.TrimEnd().Should().EndWith(appendText);
     }
@@ -118,7 +121,7 @@ public class SystemPromptTests : IDisposable
 
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("Use the custom troubleshooting flow.");
         content.Should().NotContain("1. **Understand the Problem**");
@@ -144,23 +147,37 @@ public class SystemPromptTests : IDisposable
 
         await using var session = new TroubleshootingSession("localhost");
 
-        var content = InvokeCreateSystemMessageContent(session, "localhost");
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("New safety text.");
         content.Should().NotContain("Old safety text.");
     }
 
-    private static string InvokeCreateSystemMessageContent(TroubleshootingSession session, string targetServer)
+    private static SystemMessageConfig InvokeCreateSystemMessage(TroubleshootingSession session, string targetServer)
     {
         var method = typeof(TroubleshootingSession)
             .GetMethod("CreateSystemMessage", BindingFlags.Instance | BindingFlags.NonPublic);
 
         method.Should().NotBeNull("CreateSystemMessage should exist on TroubleshootingSession");
 
-        var config = method!.Invoke(session, [targetServer, null]);
-        var content = config?.GetType().GetProperty("Content")?.GetValue(config) as string;
+        return (SystemMessageConfig)method!.Invoke(session, [targetServer, null])!;
+    }
 
-        content.Should().NotBeNullOrWhiteSpace();
-        return content!;
+    private static string GetCombinedPromptContent(SystemMessageConfig config)
+    {
+        var sections = config.Sections?
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(entry => entry.Value.Content)
+            .Where(content => !string.IsNullOrWhiteSpace(content))
+            .ToList()
+            ?? [];
+
+        if (!string.IsNullOrWhiteSpace(config.Content))
+        {
+            sections.Add(config.Content);
+        }
+
+        sections.Should().NotBeEmpty();
+        return string.Join("\n\n", sections);
     }
 }

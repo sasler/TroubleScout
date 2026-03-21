@@ -54,20 +54,20 @@ The repository is configured to use [`vedantmgoyal9/winget-releaser`](https://gi
 - `winget-releaser` expects a **published** GitHub Release so the release assets are publicly available.
 - Keeping WinGet submission separate from `release.yml` makes retries easier when `winget-pkgs` validation fails for reasons outside this repository.
 - The Release workflow creates the GitHub Release with `GITHUB_TOKEN`, which does **not** fan out into a second `release`-triggered workflow run. Triggering `winget.yml` from `workflow_run` avoids that GitHub Actions limitation.
-- The workflow can also be run manually via **Actions -> Publish to WinGet** using a release tag like `v1.8.2`.
+- The workflow can also be run manually via **Actions -> Publish to WinGet** using a release tag like `v1.9.0`.
 
 ### Local WinGet Validation Helper
 
 Before opening or retrying a WinGet PR, you can generate a fresh TroubleScout manifest and validate it locally:
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.2
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.9.0
 ```
 
 To also run the official `winget-pkgs` sandbox test after validation, clone `microsoft/winget-pkgs` locally and pass its path:
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.2 -RunSandbox -WingetPkgsRoot C:\src\winget-pkgs
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.9.0 -RunSandbox -WingetPkgsRoot C:\src\winget-pkgs
 ```
 
 This helper:
@@ -142,14 +142,14 @@ If the release workflow failed after the tag was created, re-run the workflow fr
 If the GitHub Release succeeded but the WinGet submission failed or did not start:
 
 - Open the **Publish to WinGet** workflow in the Actions tab.
-- Use **Run workflow** and provide the release tag (for example `v1.8.2`).
+- Use **Run workflow** and provide the release tag (for example `v1.9.0`).
 - If the workflow opens a `winget-pkgs` PR and the community validation later fails, treat that separately from TroubleScout's own release build.
 
 #### 3. Re-publish release assets (if needed)
 
 If the release completed but assets are missing or corrupted, you can recreate the release assets and upload them manually:
 
-- Rebuild the package locally as described in the build steps and create both zips (e.g., `TroubleScout-v1.0.1-win-x64.zip`, `TroubleScout-v1.0.1-win-arm64.zip`).
+- Rebuild the package locally as described in the build steps and create both zips (e.g., `TroubleScout-v1.9.0-win-x64.zip`, `TroubleScout-v1.9.0-win-arm64.zip`).
 - Upload the assets via the GitHub UI on the release page, or use the GitHub CLI:
 
 ```bash

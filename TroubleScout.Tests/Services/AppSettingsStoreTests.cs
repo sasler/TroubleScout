@@ -58,6 +58,27 @@ public class AppSettingsStoreTests : IDisposable
         // Assert
         settings.Should().NotBeNull();
         settings.LastModel.Should().BeNull();
+        settings.SystemPromptOverrides.Should().NotBeNull();
+        settings.SystemPromptOverrides.Should().ContainKeys("investigation_approach", "response_format", "troubleshooting_approach", "safety");
+    }
+
+    [Fact]
+    public void Load_WhenSystemPromptOverridesMissing_ShouldPersistEditableDefaults()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "LastModel": "gpt-4.1"
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+
+        settings.SystemPromptOverrides.Should().NotBeNull();
+        settings.SystemPromptOverrides.Should().ContainKeys("investigation_approach", "response_format", "troubleshooting_approach", "safety");
+        json.Should().Contain("\"SystemPromptOverrides\"");
+        json.Should().Contain("\"investigation_approach\"");
     }
 
     [Fact]
@@ -93,6 +114,7 @@ public class AppSettingsStoreTests : IDisposable
         var settings = new AppSettings
         {
             LastModel = "gpt-4.1",
+            ReasoningEffort = "high",
             UseByokOpenAi = true,
             ByokOpenAiBaseUrl = "https://proxy.example/v1",
             ByokOpenAiApiKey = "sk-test"
@@ -105,6 +127,7 @@ public class AppSettingsStoreTests : IDisposable
         // Assert
         loaded.Should().NotBeNull();
         loaded.LastModel.Should().Be("gpt-4.1");
+        loaded.ReasoningEffort.Should().Be("high");
         loaded.UseByokOpenAi.Should().BeTrue();
         loaded.ByokOpenAiBaseUrl.Should().Be("https://proxy.example/v1");
         loaded.ByokOpenAiApiKey.Should().Be("sk-test");

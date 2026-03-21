@@ -330,6 +330,7 @@ public class ConsoleUITests
         var empty = StatusBarInfo.Empty;
         empty.Model.Should().BeNull();
         empty.Provider.Should().BeNull();
+        empty.ReasoningEffort.Should().BeNull();
         empty.InputTokens.Should().BeNull();
         empty.OutputTokens.Should().BeNull();
         empty.TotalTokens.Should().BeNull();
@@ -365,7 +366,10 @@ public class ConsoleUITests
             OutputTokens: 567,
             TotalTokens: 1801,
             ToolInvocations: 3,
-            SessionId: "TS-test");
+            SessionId: "TS-test")
+        {
+            ReasoningEffort = "high"
+        };
 
         AnsiConsole.Record();
         ConsoleUI.WriteStatusBar(info);
@@ -373,6 +377,7 @@ public class ConsoleUITests
 
         output.Should().Contain("gpt-4.1");
         output.Should().Contain("GitHub Copilot");
+        output.Should().Contain("high");
         output.Should().Contain("1.2k");
         output.Should().Contain("567");
         output.Should().Contain("3");

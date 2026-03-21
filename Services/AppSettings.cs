@@ -7,6 +7,7 @@ namespace TroubleScout.Services;
 public sealed class AppSettings
 {
     public string? LastModel { get; set; }
+    public string? ReasoningEffort { get; set; }
     public bool UseByokOpenAi { get; set; }
     public string? ByokOpenAiBaseUrl { get; set; }
     public string? ByokOpenAiApiKey { get; set; }
@@ -43,6 +44,69 @@ public static class AppSettingsStore
         "Format-Table",
         "Format-Wide"
     ];
+
+    private const string DefaultInvestigationApproach = """
+        ## Investigation Approach
+        - When investigating an issue, exhaust ALL available diagnostic tools and data sources before asking the user for more information or permission to continue
+        - Do NOT pause to ask the user if you should continue investigating — keep working until you have a clear diagnosis or have exhausted all available tools
+        - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+        - Present your complete findings, analysis, and recommendations in one comprehensive response rather than stopping at each step to ask for permission
+        - If one diagnostic approach yields no results, try alternative approaches before concluding
+        - Gather data from ALL relevant sources (event logs, services, processes, performance counters, disk, network) in a single investigation pass
+        """;
+
+    private const string DefaultResponseFormat = """
+        ## Response Format
+        - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing <server>...")
+        - Always format your response as Markdown
+        - Use short Markdown sections and bullet lists to keep output readable
+        - Separate distinct steps/findings with blank lines
+        - For tabular data, use compact Markdown tables (pipe syntax) and avoid fixed-width ASCII-art table alignment
+        - If a table would be too wide, reduce columns or use a concise bullet list instead of forcing alignment
+        - Be concise but thorough
+        - Use bullet points for lists
+        - Highlight critical findings with **bold**
+        - Use fenced code blocks for commands or command output when relevant
+        - For remediation commands (non-Get commands), explain what they do and why they're needed
+        - Always explain your reasoning
+        - When presenting diagnostic data, include the source server name in your explanation
+        """;
+
+    private const string DefaultTroubleshootingApproach = """
+        ## Troubleshooting Approach
+        1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
+        2. **Gather Data**: Use the relevant diagnostic tools to collect information from the active target server or chosen JEA session
+        3. **Verify Source**: Confirm the data comes from the intended server or session before drawing conclusions
+        4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
+        5. **Diagnose**: Form hypotheses about the root cause based on evidence
+        6. **Recommend**: Provide clear, actionable next steps
+        """;
+
+    private const string DefaultSafetyGuidance = """
+        ## Safety
+        - Only read-only Get-* commands execute automatically
+        - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
+        - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
+        - In YOLO mode, remediation commands can execute without confirmation
+        - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+        - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
+        - Never claim a command was executed unless run_powershell returned execution output
+        - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
+        - If no tool was executed, clearly state that no command has been run yet
+        - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
+        - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
+        - Never suggest commands that could cause data loss without clear warnings
+        - Always consider the impact of recommended actions
+        """;
+
+    internal static IReadOnlyDictionary<string, string> DefaultSystemPromptOverrides { get; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["investigation_approach"] = DefaultInvestigationApproach,
+            ["response_format"] = DefaultResponseFormat,
+            ["troubleshooting_approach"] = DefaultTroubleshootingApproach,
+            ["safety"] = DefaultSafetyGuidance
+        };
     
     public static string SettingsPath
     {
@@ -114,6 +178,7 @@ public static class AppSettingsStore
         var persisted = new AppSettings
         {
             LastModel = settings.LastModel,
+            ReasoningEffort = settings.ReasoningEffort,
             UseByokOpenAi = settings.UseByokOpenAi,
             ByokOpenAiBaseUrl = settings.ByokOpenAiBaseUrl,
             ByokOpenAiApiKey = null,
@@ -136,13 +201,74 @@ public static class AppSettingsStore
     {
         changed = false;
 
+        var normalizedReasoningEffort = string.IsNullOrWhiteSpace(settings.ReasoningEffort)
+            ? null
+            : settings.ReasoningEffort.Trim().ToLowerInvariant();
+
+        if (normalizedReasoningEffort is "auto" or "default")
+        {
+            normalizedReasoningEffort = null;
+        }
+
+        if (!string.Equals(settings.ReasoningEffort, normalizedReasoningEffort, StringComparison.Ordinal))
+        {
+            settings.ReasoningEffort = normalizedReasoningEffort;
+            changed = true;
+        }
+
         if (settings.SafeCommands == null)
         {
             settings.SafeCommands = DefaultSafeCommands.ToList();
             changed = true;
         }
 
+        if (settings.SystemPromptOverrides == null)
+        {
+            settings.SystemPromptOverrides = DefaultSystemPromptOverrides.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        else
+        {
+            var normalizedOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in settings.SystemPromptOverrides)
+            {
+                if (string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
+                {
+                    continue;
+                }
+
+                normalizedOverrides[entry.Key.Trim()] = entry.Value;
+            }
+
+            foreach (var (key, value) in DefaultSystemPromptOverrides)
+            {
+                if (!normalizedOverrides.ContainsKey(key))
+                {
+                    normalizedOverrides[key] = value;
+                    changed = true;
+                }
+            }
+
+            if (normalizedOverrides.Count != settings.SystemPromptOverrides.Count)
+            {
+                changed = true;
+            }
+
+            settings.SystemPromptOverrides = normalizedOverrides;
+        }
+
         return settings;
+    }
+
+    internal static bool IsDefaultSystemPromptOverride(string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return DefaultSystemPromptOverrides.TryGetValue(key.Trim(), out var defaultValue)
+            && string.Equals(defaultValue.Trim(), value.Trim(), StringComparison.Ordinal);
     }
 
     private static string? TryEncrypt(string? plainText)

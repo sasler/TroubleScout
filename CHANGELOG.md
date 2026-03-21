@@ -2,6 +2,26 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.9.0] - 2026-03-21
+
+### ✨ New Features
+
+- 🚀 **Upgrade to GitHub.Copilot.SDK `0.2.0`** - TroubleScout now uses the latest Copilot SDK release, including earlier session lifecycle hooks and the newer system-prompt customization model.
+- 🧠 **First-class reasoning control** - compatible models now support a persisted `/reasoning` command so users can choose an explicit reasoning effort (or return to automatic behavior) and see the active setting in model details, `/status`, and the post-response status bar.
+- ✏️ **Pre-populated editable prompt defaults** - `settings.json` is now seeded with the built-in prompt sections (`investigation_approach`, `response_format`, `troubleshooting_approach`, `safety`) so users can edit the current prompt guidance directly instead of starting from empty keys.
+- ⚡ **Faster read-only diagnostic flow** - the built-in `get_*` diagnostic helpers now opt into SDK `skip_permission`, so routine data collection no longer incurs extra Copilot permission prompts.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Fix SDK `0.2.0` permission compatibility** - TroubleScout now handles the SDK's typed `PermissionRequest` hierarchy instead of relying on the removed extension-data payload.
+- 🐛 **Fix multiline shell previews** - permission previews now collapse embedded newlines into a single readable command preview instead of truncating after the first line.
+- 🐛 **Fix doubled usage totals** - session token and cost totals are no longer double-counted after the new early-event wiring.
+
+### 📝 Documentation & UX
+
+- 📝 **Refresh README for reasoning and prompt editing** - documented the new `/reasoning` control, clarified that `/settings` writes seeded prompt defaults, and refreshed the interactive command reference.
+- 📝 **Update release-process examples** - versioned WinGet validation and release-tag examples now reference the `v1.9.0` release line.
+
 ## [v1.8.3] - 2026-03-18
 
 ### ✨ New Features

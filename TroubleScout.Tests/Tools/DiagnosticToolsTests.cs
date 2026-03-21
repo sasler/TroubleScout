@@ -62,6 +62,44 @@ public class DiagnosticToolsTests : IDisposable
         });
     }
 
+    [Fact]
+    public void GetTools_ReadOnlyHelpers_ShouldSkipPermissionPrompts()
+    {
+        var tools = _diagnosticTools.GetTools().ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var toolName in new[]
+        {
+            "get_system_info",
+            "get_event_logs",
+            "get_services",
+            "get_processes",
+            "get_disk_space",
+            "get_network_info",
+            "get_performance_counters"
+        })
+        {
+            tools[toolName].AdditionalProperties.Should().ContainKey("skip_permission");
+            tools[toolName].AdditionalProperties["skip_permission"].Should().Be(true);
+        }
+    }
+
+    [Fact]
+    public void GetTools_StateChangingHelpers_ShouldRequirePermissionFlow()
+    {
+        var tools = _diagnosticTools.GetTools().ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var toolName in new[]
+        {
+            "run_powershell",
+            "connect_server",
+            "connect_jea_server",
+            "close_server_session"
+        })
+        {
+            tools[toolName].AdditionalProperties.Should().NotContainKey("skip_permission");
+        }
+    }
+
     #endregion
 
     #region Target Verification Tests

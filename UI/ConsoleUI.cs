@@ -29,6 +29,7 @@ public sealed record StatusBarInfo(
     int ToolInvocations,
     string? SessionId)
 {
+    public string? ReasoningEffort { get; init; }
     public long? SessionInputTokens { get; init; }
     public long? SessionOutputTokens { get; init; }
     public string? SessionCostEstimate { get; init; }
@@ -370,6 +371,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
+        commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
         commandTable.AddRow("[cyan]/jea[/] [grey][[server]] [[configurationName]][/]", "Connect to a JEA constrained endpoint");
@@ -1292,6 +1294,11 @@ public static class ConsoleUI
             parts.Add($"[grey]Provider:[/] [blue]{Markup.Escape(info.Provider)}[/]");
         }
 
+        if (!string.IsNullOrWhiteSpace(info.ReasoningEffort))
+        {
+            parts.Add($"[grey]Reasoning:[/] [cyan]{Markup.Escape(info.ReasoningEffort)}[/]");
+        }
+
         if (info.InputTokens.HasValue || info.OutputTokens.HasValue)
         {
             var inStr = info.InputTokens.HasValue ? FormatCompactTokenCount(info.InputTokens.Value) : "?";
@@ -1535,6 +1542,35 @@ public static class ConsoleUI
         return entries.FirstOrDefault(entry =>
             entry.ModelId.Equals(selectedChoice.ModelId, StringComparison.OrdinalIgnoreCase)
             && entry.Source == selectedChoice.SourceHint);
+    }
+
+    public static string? PromptReasoningEffort(
+        string? currentReasoningEffort,
+        IReadOnlyList<string> supportedEfforts,
+        string? defaultReasoningEffort)
+    {
+        if (Console.IsInputRedirected || supportedEfforts.Count == 0)
+        {
+            return currentReasoningEffort;
+        }
+
+        var automaticLabel = string.IsNullOrWhiteSpace(defaultReasoningEffort)
+            ? "Automatic"
+            : $"Automatic (default: {defaultReasoningEffort})";
+
+        var choices = new List<string> { automaticLabel };
+        choices.AddRange(supportedEfforts);
+
+        var prompt = new SelectionPrompt<string>()
+            .Title("[bold cyan]Select reasoning effort[/]")
+            .PageSize(Math.Min(choices.Count, 8))
+            .AddChoices(choices)
+            .UseConverter(choice => choice == automaticLabel
+                ? $"[green]{Markup.Escape(choice)}[/]"
+                : $"[cyan]{Markup.Escape(choice)}[/]");
+
+        var selected = AnsiConsole.Prompt(prompt);
+        return selected == automaticLabel ? null : selected;
     }
 
     private static ModelPickerChoice? PromptModelSelectionCore(string currentModel, IReadOnlyList<ModelPickerChoice> choices)
