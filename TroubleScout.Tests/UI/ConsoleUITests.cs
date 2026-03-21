@@ -62,6 +62,74 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void PromptModelSwitchBehavior_WhenInputRedirected_ShouldDefaultToCleanSession()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => true;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = null;
+
+            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
+
+            result.Should().Be(TroubleshootingSession.ModelSwitchBehavior.CleanSession);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void PromptModelSwitchBehavior_WhenOverrideChoosesSecondOpinion_ShouldReturnSecondOpinion()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => false;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = (_, choices) =>
+                choices.Single(choice => choice.Contains("second opinion", StringComparison.OrdinalIgnoreCase));
+
+            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
+
+            result.Should().Be(TroubleshootingSession.ModelSwitchBehavior.SecondOpinion);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void PromptModelSwitchBehavior_WhenOverrideChoosesCancel_ShouldReturnNull()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => false;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = (_, choices) =>
+                choices.Single(choice => choice.Contains("Cancel", StringComparison.OrdinalIgnoreCase));
+
+            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
+
+            result.Should().BeNull();
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
     public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
     {
         // Arrange & Act

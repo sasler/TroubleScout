@@ -2,6 +2,21 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.9.1] - 2026-03-21
+
+### ✨ New Features
+
+- 🤝 **Second-opinion model switching** - after choosing a different model in `/model`, TroubleScout can now either start a new clean session or carry the recorded session transcript, assistant replies, and tool actions into the new model for a second opinion.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Keep clean model switches truly clean** - choosing the clean-session path during `/model` now clears the recorded conversation history instead of only recreating the SDK session.
+- 🐛 **Restore ESC cancellation for second opinions** - second-opinion handoff requests now use the same interactive ESC cancellation flow as normal prompts, so long-running follow-up analysis can still be cancelled cleanly.
+
+### 📝 Documentation & UX
+
+- 📝 **Update `/model` help and README** - documented the new session handoff choice in the interactive command reference and model-selection section.
+
 ## [v1.9.0] - 2026-03-21
 
 ### ✨ New Features

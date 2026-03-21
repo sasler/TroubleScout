@@ -869,6 +869,45 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSecondOpinionPrompt_ShouldIncludePriorConversationAndActions()
+    {
+        // Act
+        var prompt = BuildSecondOpinionPromptViaReflection(
+            "gpt-4.1",
+            "claude-sonnet-4.6",
+            (
+                Prompt: "The print spooler keeps stopping.",
+                Reply: "The spooler looks unstable. Check dependent services and recent crashes.",
+                Actions:
+                [
+                    (
+                        Command: "Get-Service Spooler",
+                        Output: "Status   Name               DisplayName\n------   ----               -----------\nStopped  Spooler            Print Spooler",
+                        SafetyApproval: "Approved",
+                        Source: "PowerShell",
+                        Target: "localhost"
+                    )
+                ]
+            ),
+            (
+                Prompt: "Also check the event logs.",
+                Reply: "Look for Service Control Manager events around the stop time.",
+                Actions: []
+            ));
+
+        // Assert
+        prompt.Should().Contain("second opinion");
+        prompt.Should().Contain("gpt-4.1");
+        prompt.Should().Contain("claude-sonnet-4.6");
+        prompt.Should().Contain("The print spooler keeps stopping.");
+        prompt.Should().Contain("Check dependent services");
+        prompt.Should().Contain("Get-Service Spooler");
+        prompt.Should().Contain("Print Spooler");
+        prompt.Should().Contain("Also check the event logs.");
+        prompt.Should().Contain("Service Control Manager");
+    }
+
+    [Fact]
     public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
     {
         // Arrange
@@ -936,6 +975,62 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         promptArray.SetValue(promptEntry, 0);
 
         return (string)buildMethod!.Invoke(null, [promptArray])!;
+    }
+
+    private static string BuildSecondOpinionPromptViaReflection(
+        string previousModel,
+        string newModel,
+        params (string Prompt, string Reply, (string Command, string Output, string SafetyApproval, string Source, string Target)[] Actions)[] prompts)
+    {
+        var sessionType = typeof(TroubleshootingSession);
+        var actionType = sessionType.GetNestedType("ReportActionEntry", BindingFlags.NonPublic);
+        var promptType = sessionType.GetNestedType("ReportPromptEntry", BindingFlags.NonPublic);
+        var buildMethod = sessionType.GetMethod("BuildSecondOpinionPrompt", BindingFlags.Static | BindingFlags.NonPublic);
+
+        actionType.Should().NotBeNull();
+        promptType.Should().NotBeNull();
+        buildMethod.Should().NotBeNull("BuildSecondOpinionPrompt should exist on TroubleshootingSession");
+
+        var actionCtor = actionType!
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Single(ctor => ctor.GetParameters().Length == 6);
+        var promptCtor = promptType!
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Single(ctor => ctor.GetParameters().Length == 4);
+
+        var promptListType = typeof(List<>).MakeGenericType(promptType!);
+        var promptList = Activator.CreateInstance(promptListType)!;
+        var addPromptMethod = promptListType.GetMethod("Add")!;
+
+        foreach (var prompt in prompts)
+        {
+            var actionListType = typeof(List<>).MakeGenericType(actionType);
+            var actionList = Activator.CreateInstance(actionListType)!;
+            var addActionMethod = actionListType.GetMethod("Add")!;
+
+            foreach (var action in prompt.Actions)
+            {
+                var actionEntry = actionCtor.Invoke([
+                    DateTimeOffset.Now,
+                    action.Target,
+                    action.Command,
+                    action.Output,
+                    action.SafetyApproval,
+                    action.Source
+                ]);
+                addActionMethod.Invoke(actionList, [actionEntry]);
+            }
+
+            var promptEntry = promptCtor.Invoke([
+                DateTimeOffset.Now,
+                prompt.Prompt,
+                actionList,
+                prompt.Reply
+            ]);
+            addPromptMethod.Invoke(promptList, [promptEntry]);
+        }
+
+        return (string)buildMethod!.Invoke(null, [previousModel, newModel, promptList])!;
     }
 
     private static bool InvokeIsCurrentModel(TroubleshootingSession session, string modelId)

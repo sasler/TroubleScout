@@ -48,6 +48,8 @@ public static class ConsoleUI
     private const int MaxPromptInputLength = 4000;
     private static readonly List<string> _promptHistory = new();
     private const int MaxPromptHistorySize = 100;
+    internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
+    internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -370,7 +372,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
-        commandTable.AddRow("[cyan]/model[/]", "Choose another AI model");
+        commandTable.AddRow("[cyan]/model[/]", "Choose another AI model and session handoff mode");
         commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
         commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
@@ -1544,12 +1546,61 @@ public static class ConsoleUI
             && entry.Source == selectedChoice.SourceHint);
     }
 
+    internal static TroubleshootingSession.ModelSwitchBehavior? PromptModelSwitchBehavior(
+        string currentModel,
+        string selectedModel)
+    {
+        if (IsInputRedirectedResolver())
+        {
+            return TroubleshootingSession.ModelSwitchBehavior.CleanSession;
+        }
+
+        const string cleanLabel = "Start a new clean session";
+        const string secondOpinionLabel = "Ask for a second opinion using the current context";
+        const string cancelLabel = "Cancel";
+        IReadOnlyList<string> choices = [cleanLabel, secondOpinionLabel, cancelLabel];
+
+        var title =
+            $"[bold cyan]Switch to {Markup.Escape(selectedModel)}[/]{Environment.NewLine}" +
+            $"[grey]Current model:[/] [cyan]{Markup.Escape(currentModel)}[/]{Environment.NewLine}" +
+            "[grey]Choose what to do with the current conversation context.[/]";
+
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            var selected = ModelSwitchBehaviorPromptOverride != null
+                ? ModelSwitchBehaviorPromptOverride(title, choices)
+                : AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title(title)
+                        .PageSize(3)
+                        .AddChoices(choices)
+                        .UseConverter(choice => choice switch
+                        {
+                            cleanLabel => $"[green]{Markup.Escape(choice)}[/]",
+                            secondOpinionLabel => $"[cyan]{Markup.Escape(choice)}[/]",
+                            _ => $"[grey]{Markup.Escape(choice)}[/]"
+                        }));
+
+            return selected switch
+            {
+                cleanLabel => TroubleshootingSession.ModelSwitchBehavior.CleanSession,
+                secondOpinionLabel => TroubleshootingSession.ModelSwitchBehavior.SecondOpinion,
+                _ => null
+            };
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
     public static string? PromptReasoningEffort(
         string? currentReasoningEffort,
         IReadOnlyList<string> supportedEfforts,
         string? defaultReasoningEffort)
     {
-        if (Console.IsInputRedirected || supportedEfforts.Count == 0)
+        if (IsInputRedirectedResolver() || supportedEfforts.Count == 0)
         {
             return currentReasoningEffort;
         }
@@ -1580,7 +1631,7 @@ public static class ConsoleUI
             return null;
         }
 
-        if (Console.IsInputRedirected)
+        if (IsInputRedirectedResolver())
         {
             return choices.FirstOrDefault(choice => choice.IsCurrent) ?? choices[0];
         }

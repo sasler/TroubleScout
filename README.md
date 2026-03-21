@@ -181,6 +181,7 @@ In the interactive TUI, `/model` now:
 - Shows BYOK pricing when the provider exposes pricing metadata in `/models`
 - Falls back to LiteLLM-based price estimates when API pricing is unavailable (shown with `~` prefix)
 - Lets you press `ESC` to keep the current model and return to the prompt
+- After choosing a different model, lets you either start a clean session or carry the full recorded session context forward for a second opinion
 - Shows a confirmation panel with provider, rate/pricing, context window, and capability details after selection
 - Uses full terminal width for consistent layout
 
@@ -288,7 +289,7 @@ When approval is required, a three-option prompt is shown: **Yes** (execute), **
 | `/status`              | Show provider, model, usage, and capability details   |
 | `/clear`               | Start a new AI session                                |
 | `/settings`            | Open `settings.json`, then reload prompt/safety config |
-| `/model`               | Choose another model/provider                         |
+| `/model`               | Choose another model/provider and session handoff mode |
 | `/reasoning`           | Set or clear reasoning effort for supported models    |
 | `/mode <safe|yolo>`    | Change PowerShell execution mode                      |
 | `/server <servers>`    | Connect to one or more additional servers             |
