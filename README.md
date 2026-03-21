@@ -26,9 +26,11 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **ESC Cancellation**: Press ESC at any time to cancel the current AI turn; spinner shows `(ESC to cancel)` as a persistent hint
 - **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
 - **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
+- **Reasoning Control**: Use `/reasoning` with compatible models to persist a preferred reasoning effort or switch back to automatic reasoning
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
 - **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing (with LiteLLM fallback estimates), context-window metadata, and a clearer selected-model summary
 - **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
+- **Editable Prompt Defaults**: `/settings` creates a ready-to-edit `settings.json` with the built-in system prompt sections pre-populated
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
 ## Prerequisites
@@ -100,7 +102,7 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 **Validate the WinGet manifest for a release locally:**
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.8.2
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.9.0
 ```
 
 ## Usage
@@ -182,6 +184,16 @@ In the interactive TUI, `/model` now:
 - Shows a confirmation panel with provider, rate/pricing, context window, and capability details after selection
 - Uses full terminal width for consistent layout
 
+### Reasoning Effort
+
+For models that advertise reasoning-effort support, TroubleScout now exposes a dedicated `/reasoning` command:
+
+- `/reasoning` opens an interactive picker
+- `/reasoning high` (or another supported value) saves a specific effort level
+- `/reasoning auto` clears the override and returns to automatic/default model behavior
+
+The active reasoning setting is shown in the selected-model summary, `/status`, and the post-response status bar.
+
 ### Session Cost Tracking
 
 After each AI response, the status bar shows cumulative session usage:
@@ -191,7 +203,7 @@ After each AI response, the status bar shows cumulative session usage:
 
 ### Customizing System Prompts
 
-System prompt sections can be customized via the `/settings` configuration file:
+System prompt sections can be customized via the `/settings` configuration file. When the file is first created or normalized, TroubleScout now writes the built-in prompt sections into `settings.json` so you can edit them in place:
 
 ```json
 {
@@ -270,12 +282,23 @@ When approval is required, a three-option prompt is shown: **Yes** (execute), **
 
 ## Interactive Commands
 
-| Command              | Description                                 |
-| -------------------- | ------------------------------------------- |
-| `/exit` or `/quit`   | End the session                             |
-| `/clear`             | Clear the screen                            |
-| `/status`            | Show connection status                      |
-| `/login`             | Run Copilot login from the app              |
+| Command                | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `/help`                | Show the full interactive command reference           |
+| `/status`              | Show provider, model, usage, and capability details   |
+| `/clear`               | Start a new AI session                                |
+| `/settings`            | Open `settings.json`, then reload prompt/safety config |
+| `/model`               | Choose another model/provider                         |
+| `/reasoning`           | Set or clear reasoning effort for supported models    |
+| `/mode <safe|yolo>`    | Change PowerShell execution mode                      |
+| `/server <servers>`    | Connect to one or more additional servers             |
+| `/jea [server] [name]` | Connect to a JEA endpoint                             |
+| `/login`               | Run Copilot login from the app                        |
+| `/byok ...`            | Configure OpenAI-compatible BYOK mode                 |
+| `/capabilities`        | Show configured and used MCP servers / skills         |
+| `/history`             | Show PowerShell command history                       |
+| `/report`              | Generate and open the HTML session report             |
+| `/exit` or `/quit`     | End the session                                       |
 
 Use `/byok env <base-url> [model]` (or `/byok <api-key> <base-url> [model]`) to enable OpenAI-compatible BYOK. TroubleScout fetches available models from that endpoint and uses the same model picker as `/model`.
 
@@ -430,6 +453,6 @@ All pull requests require:
 
 ## Release Process
 
-Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the **Release** workflow completes. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.8.2` release flow and beyond.
+Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the **Release** workflow completes. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.9.0` release flow and beyond.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
