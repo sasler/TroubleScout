@@ -33,6 +33,11 @@ public class TroubleshootingSession : IAsyncDisposable
         public string DetailSummary { get; init; } = string.Empty;
         public bool IsCurrent { get; init; }
     }
+    internal enum ModelSwitchBehavior
+    {
+        CleanSession,
+        SecondOpinion
+    }
     internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
     private sealed record ByokModelDiscoveryResult(List<ModelInfo> Models, Dictionary<string, ByokPriceInfo> PricingByModelId);
     internal sealed record ShellPermissionAssessment(string Command, CommandValidation Validation, string PromptReason, string ImpactText);
@@ -42,6 +47,12 @@ public class TroubleshootingSession : IAsyncDisposable
     private const int MinSupportedNodeMajorVersion = 24;
     private const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
+    private const int MaxSecondOpinionTurns = 8;
+    private const int MaxSecondOpinionPromptChars = 24_000;
+    private const int MaxSecondOpinionUserPromptChars = 2_000;
+    private const int MaxSecondOpinionReplyChars = 3_000;
+    private const int MaxSecondOpinionCommandChars = 800;
+    private const int MaxSecondOpinionToolOutputChars = 3_000;
 
     internal static Func<string> CopilotCliPathResolver { get; set; } = GetCopilotCliPath;
     internal static Func<string, bool> FileExistsResolver { get; set; } = File.Exists;
@@ -2268,6 +2279,12 @@ public class TroubleshootingSession : IAsyncDisposable
     /// Send a message and process the response with streaming
     /// </summary>
     public async Task<bool> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default)
+        => await SendMessageAsync(userMessage, promptIndexOverride: null, cancellationToken);
+
+    private async Task<bool> SendMessageAsync(
+        string userMessage,
+        int? promptIndexOverride,
+        CancellationToken cancellationToken = default)
     {
         if (_copilotSession == null)
         {
@@ -2302,7 +2319,7 @@ public class TroubleshootingSession : IAsyncDisposable
             int promptIndex;
             lock (_reportLock)
             {
-                promptIndex = _lastPromptIndex;
+                promptIndex = promptIndexOverride ?? _lastPromptIndex;
             }
             
             // Create a live thinking indicator (manually disposed before recursive calls)
@@ -3247,15 +3264,35 @@ public class TroubleshootingSession : IAsyncDisposable
                     continue;
                 }
 
-                var selectedEntry = ConsoleUI.PromptModelSelection(SelectedModel, selectionEntries);
+                var currentModel = SelectedModel;
+                var selectedEntry = ConsoleUI.PromptModelSelection(currentModel, selectionEntries);
                 if (selectedEntry == null)
                 {
-                    ConsoleUI.ShowInfo($"Keeping current model: {SelectedModel}");
+                    ConsoleUI.ShowInfo($"Keeping current model: {currentModel}");
                     continue;
                 }
 
                 if (!IsCurrentModelAndSource(selectedEntry))
                 {
+                    var switchBehavior = ModelSwitchBehavior.CleanSession;
+                    var priorConversation = Array.Empty<ReportPromptEntry>();
+
+                    if (HasRecordedConversationHistory())
+                    {
+                        var behaviorChoice = ConsoleUI.PromptModelSwitchBehavior(currentModel, selectedEntry.DisplayName);
+                        if (!behaviorChoice.HasValue)
+                        {
+                            ConsoleUI.ShowInfo($"Keeping current model: {currentModel}");
+                            continue;
+                        }
+
+                        switchBehavior = behaviorChoice.Value;
+                        if (switchBehavior == ModelSwitchBehavior.SecondOpinion)
+                        {
+                            priorConversation = GetRecordedPromptSnapshot().ToArray();
+                        }
+                    }
+
                     var displayName = selectedEntry.DisplayName;
                     var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
                     {
@@ -3264,7 +3301,19 @@ public class TroubleshootingSession : IAsyncDisposable
                     
                     if (success)
                     {
+                        if (switchBehavior == ModelSwitchBehavior.CleanSession)
+                        {
+                            ClearRecordedConversationHistory();
+                        }
+
                         ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
+
+                        if (switchBehavior == ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
+                        {
+                            ConsoleUI.ShowInfo($"Asking {SelectedModel} for a second opinion using the current session context...");
+                            await RunInteractiveCancelableAiOperationAsync(token =>
+                                RequestSecondOpinionAsync(currentModel, SelectedModel, priorConversation, token));
+                        }
                     }
                 }
                 continue;
@@ -3408,47 +3457,48 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             // Send message to Copilot
-            RecordPrompt(input);
+            var promptIndex = RecordPrompt(input);
+            await RunInteractiveCancelableAiOperationAsync(token => SendMessageAsync(input, promptIndex, token));
+        }
+    }
 
-            var escCts = new CancellationTokenSource();
+    private async Task<T> RunInteractiveCancelableAiOperationAsync<T>(Func<CancellationToken, Task<T>> operation)
+    {
+        using var escCts = new CancellationTokenSource();
+        var escTask = Task.Run(async () =>
+        {
             try
             {
-                var escTask = Task.Run(async () =>
+                while (!escCts.Token.IsCancellationRequested)
                 {
-                    try
+                    if (Console.KeyAvailable && !LiveThinkingIndicator.IsApprovalInProgress)
                     {
-                        while (!escCts.Token.IsCancellationRequested)
+                        var key = Console.ReadKey(intercept: true);
+                        if (key.Key == ConsoleKey.Escape)
                         {
-                            if (Console.KeyAvailable && !LiveThinkingIndicator.IsApprovalInProgress)
-                            {
-                                var k = Console.ReadKey(intercept: true);
-                                if (k.Key == ConsoleKey.Escape)
-                                {
-                                    escCts.Cancel();
-                                    break;
-                                }
-                            }
-                            await Task.Delay(50, escCts.Token).ConfigureAwait(false);
+                            escCts.Cancel();
+                            break;
                         }
                     }
-                    catch (OperationCanceledException)
-                    {
-                        // Expected when AI finishes before ESC
-                    }
-                }, CancellationToken.None);
 
-                await SendMessageAsync(input, escCts.Token);
-
-                // Stop ESC polling if AI finished before ESC was pressed
-                escCts.Cancel();
-                // (no ResetConversationAsync needed - SDK cancellation is clean)
-                try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
-                catch (TimeoutException) { /* ignore */ }
+                    await Task.Delay(50, escCts.Token).ConfigureAwait(false);
+                }
             }
-            finally
+            catch (OperationCanceledException)
             {
-                escCts.Dispose();
+                // Expected when the AI finishes before ESC is pressed.
             }
+        }, CancellationToken.None);
+
+        try
+        {
+            return await operation(escCts.Token);
+        }
+        finally
+        {
+            escCts.Cancel();
+            try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
+            catch (TimeoutException) { /* ignore */ }
         }
     }
 
@@ -3516,11 +3566,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 _copilotSession = null;
             }
 
-            lock (_reportLock)
-            {
-                _reportPrompts.Clear();
-                _lastPromptIndex = -1;
-            }
+            ClearRecordedConversationHistory();
 
             var modelToUse = string.IsNullOrWhiteSpace(_selectedModel)
                 ? _requestedModel
@@ -3905,12 +3951,13 @@ public class TroubleshootingSession : IAsyncDisposable
             || input.Equals("quit", StringComparison.Ordinal);
     }
 
-    private void RecordPrompt(string prompt)
+    private int RecordPrompt(string prompt)
     {
         lock (_reportLock)
         {
             _reportPrompts.Add(new ReportPromptEntry(DateTimeOffset.Now, prompt, [], string.Empty));
             _lastPromptIndex = _reportPrompts.Count - 1;
+            return _lastPromptIndex;
         }
     }
 
@@ -3980,12 +4027,28 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
-    private void GenerateAndOpenReport()
+    private void ClearRecordedConversationHistory()
     {
-        List<ReportPromptEntry> prompts;
         lock (_reportLock)
         {
-            prompts = _reportPrompts
+            _reportPrompts.Clear();
+            _lastPromptIndex = -1;
+        }
+    }
+
+    private bool HasRecordedConversationHistory()
+    {
+        lock (_reportLock)
+        {
+            return _reportPrompts.Count > 0;
+        }
+    }
+
+    private List<ReportPromptEntry> GetRecordedPromptSnapshot()
+    {
+        lock (_reportLock)
+        {
+            return _reportPrompts
                 .Select(prompt => new ReportPromptEntry(
                     prompt.Timestamp,
                     prompt.Prompt,
@@ -3993,6 +4056,28 @@ public class TroubleshootingSession : IAsyncDisposable
                     prompt.AgentReply))
                 .ToList();
         }
+    }
+
+    private async Task<bool> RequestSecondOpinionAsync(
+        string previousModel,
+        string newModel,
+        IReadOnlyList<ReportPromptEntry> priorConversation,
+        CancellationToken cancellationToken = default)
+    {
+        if (priorConversation.Count == 0)
+        {
+            return true;
+        }
+
+        var reportPrompt = $"Second opinion request after switching from {previousModel} to {newModel}.";
+        var promptIndex = RecordPrompt(reportPrompt);
+        var secondOpinionPrompt = BuildSecondOpinionPrompt(previousModel, newModel, priorConversation);
+        return await SendMessageAsync(secondOpinionPrompt, promptIndex, cancellationToken);
+    }
+
+    private void GenerateAndOpenReport()
+    {
+        var prompts = GetRecordedPromptSnapshot();
 
         if (prompts.Count == 0)
         {
@@ -4416,6 +4501,153 @@ public class TroubleshootingSession : IAsyncDisposable
         sb.AppendLine("</html>");
 
         return sb.ToString();
+    }
+
+    private static string BuildSecondOpinionPrompt(
+        string previousModel,
+        string newModel,
+        IReadOnlyList<ReportPromptEntry> prompts)
+    {
+        var visiblePrompts = prompts.Count > MaxSecondOpinionTurns
+            ? prompts.Skip(prompts.Count - MaxSecondOpinionTurns).ToList()
+            : prompts.ToList();
+        var truncationNotes = new List<string>();
+        var turnSections = new List<string>(visiblePrompts.Count);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("You are providing a second opinion for an existing TroubleScout troubleshooting session.");
+        sb.AppendLine($"Previous model: {previousModel}");
+        sb.AppendLine($"New model: {newModel}");
+        sb.AppendLine();
+        sb.AppendLine("Review the full session context below, then continue helping from the same point.");
+        sb.AppendLine("Call out where you agree or disagree with the prior analysis and suggest the best next troubleshooting steps.");
+
+        if (visiblePrompts.Count != prompts.Count)
+        {
+            truncationNotes.Add($"Only the most recent {visiblePrompts.Count} turns are included.");
+        }
+
+        var firstVisibleTurnNumber = prompts.Count - visiblePrompts.Count + 1;
+        for (var i = 0; i < visiblePrompts.Count; i++)
+        {
+            var prompt = visiblePrompts[i];
+            var turnNumber = firstVisibleTurnNumber + i;
+            turnSections.Add(BuildSecondOpinionTurnSection(prompt, turnNumber));
+        }
+
+        const string sizeLimitNote = "Older turns were omitted to fit prompt size limits.";
+        var reservedNotesLength = sizeLimitNote.Length + 32;
+        var remainingBudget = Math.Max(0, MaxSecondOpinionPromptChars - sb.Length - reservedNotesLength);
+        var keptSections = new List<string>(turnSections.Count);
+        var consumedLength = 0;
+
+        for (var i = turnSections.Count - 1; i >= 0; i--)
+        {
+            var section = turnSections[i];
+            if (consumedLength + section.Length > remainingBudget)
+            {
+                continue;
+            }
+
+            keptSections.Add(section);
+            consumedLength += section.Length;
+        }
+
+        keptSections.Reverse();
+        if (keptSections.Count != turnSections.Count)
+        {
+            truncationNotes.Add(sizeLimitNote);
+        }
+
+        if (truncationNotes.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Context limits:");
+            foreach (var note in truncationNotes)
+            {
+                sb.AppendLine($"- {note}");
+            }
+        }
+
+        if (keptSections.Count == 0 && turnSections.Count > 0)
+        {
+            keptSections.Add(turnSections[^1]);
+        }
+
+        foreach (var section in keptSections)
+        {
+            sb.Append(section);
+        }
+
+        return EnforceSecondOpinionPromptLimit(sb.ToString().Trim());
+    }
+
+    private static string BuildSecondOpinionTurnSection(ReportPromptEntry prompt, int turnNumber)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine($"## Turn {turnNumber}");
+        sb.AppendLine("### User");
+        sb.AppendLine(TrimSecondOpinionText(prompt.Prompt, MaxSecondOpinionUserPromptChars));
+
+        if (prompt.Actions.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("### Tool actions");
+            foreach (var action in prompt.Actions)
+            {
+                sb.AppendLine($"- Source: {action.Source}");
+                sb.AppendLine($"  Target: {action.Target}");
+                sb.AppendLine($"  Approval: {action.SafetyApproval}");
+                sb.AppendLine($"  Command: {TrimSecondOpinionText(action.Command, MaxSecondOpinionCommandChars)}");
+
+                if (!string.IsNullOrWhiteSpace(action.Output))
+                {
+                    sb.AppendLine("  Output:");
+                    sb.AppendLine(IndentMultilineText(
+                        TrimSecondOpinionText(action.Output, MaxSecondOpinionToolOutputChars),
+                        "    "));
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(prompt.AgentReply))
+        {
+            sb.AppendLine();
+            sb.AppendLine("### Assistant");
+            sb.AppendLine(TrimSecondOpinionText(prompt.AgentReply, MaxSecondOpinionReplyChars));
+        }
+
+        return sb.ToString();
+    }
+
+    private static string IndentMultilineText(string text, string indent)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        return string.Join(Environment.NewLine, lines.Select(line => indent + line));
+    }
+
+    private static string TrimSecondOpinionText(string? text, int maxChars)
+    {
+        var trimmed = text?.Trim() ?? string.Empty;
+        if (trimmed.Length <= maxChars)
+        {
+            return trimmed;
+        }
+
+        return trimmed[..maxChars].TrimEnd() + "... [truncated]";
+    }
+
+    private static string EnforceSecondOpinionPromptLimit(string prompt)
+    {
+        const string truncationNotice = "\n\n[Context truncated to fit prompt size limits.]";
+        if (prompt.Length <= MaxSecondOpinionPromptChars)
+        {
+            return prompt;
+        }
+
+        var maxContentLength = Math.Max(0, MaxSecondOpinionPromptChars - truncationNotice.Length);
+        return prompt[..maxContentLength].TrimEnd() + truncationNotice;
     }
 
     private static string HtmlEncode(string value)
