@@ -1556,14 +1556,15 @@ public static class ConsoleUI
         }
 
         const string cleanLabel = "Start a new clean session";
-        const string secondOpinionLabel = "Ask for a second opinion using the current context";
+        const string secondOpinionLabel =
+            "Ask another model for a second opinion using the full conversation and tool outputs (they will all be sent to it)";
         const string cancelLabel = "Cancel";
         IReadOnlyList<string> choices = [cleanLabel, secondOpinionLabel, cancelLabel];
 
         var title =
             $"[bold cyan]Switch to {Markup.Escape(selectedModel)}[/]{Environment.NewLine}" +
             $"[grey]Current model:[/] [cyan]{Markup.Escape(currentModel)}[/]{Environment.NewLine}" +
-            "[grey]Choose what to do with the current conversation context.[/]";
+            "[grey]Choose whether to start fresh or share the current conversation and tool outputs with the selected model.[/]";
 
         LiveThinkingIndicator.PauseForApproval();
         try

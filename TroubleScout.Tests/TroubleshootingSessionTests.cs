@@ -908,6 +908,36 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSecondOpinionPrompt_WhenHistoryIsLarge_ShouldKeepRecentTurnsAndMarkTruncation()
+    {
+        var prompts = Enumerable.Range(1, 10)
+            .Select(index => (
+                Prompt: $"Prompt {index} " + new string('P', 2300),
+                Reply: $"Reply {index} " + new string('R', 3300),
+                Actions: new[]
+                {
+                    (
+                        Command: $"Get-Thing-{index} " + new string('C', 900),
+                        Output: $"Output {index} " + new string('O', 3200),
+                        SafetyApproval: "Approved",
+                        Source: "PowerShell",
+                        Target: "localhost"
+                    )
+                }))
+            .ToArray();
+
+        var prompt = BuildSecondOpinionPromptViaReflection("gpt-4.1", "claude-sonnet-4.6", prompts);
+
+        prompt.Should().Contain("Only the most recent 8 turns are included.");
+        prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
+        prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
+        prompt.Should().NotContain($"## Turn 2{Environment.NewLine}");
+        prompt.Should().Contain($"## Turn 10{Environment.NewLine}");
+        prompt.Should().Contain("[truncated]");
+        prompt.Length.Should().BeLessOrEqualTo(24_000);
+    }
+
+    [Fact]
     public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
     {
         // Arrange
