@@ -938,6 +938,33 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSecondOpinionPrompt_WhenOlderTurnDoesNotFit_ShouldKeepNewestTurnsContiguous()
+    {
+        var prompt = SecondOpinionService.BuildSecondOpinionPrompt(
+            "gpt-4.1",
+            "claude-sonnet-4.6",
+            [
+                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-3), "Prompt 1", [], "Reply 1"),
+                new ReportPromptEntry(
+                    DateTimeOffset.UtcNow.AddMinutes(-2),
+                    "Prompt 2 " + new string('P', 23_500),
+                    [],
+                    "Reply 2"),
+                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-1), "Prompt 3", [], "Reply 3")
+            ],
+            8,
+            24_000,
+            24_000,
+            24_000,
+            24_000,
+            24_000);
+
+        prompt.Should().Contain($"## Turn 3{Environment.NewLine}");
+        prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
+        prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
+    }
+
+    [Fact]
     public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
     {
         // Arrange
@@ -2679,6 +2706,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         result.Success.Should().BeTrue();
         result.Error.Should().BeNull();
         _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_WithWhitespaceAroundPrimary_ShouldSucceedWithoutNewExecutor()
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, [" localhost ", false])!;
+        var result = await task;
+
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+        _session.AllTargetServers.Should().HaveCount(1);
     }
 
     [Fact]

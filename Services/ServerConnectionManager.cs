@@ -20,6 +20,8 @@ internal sealed class ServerConnectionManager
             return (false, "Server name cannot be empty.");
         }
 
+        serverName = serverName.Trim();
+
         if (serverName.Equals(targetServer, StringComparison.OrdinalIgnoreCase))
         {
             return (true, null);

@@ -59,7 +59,7 @@ internal static class SecondOpinionService
             var section = turnSections[i];
             if (consumedLength + section.Length > remainingBudget)
             {
-                continue;
+                break;
             }
 
             keptSections.Add(section);

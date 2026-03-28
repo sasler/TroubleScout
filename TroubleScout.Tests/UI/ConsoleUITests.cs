@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Reflection;
+using System.Globalization;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using TroubleScout.Services;
@@ -439,6 +440,27 @@ public class ConsoleUITests
     public void FormatCompactTokenCount_Millions_ShouldReturnMFormat()
     {
         ConsoleUI.FormatCompactTokenCount(1_500_000).Should().Be("1.5M");
+    }
+
+    [Fact]
+    public void FormatCompactTokenCount_ShouldUseInvariantCultureForCompactFormats()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+            CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+            ConsoleUI.FormatCompactTokenCount(1_500).Should().Be("1.5k");
+            ConsoleUI.FormatCompactTokenCount(1_500_000).Should().Be("1.5M");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [Fact]

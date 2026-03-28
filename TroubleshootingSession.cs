@@ -886,12 +886,12 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         if (value >= 1_000_000)
         {
-            return $"{value / 1_000_000d:0.#}M";
+            return (value / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M";
         }
 
         if (value >= 1_000)
         {
-            return $"{value / 1_000d:0.#}k";
+            return (value / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "k";
         }
 
         return value.ToString(CultureInfo.InvariantCulture);
