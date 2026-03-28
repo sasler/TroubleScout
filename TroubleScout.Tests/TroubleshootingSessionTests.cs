@@ -127,12 +127,12 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         SetPrivateField(_session, "_useByokOpenAi", false);
 
         // Create a ModelSelectionEntry with Byok source via reflection
-        var entryType = typeof(TroubleshootingSession).Assembly.GetTypes()
-            .First(t => t.Name == "ModelSelectionEntry");
-        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
-            .First(t => t.Name == "ModelSource");
+        var entryType = typeof(TroubleshootingSession).GetNestedType("ModelSelectionEntry", BindingFlags.NonPublic);
+        var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
+        entryType.Should().NotBeNull();
+        sourceType.Should().NotBeNull();
         var byokValue = Enum.Parse(sourceType, "Byok");
-        var entry = Activator.CreateInstance(entryType, "gpt-4.1", "GPT-4.1", byokValue)!;
+        var entry = Activator.CreateInstance(entryType!, "gpt-4.1", "GPT-4.1", byokValue)!;
 
         var method = typeof(TroubleshootingSession)
             .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType], null);
@@ -419,7 +419,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         // Act & Assert - Just verify it doesn't throw
         // The actual result depends on the test environment
-        Func<Task> act = () => TroubleshootingSession.CheckCopilotAvailableAsync();
+        Func<Task> act = () => CopilotCliResolver.CheckCopilotAvailableAsync();
 
         await act.Should().NotThrowAsync();
     }
@@ -428,7 +428,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task ValidateCopilotPrerequisites_ShouldNotThrow()
     {
         // Act
-        Func<Task> act = async () => await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+        Func<Task> act = async () => await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
         // Assert
         await act.Should().NotThrowAsync();
@@ -438,9 +438,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task ValidateCopilotPrerequisites_WhenNodeMissing_ShouldReturnBlockingIssue()
     {
         // Arrange
-        TroubleshootingSession.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, _) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, _) =>
         {
             if (fileName == "node")
             {
@@ -453,7 +453,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         try
         {
             // Act
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             // Assert
             report.IsReady.Should().BeFalse();
@@ -463,7 +463,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
@@ -471,9 +471,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task ValidateCopilotPrerequisites_WhenNodeVersionTooOld_ShouldReturnBlockingIssue()
     {
         // Arrange
-        TroubleshootingSession.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, _) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => @"C:\fake\copilot.js";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, _) =>
         {
             if (fileName == "node")
             {
@@ -486,7 +486,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         try
         {
             // Act
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             // Assert
             report.IsReady.Should().BeFalse();
@@ -499,7 +499,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
@@ -507,12 +507,12 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task ValidateCopilotPrerequisites_WhenValidationThrows_ShouldReturnBlockingIssueWithDetails()
     {
         // Arrange
-        TroubleshootingSession.CopilotCliPathResolver = () => throw new InvalidOperationException("boom");
+        CopilotCliResolver.CopilotCliPathResolver = () => throw new InvalidOperationException("boom");
 
         try
         {
             // Act
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             // Assert
             report.IsReady.Should().BeFalse();
@@ -524,16 +524,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
     [Fact]
     public async Task ValidateCopilotPrerequisites_WhenCopilotExeAndNodeMissing_ShouldRemainReady()
     {
-        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => "copilot";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, arguments) =>
         {
             if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
             {
@@ -560,23 +560,23 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         try
         {
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             report.IsReady.Should().BeTrue();
             report.Issues.Should().BeEmpty();
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
     [Fact]
     public async Task ValidateCopilotPrerequisites_WhenCopilotCmdAndNodeMissing_ShouldReturnBlockingIssue()
     {
-        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => "copilot";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, arguments) =>
         {
             if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
             {
@@ -593,7 +593,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         try
         {
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             report.IsReady.Should().BeFalse();
             report.Issues.Should().ContainSingle();
@@ -601,16 +601,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
     [Fact]
     public async Task ValidateCopilotPrerequisites_WhenPowerShellIsSix_ShouldAddNonBlockingWarning()
     {
-        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => "copilot";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, arguments) =>
         {
             if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
             {
@@ -637,7 +637,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         try
         {
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             report.IsReady.Should().BeTrue();
             report.Issues.Should().ContainSingle();
@@ -647,16 +647,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
     [Fact]
     public async Task ValidateCopilotPrerequisites_WhenPwshUnavailable_ShouldFallbackToWindowsPowerShell()
     {
-        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => "copilot";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, arguments) =>
         {
             if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
             {
@@ -688,7 +688,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         try
         {
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             report.IsReady.Should().BeTrue();
             report.Issues.Should().ContainSingle();
@@ -696,16 +696,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
     [Fact]
     public async Task ValidateCopilotPrerequisites_WhenPowerShellVersionIsUnparseable_ShouldNotWarn()
     {
-        TroubleshootingSession.CopilotCliPathResolver = () => "copilot";
-        TroubleshootingSession.FileExistsResolver = _ => true;
-        TroubleshootingSession.ProcessRunnerResolver = (fileName, arguments) =>
+        CopilotCliResolver.CopilotCliPathResolver = () => "copilot";
+        CopilotCliResolver.FileExistsResolver = _ => true;
+        CopilotCliResolver.ProcessRunnerResolver = (fileName, arguments) =>
         {
             if (fileName == "cmd.exe" && arguments.Equals("/c where copilot", StringComparison.OrdinalIgnoreCase))
             {
@@ -732,14 +732,14 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         try
         {
-            var report = await TroubleshootingSession.ValidateCopilotPrerequisitesAsync();
+            var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
 
             report.IsReady.Should().BeTrue();
             report.Issues.Should().BeEmpty();
         }
         finally
         {
-            TroubleshootingSession.ResetPrerequisiteValidationResolvers();
+            CopilotCliResolver.ResetPrerequisiteValidationResolvers();
         }
     }
 
@@ -872,7 +872,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void BuildSecondOpinionPrompt_ShouldIncludePriorConversationAndActions()
     {
         // Act
-        var prompt = BuildSecondOpinionPromptViaReflection(
+        var prompt = BuildSecondOpinionPromptViaService(
             "gpt-4.1",
             "claude-sonnet-4.6",
             (
@@ -926,7 +926,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
                 }))
             .ToArray();
 
-        var prompt = BuildSecondOpinionPromptViaReflection("gpt-4.1", "claude-sonnet-4.6", prompts);
+        var prompt = BuildSecondOpinionPromptViaService("gpt-4.1", "claude-sonnet-4.6", prompts);
 
         prompt.Should().Contain("Only the most recent 8 turns are included.");
         prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
@@ -938,15 +938,40 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSecondOpinionPrompt_WhenOlderTurnDoesNotFit_ShouldKeepNewestTurnsContiguous()
+    {
+        var prompt = SecondOpinionService.BuildSecondOpinionPrompt(
+            "gpt-4.1",
+            "claude-sonnet-4.6",
+            [
+                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-3), "Prompt 1", [], "Reply 1"),
+                new ReportPromptEntry(
+                    DateTimeOffset.UtcNow.AddMinutes(-2),
+                    "Prompt 2 " + new string('P', 23_500),
+                    [],
+                    "Reply 2"),
+                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-1), "Prompt 3", [], "Reply 3")
+            ],
+            8,
+            24_000,
+            24_000,
+            24_000,
+            24_000,
+            24_000);
+
+        prompt.Should().Contain($"## Turn 3{Environment.NewLine}");
+        prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
+        prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
+    }
+
+    [Fact]
     public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
     {
         // Arrange
         const string command = "Get-Service -Name 'BITS' | Where-Object { $_.Status -eq 'Running' }";
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("RenderCommandHtml", BindingFlags.Static | BindingFlags.NonPublic);
 
         // Act
-        var html = method?.Invoke(null, [command]) as string;
+        var html = ReportHtmlBuilder.RenderCommandHtml(command);
 
         // Assert
         html.Should().NotBeNullOrEmpty();
@@ -962,105 +987,41 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         string reply,
         params (string Command, string Output, string SafetyApproval, string Source, string Target)[] actions)
     {
-        var sessionType = typeof(TroubleshootingSession);
-        var actionType = sessionType.GetNestedType("ReportActionEntry", BindingFlags.NonPublic);
-        var promptType = sessionType.GetNestedType("ReportPromptEntry", BindingFlags.NonPublic);
-        var buildMethod = sessionType.GetMethod("BuildReportHtml", BindingFlags.Static | BindingFlags.NonPublic);
-
-        actionType.Should().NotBeNull();
-        promptType.Should().NotBeNull();
-        buildMethod.Should().NotBeNull();
-
-        var actionCtor = actionType!
-            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-            .Single(ctor => ctor.GetParameters().Length == 6);
-
-        var actionListType = typeof(List<>).MakeGenericType(actionType);
-        var actionList = Activator.CreateInstance(actionListType)!;
-        var addMethod = actionListType.GetMethod("Add")!;
-        foreach (var action in actions)
-        {
-            var actionEntry = actionCtor.Invoke([
+        var promptEntry = new ReportPromptEntry(
+            DateTimeOffset.Now,
+            prompt,
+            actions.Select(action => new ReportActionEntry(
                 DateTimeOffset.Now,
                 action.Target,
                 action.Command,
                 action.Output,
                 action.SafetyApproval,
-                action.Source
-            ]);
-            addMethod.Invoke(actionList, [actionEntry]);
-        }
+                action.Source)).ToList(),
+            reply);
 
-        var promptCtor = promptType!
-            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-            .Single(ctor => ctor.GetParameters().Length == 4);
-        var promptEntry = promptCtor.Invoke([
-            DateTimeOffset.Now,
-            prompt,
-            actionList,
-            reply
-        ]);
-
-        var promptArray = Array.CreateInstance(promptType, 1);
-        promptArray.SetValue(promptEntry, 0);
-
-        return (string)buildMethod!.Invoke(null, [promptArray])!;
+        return ReportHtmlBuilder.BuildReportHtml([promptEntry]);
     }
 
-    private static string BuildSecondOpinionPromptViaReflection(
+    private static string BuildSecondOpinionPromptViaService(
         string previousModel,
         string newModel,
         params (string Prompt, string Reply, (string Command, string Output, string SafetyApproval, string Source, string Target)[] Actions)[] prompts)
     {
-        var sessionType = typeof(TroubleshootingSession);
-        var actionType = sessionType.GetNestedType("ReportActionEntry", BindingFlags.NonPublic);
-        var promptType = sessionType.GetNestedType("ReportPromptEntry", BindingFlags.NonPublic);
-        var buildMethod = sessionType.GetMethod("BuildSecondOpinionPrompt", BindingFlags.Static | BindingFlags.NonPublic);
-
-        actionType.Should().NotBeNull();
-        promptType.Should().NotBeNull();
-        buildMethod.Should().NotBeNull("BuildSecondOpinionPrompt should exist on TroubleshootingSession");
-
-        var actionCtor = actionType!
-            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-            .Single(ctor => ctor.GetParameters().Length == 6);
-        var promptCtor = promptType!
-            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-            .Single(ctor => ctor.GetParameters().Length == 4);
-
-        var promptListType = typeof(List<>).MakeGenericType(promptType!);
-        var promptList = Activator.CreateInstance(promptListType)!;
-        var addPromptMethod = promptListType.GetMethod("Add")!;
-
-        foreach (var prompt in prompts)
-        {
-            var actionListType = typeof(List<>).MakeGenericType(actionType);
-            var actionList = Activator.CreateInstance(actionListType)!;
-            var addActionMethod = actionListType.GetMethod("Add")!;
-
-            foreach (var action in prompt.Actions)
-            {
-                var actionEntry = actionCtor.Invoke([
+        var promptEntries = prompts
+            .Select(prompt => new ReportPromptEntry(
+                DateTimeOffset.Now,
+                prompt.Prompt,
+                prompt.Actions.Select(action => new ReportActionEntry(
                     DateTimeOffset.Now,
                     action.Target,
                     action.Command,
                     action.Output,
                     action.SafetyApproval,
-                    action.Source
-                ]);
-                addActionMethod.Invoke(actionList, [actionEntry]);
-            }
+                    action.Source)).ToList(),
+                prompt.Reply))
+            .ToList();
 
-            var promptEntry = promptCtor.Invoke([
-                DateTimeOffset.Now,
-                prompt.Prompt,
-                actionList,
-                prompt.Reply
-            ]);
-            addPromptMethod.Invoke(promptList, [promptEntry]);
-        }
-
-        return (string)buildMethod!.Invoke(null, [previousModel, newModel, promptList])!;
+        return SecondOpinionService.BuildSecondOpinionPrompt(previousModel, newModel, promptEntries, 8, 24_000, 2_000, 3_000, 800, 3_000);
     }
 
     private static bool InvokeIsCurrentModel(TroubleshootingSession session, string modelId)
@@ -1075,8 +1036,22 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     private static void SetPrivateField(object instance, string fieldName, object? value)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        field.Should().NotBeNull();
-        field!.SetValue(instance, value);
+        if (field == null && instance is TroubleshootingSession session
+            && (fieldName == "_availableModels" || fieldName == "_modelSources" || fieldName == "_byokPricing"))
+        {
+            instance = GetModelDiscoveryManager(session);
+            field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        }
+
+        if (field != null)
+        {
+            field.SetValue(instance, value);
+            return;
+        }
+
+        var property = instance.GetType().GetProperty(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        property.Should().NotBeNull();
+        property!.SetValue(instance, value);
     }
 
     [Fact]
@@ -1134,7 +1109,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void GetCopilotCliPath_ShouldReturnValidPath()
     {
         // Act
-        var cliPath = TroubleshootingSession.GetCopilotCliPath();
+        var cliPath = CopilotCliResolver.GetCopilotCliPath();
 
         // Assert
         cliPath.Should().NotBeNullOrEmpty();
@@ -1155,7 +1130,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", testPath);
 
             // Act
-            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+            var cliPath = CopilotCliResolver.GetCopilotCliPath();
 
             // Assert
             cliPath.Should().Be(testPath);
@@ -1177,17 +1152,17 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
-        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
+        var originalFileExistsResolver = CopilotCliResolver.FileExistsResolver;
         
         try
         {
             // Clear COPILOT_CLI_PATH and PATH to force fallback behavior
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", string.Empty);
-            TroubleshootingSession.FileExistsResolver = _ => false;
+            CopilotCliResolver.FileExistsResolver = _ => false;
 
             // Act
-            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+            var cliPath = CopilotCliResolver.GetCopilotCliPath();
 
             // Assert
             cliPath.Should().Be("copilot");
@@ -1196,7 +1171,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
-            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
+            CopilotCliResolver.FileExistsResolver = originalFileExistsResolver;
         }
     }
 
@@ -1206,7 +1181,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
-        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
+        var originalFileExistsResolver = CopilotCliResolver.FileExistsResolver;
         var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         var exePath = Path.Combine(tempDir, "copilot.exe");
@@ -1216,10 +1191,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", tempDir);
-            TroubleshootingSession.FileExistsResolver = _ => false;
+            CopilotCliResolver.FileExistsResolver = _ => false;
 
             // Act
-            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+            var cliPath = CopilotCliResolver.GetCopilotCliPath();
 
             // Assert
             cliPath.Should().Be(exePath);
@@ -1228,7 +1203,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
-            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
+            CopilotCliResolver.FileExistsResolver = originalFileExistsResolver;
             if (Directory.Exists(tempDir))
             {
                 Directory.Delete(tempDir, recursive: true);
@@ -1242,7 +1217,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH");
         var originalPath = Environment.GetEnvironmentVariable("PATH");
-        var originalFileExistsResolver = TroubleshootingSession.FileExistsResolver;
+        var originalFileExistsResolver = CopilotCliResolver.FileExistsResolver;
         var tempDir = Path.Combine(Path.GetTempPath(), $"copilot-path-{Guid.NewGuid():N}");
         var npmLoaderPath = Path.Combine(tempDir, "node_modules", "@github", "copilot", "npm-loader.js");
         Directory.CreateDirectory(Path.GetDirectoryName(npmLoaderPath)!);
@@ -1252,10 +1227,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
             Environment.SetEnvironmentVariable("PATH", tempDir);
-            TroubleshootingSession.FileExistsResolver = _ => false;
+            CopilotCliResolver.FileExistsResolver = _ => false;
 
             // Act
-            var cliPath = TroubleshootingSession.GetCopilotCliPath();
+            var cliPath = CopilotCliResolver.GetCopilotCliPath();
 
             // Assert
             cliPath.Should().Be(npmLoaderPath);
@@ -1264,7 +1239,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", originalEnvValue);
             Environment.SetEnvironmentVariable("PATH", originalPath);
-            TroubleshootingSession.FileExistsResolver = originalFileExistsResolver;
+            CopilotCliResolver.FileExistsResolver = originalFileExistsResolver;
             if (Directory.Exists(tempDir))
             {
                 Directory.Delete(tempDir, recursive: true);
@@ -1433,6 +1408,19 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         result.Models[0].SupportedReasoningEfforts.Should().Contain(["low", "medium", "high"]);
         result.PricingByModelId.Should().ContainKey("gpt-5");
         result.PricingByModelId["gpt-5"].DisplayText.Should().Be("$1.25/M in, $10/M out");
+    }
+
+    [Theory]
+    [InlineData("https://api.openai.com/v1", new[] { "https://api.openai.com/v1/models" })]
+    [InlineData("https://example.test", new[] { "https://example.test/models", "https://example.test/v1/models" })]
+    [InlineData(" https://example.test/v1/ ", new[] { "https://example.test/v1/models" })]
+    public void BuildByokModelEndpointCandidates_ShouldNormalizeAndDeduplicate(string baseUrl, string[] expected)
+    {
+        var manager = new ByokProviderManager();
+
+        var endpoints = manager.BuildByokModelEndpointCandidates(baseUrl);
+
+        endpoints.Should().Equal(expected);
     }
 
     [Fact]
@@ -2029,7 +2017,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest("Get-ChildItem -Path 'C:\\src\\temp' | Select-Object Name,Length,LastWriteTime | Sort-Object LastWriteTime -Descending");
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().NotBeNull();
@@ -2046,7 +2034,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest("Restart-Service -Name spooler");
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().NotBeNull();
@@ -2063,7 +2051,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest("cmd /c dir");
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().BeNull();
@@ -2078,7 +2066,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest(command);
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().NotBeNull();
@@ -2095,7 +2083,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest("Get-Process|Sort-Object CPU");
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().NotBeNull();
@@ -2110,7 +2098,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var request = CreateShellPermissionRequest("@echo off");
 
         // Act
-        var assessment = _session.EvaluateShellPermissionRequest(request);
+        var assessment = PermissionEvaluator.EvaluateShellPermissionRequest(request, _session.CurrentExecutionMode, null);
 
         // Assert
         assessment.Should().BeNull();
@@ -2281,11 +2269,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static string InvokeDescribePermissionRequest(PermissionRequest request)
     {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("DescribePermissionRequest", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("DescribePermissionRequest should exist on TroubleshootingSession");
-        return (string)method!.Invoke(null, [request])!;
+        return PermissionEvaluator.DescribePermissionRequest(request);
     }
 
     private static PermissionRequestShell CreateShellPermissionRequest(string command)
@@ -2365,8 +2349,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         var method = typeof(TroubleshootingSession)
             .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic);
-        var sourceType = typeof(TroubleshootingSession).Assembly.GetTypes()
-            .First(type => type.Name == "ModelSource");
+        var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
+        sourceType.Should().NotBeNull();
         var source = Enum.Parse(sourceType, sourceName);
 
         method.Should().NotBeNull("GetModelRateLabel should exist on TroubleshootingSession");
@@ -2454,8 +2438,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static string InvokeToModelDisplayName(string modelId)
     {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("ToModelDisplayName", BindingFlags.Static | BindingFlags.NonPublic);
+        var method = typeof(ModelDiscoveryManager)
+            .GetMethod("ToModelDisplayName", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
 
         method.Should().NotBeNull();
         return (string)method!.Invoke(null, [modelId])!;
@@ -2477,26 +2461,46 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         IReadOnlyList<ModelInfo> githubModels,
         IReadOnlyList<ModelInfo> byokModels)
     {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("UpdateAvailableModels", BindingFlags.Instance | BindingFlags.NonPublic);
+        var manager = GetModelDiscoveryManager(session);
+        var method = typeof(ModelDiscoveryManager)
+            .GetMethod("UpdateAvailableModels", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
         method.Should().NotBeNull();
-        method!.Invoke(session, [githubModels, byokModels]);
+        method!.Invoke(manager, [githubModels, byokModels]);
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        field.Should().NotBeNull();
-        return (T)field!.GetValue(instance)!;
+        if (field == null && instance is TroubleshootingSession session
+            && (fieldName == "_availableModels" || fieldName == "_modelSources" || fieldName == "_byokPricing"))
+        {
+            instance = GetModelDiscoveryManager(session);
+            field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        }
+        else if (field == null && instance is TroubleshootingSession managerSession && fieldName == "_additionalExecutors")
+        {
+            instance = GetServerConnectionManager(managerSession);
+            field = instance.GetType().GetField("_executors", BindingFlags.Instance | BindingFlags.NonPublic);
+        }
+
+        if (field != null)
+        {
+            return (T)field.GetValue(instance)!;
+        }
+
+        var property = instance.GetType().GetProperty(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        property.Should().NotBeNull();
+        return (T)property!.GetValue(instance)!;
     }
 
     private static void SetModelSources(TroubleshootingSession session, IReadOnlyList<string> modelIds, string enumName)
     {
-        var field = session.GetType().GetField("_modelSources", BindingFlags.Instance | BindingFlags.NonPublic);
+        var manager = GetModelDiscoveryManager(session);
+        var field = manager.GetType().GetField("_modelSources", BindingFlags.Instance | BindingFlags.NonPublic);
         field.Should().NotBeNull();
 
-        var modelSources = field!.GetValue(session);
+        var modelSources = field!.GetValue(manager);
         modelSources.Should().NotBeNull();
 
         var dictionaryType = modelSources!.GetType();
@@ -2504,7 +2508,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         clearMethod.Should().NotBeNull();
         clearMethod!.Invoke(modelSources, null);
 
-        var modelSourceType = session.GetType().GetNestedType("ModelSource", BindingFlags.NonPublic);
+        var modelSourceType = typeof(ModelDiscoveryManager).Assembly.GetType("TroubleScout.Services.ModelSource");
         modelSourceType.Should().NotBeNull();
         var sourceValue = Enum.Parse(modelSourceType!, enumName, ignoreCase: true);
 
@@ -2529,8 +2533,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static (List<ModelInfo> Models, Dictionary<string, TestByokPriceInfo> PricingByModelId) InvokeParseByokModelsResponse(JsonElement rootElement)
     {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic);
+        var method = typeof(ModelDiscoveryManager)
+            .GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
 
         method.Should().NotBeNull();
         var result = method!.Invoke(null, [rootElement]);
@@ -2605,6 +2609,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         return await task;
     }
 
+    private static object GetModelDiscoveryManager(TroubleshootingSession session)
+    {
+        var field = session.GetType().GetField("_modelDiscovery", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_modelDiscovery should exist on TroubleshootingSession");
+        return field!.GetValue(session)!;
+    }
+
+    private static object GetServerConnectionManager(TroubleshootingSession session)
+    {
+        var field = session.GetType().GetField("_serverManager", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_serverManager should exist on TroubleshootingSession");
+        return field!.GetValue(session)!;
+    }
+
     private static object CreateUsageSnapshot(
         int? promptTokens = null,
         int? completionTokens = null,
@@ -2646,12 +2664,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task AllTargetServers_WithAdditional_ShouldIncludeAll()
     {
-        // Arrange – inject entries into the _additionalExecutors dictionary via reflection
-        var field = typeof(TroubleshootingSession)
-            .GetField("_additionalExecutors", BindingFlags.Instance | BindingFlags.NonPublic);
-        field.Should().NotBeNull();
-
-        var dict = (Dictionary<string, PowerShellExecutor>)field!.GetValue(_session)!;
+        // Arrange
+        var dict = GetPrivateField<Dictionary<string, PowerShellExecutor>>(_session, "_additionalExecutors");
         var execB = new PowerShellExecutor("ServerB");
         var execA = new PowerShellExecutor("ServerA");
         dict["ServerB"] = execB;
@@ -2692,6 +2706,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         result.Success.Should().BeTrue();
         result.Error.Should().BeNull();
         _session.AllTargetServers.Should().HaveCount(1, "no additional executor should be created for the primary server");
+    }
+
+    [Fact]
+    public async Task ConnectAdditionalServer_WithWhitespaceAroundPrimary_ShouldSucceedWithoutNewExecutor()
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(_session, [" localhost ", false])!;
+        var result = await task;
+
+        result.Success.Should().BeTrue();
+        result.Error.Should().BeNull();
+        _session.AllTargetServers.Should().HaveCount(1);
     }
 
     [Fact]

@@ -47,6 +47,7 @@ public static class ConsoleUI
     private static int _lastSuggestionRowOffset = 1;
     private const int MaxPromptInputLength = 4000;
     private static readonly List<string> _promptHistory = new();
+    private static readonly MarkdownStreamRenderer _markdownRenderer = new();
     private const int MaxPromptHistorySize = 100;
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
@@ -762,7 +763,7 @@ public static class ConsoleUI
         {
             table.AddRow(
                 new Markup($"[cyan]{i + 1}[/]"),
-                new Markup(HighlightPowerShellMarkup(commands[i])));
+                new Markup(PowerShellSyntaxHighlighter.HighlightPowerShellMarkup(commands[i])));
         }
 
         var panel = new Panel(table)
@@ -773,77 +774,6 @@ public static class ConsoleUI
         AnsiConsole.Write(panel);
         AnsiConsole.MarkupLine("[grey]Tip:[/] Run [cyan]/report[/] for full per-prompt details including outputs.");
         AnsiConsole.WriteLine();
-    }
-
-    private static readonly Regex PowerShellTokenRegex = new(
-        "(?<string>'([^'\\\\]|\\\\.)*'|\"([^\"\\\\]|\\\\.)*\")" +
-        "|(?<variable>\\$\\{[^}]+\\}|\\$[A-Za-z_][\\w:]*|\\$\\([^)]+\\))" +
-        "|(?<keyword>\\b(?:if|else|elseif|foreach|for|while|do|switch|try|catch|finally|throw|return|function|param|begin|process|end|break|continue|class|enum|using|in|default)\\b)" +
-        "|(?<op>(?:-eq|-ne|-gt|-ge|-lt|-le|-and|-or|-not)\\b|\\|\\||&&|[|;])" +
-        "|(?<cmdlet>\\b[A-Za-z]+-[A-Za-z][A-Za-z0-9]*\\b)" +
-        "|(?<param>-[A-Za-z][\\w-]*)" +
-        "|(?<number>\\b\\d+(?:\\.\\d+)?\\b)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static string HighlightPowerShellMarkup(string input)
-    {
-        if (string.IsNullOrEmpty(input))
-            return string.Empty;
-
-        var builder = new StringBuilder(input.Length + 16);
-        int lastIndex = 0;
-
-        foreach (Match match in PowerShellTokenRegex.Matches(input))
-        {
-            if (!match.Success)
-                continue;
-
-            if (match.Index > lastIndex)
-            {
-                builder.Append(Markup.Escape(input.Substring(lastIndex, match.Index - lastIndex)));
-            }
-
-            var tokenText = Markup.Escape(match.Value);
-            var style = GetPowerShellTokenStyle(match);
-
-            if (string.IsNullOrEmpty(style))
-            {
-                builder.Append(tokenText);
-            }
-            else
-            {
-                builder.Append('[').Append(style).Append(']').Append(tokenText).Append("[/]");
-            }
-
-            lastIndex = match.Index + match.Length;
-        }
-
-        if (lastIndex < input.Length)
-        {
-            builder.Append(Markup.Escape(input.Substring(lastIndex)));
-        }
-
-        return builder.ToString();
-    }
-
-    private static string? GetPowerShellTokenStyle(Match match)
-    {
-        if (match.Groups["string"].Success)
-            return "green";
-        if (match.Groups["variable"].Success)
-            return "deepskyblue1";
-        if (match.Groups["keyword"].Success)
-            return "violet";
-        if (match.Groups["cmdlet"].Success)
-            return "cyan";
-        if (match.Groups["param"].Success)
-            return "yellow";
-        if (match.Groups["number"].Success)
-            return "blue";
-        if (match.Groups["op"].Success)
-            return "magenta";
-
-        return null;
     }
 
     /// <summary>
@@ -887,373 +817,20 @@ public static class ConsoleUI
     /// </summary>
     public static void WriteAIResponse(string text, bool isComplete = false)
     {
-        if (!isComplete)
-        {
-            // Buffer the text for markdown processing
-            _streamBuffer.Append(text);
-            
-            // Process and output any complete segments
-            FlushStreamBuffer(forceFlush: false);
-        }
-        else
-        {
-            Console.WriteLine();
-        }
+        _markdownRenderer.WriteAIResponse(text, isComplete);
     }
-
-    private static readonly StringBuilder _streamBuffer = new();
-    private static bool _inBold;
-    private static bool _inCode;
-    private static bool _inCodeBlock;
-    private static bool _atLineStart = true;
-    private static bool _inMarkdownTable;
-    private static readonly StringBuilder _tableLineAccumulator = new();
-    private static readonly List<string> _markdownTableLines = [];
 
     /// <summary>
     /// Reset the stream buffer state (call at start of new response)
     /// </summary>
     public static void ResetStreamBuffer()
     {
-        _streamBuffer.Clear();
-        _inBold = false;
-        _inCode = false;
-        _inCodeBlock = false;
-        _atLineStart = true;
-        _inMarkdownTable = false;
-        _tableLineAccumulator.Clear();
-        _markdownTableLines.Clear();
-    }
-
-    /// <summary>
-    /// Flush the stream buffer, converting markdown to ANSI
-    /// </summary>
-    private static void FlushStreamBuffer(bool forceFlush)
-    {
-        var content = _streamBuffer.ToString();
-        if (string.IsNullOrEmpty(content)) return;
-
-        var output = new StringBuilder();
-        int i = 0;
-
-        while (i < content.Length)
-        {
-            if (_inMarkdownTable)
-            {
-                if (_atLineStart && content[i] != '|')
-                {
-                    FlushMarkdownTable();
-                    _inMarkdownTable = false;
-                    continue;
-                }
-
-                var tableChar = content[i];
-                _tableLineAccumulator.Append(tableChar);
-
-                if (tableChar == '\n')
-                {
-                    _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
-                    _tableLineAccumulator.Clear();
-                    _atLineStart = true;
-                }
-                else if (tableChar != '\r')
-                {
-                    _atLineStart = false;
-                }
-
-                i++;
-                continue;
-            }
-
-            if (!_inCodeBlock && _atLineStart && content[i] == '|')
-            {
-                if (output.Length > 0)
-                {
-                    Console.Write(output.ToString());
-                    output.Clear();
-                }
-
-                _inMarkdownTable = true;
-                continue;
-            }
-
-            // Check for code block (```)
-            if (i + 2 < content.Length && content[i] == '`' && content[i + 1] == '`' && content[i + 2] == '`')
-            {
-                // Only process if we can see the end or are forcing
-                if (_inCodeBlock)
-                {
-                    output.Append("\x1b[0m"); // Reset
-                    _inCodeBlock = false;
-                    i += 3;
-                    // Skip optional language identifier on opening
-                    while (i < content.Length && content[i] != '\n' && content[i] != '\r')
-                        i++;
-                    continue;
-                }
-                else
-                {
-                    output.Append("\x1b[90m"); // Gray for code block
-                    _inCodeBlock = true;
-                    i += 3;
-                    // Skip optional language identifier
-                    while (i < content.Length && content[i] != '\n' && content[i] != '\r')
-                        i++;
-                    continue;
-                }
-            }
-
-            // Inside code block, just output as-is
-            if (_inCodeBlock)
-            {
-                output.Append(content[i]);
-                if (content[i] == '\n')
-                {
-                    _atLineStart = true;
-                }
-                else if (content[i] != '\r')
-                {
-                    _atLineStart = false;
-                }
-                i++;
-                continue;
-            }
-
-            // Check for bold (**text**)
-            if (i + 1 < content.Length && content[i] == '*' && content[i + 1] == '*')
-            {
-                if (_inBold)
-                {
-                    output.Append("\x1b[0m"); // Reset
-                    _inBold = false;
-                }
-                else
-                {
-                    output.Append("\x1b[1;33m"); // Bold yellow
-                    _inBold = true;
-                }
-                i += 2;
-                continue;
-            }
-
-            // Check for inline code (`text`)
-            if (content[i] == '`')
-            {
-                if (_inCode)
-                {
-                    output.Append("\x1b[0m"); // Reset
-                    _inCode = false;
-                }
-                else
-                {
-                    output.Append("\x1b[36m"); // Cyan for inline code
-                    _inCode = true;
-                }
-                i++;
-                continue;
-            }
-
-            // Check for headers (## at start of line)
-            if (content[i] == '#' && (i == 0 || content[i - 1] == '\n'))
-            {
-                int headerLevel = 0;
-                while (i < content.Length && content[i] == '#')
-                {
-                    headerLevel++;
-                    i++;
-                }
-                // Skip space after #
-                if (i < content.Length && content[i] == ' ')
-                    i++;
-                
-                // Output header formatting
-                output.Append("\x1b[1;36m"); // Bold cyan for headers
-                
-                // Find end of line and output
-                while (i < content.Length && content[i] != '\n')
-                {
-                    output.Append(content[i]);
-                    i++;
-                }
-                output.Append("\x1b[0m"); // Reset after header
-                _atLineStart = false;
-                continue;
-            }
-
-            // Check for bullet points
-            if (content[i] == '-' && i + 1 < content.Length && content[i + 1] == ' ' && 
-                (i == 0 || content[i - 1] == '\n'))
-            {
-                output.Append("\x1b[32m-\x1b[0m"); // Green bullet
-                i++;
-                continue;
-            }
-
-            // Check for numbered lists
-            if (char.IsDigit(content[i]) && i + 1 < content.Length && content[i + 1] == '.' &&
-                (i == 0 || content[i - 1] == '\n'))
-            {
-                output.Append($"\x1b[32m{content[i]}.\x1b[0m"); // Green number
-                i += 2;
-                continue;
-            }
-
-            // Regular character
-            output.Append(content[i]);
-            if (content[i] == '\n')
-            {
-                _atLineStart = true;
-            }
-            else if (content[i] != '\r')
-            {
-                _atLineStart = false;
-            }
-            i++;
-        }
-
-        if (forceFlush && _inMarkdownTable)
-        {
-            if (_tableLineAccumulator.Length > 0)
-            {
-                _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
-                _tableLineAccumulator.Clear();
-            }
-
-            FlushMarkdownTable();
-            _inMarkdownTable = false;
-        }
-
-        // Write the processed output
-        if (output.Length > 0)
-        {
-            Console.Write(output.ToString());
-        }
-        _streamBuffer.Clear();
+        _markdownRenderer.ResetStreamBuffer();
     }
 
     internal static Table? ParseMarkdownTable(IReadOnlyList<string> lines)
     {
-        var rows = lines
-            .Select(ParseMarkdownTableRow)
-            .Where(cells => cells.Count > 0)
-            .Where(cells => !IsSeparatorRow(cells))
-            .ToList();
-
-        if (rows.Count == 0)
-        {
-            return null;
-        }
-
-        var header = rows[0];
-        if (header.Count == 0)
-        {
-            return null;
-        }
-
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Color.Grey);
-
-        foreach (var headerCell in header)
-        {
-            table.AddColumn(new TableColumn($"[bold]{Markup.Escape(headerCell)}[/]"));
-        }
-
-        for (var rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-        {
-            var row = rows[rowIndex];
-            var normalizedCells = new List<IRenderable>(header.Count);
-            for (var columnIndex = 0; columnIndex < header.Count; columnIndex++)
-            {
-                var cell = columnIndex < row.Count ? row[columnIndex] : string.Empty;
-                normalizedCells.Add(new Markup(Markup.Escape(cell)));
-            }
-
-            table.AddRow(normalizedCells);
-        }
-
-        return table;
-    }
-
-    private static void FlushMarkdownTable()
-    {
-        if (_tableLineAccumulator.Length > 0)
-        {
-            _markdownTableLines.Add(_tableLineAccumulator.ToString().TrimEnd('\r', '\n'));
-            _tableLineAccumulator.Clear();
-        }
-
-        if (_markdownTableLines.Count == 0)
-        {
-            return;
-        }
-
-        var table = ParseMarkdownTable(_markdownTableLines);
-        if (table != null)
-        {
-            AnsiConsole.Write(table);
-            AnsiConsole.WriteLine();
-        }
-        else
-        {
-            foreach (var line in _markdownTableLines)
-            {
-                Console.WriteLine(line);
-            }
-        }
-
-        _markdownTableLines.Clear();
-    }
-
-    private static List<string> ParseMarkdownTableRow(string line)
-    {
-        var trimmed = line.Trim();
-        if (trimmed.Length == 0)
-        {
-            return [];
-        }
-
-        if (trimmed.StartsWith("|", StringComparison.Ordinal))
-        {
-            trimmed = trimmed[1..];
-        }
-
-        if (trimmed.EndsWith("|", StringComparison.Ordinal))
-        {
-            trimmed = trimmed[..^1];
-        }
-
-        return trimmed
-            .Split('|')
-            .Select(cell => cell.Trim())
-            .ToList();
-    }
-
-    private static bool IsSeparatorRow(IReadOnlyList<string> cells)
-    {
-        if (cells.Count == 0)
-        {
-            return false;
-        }
-
-        foreach (var cell in cells)
-        {
-            var normalized = cell.Replace(" ", string.Empty, StringComparison.Ordinal);
-            if (normalized.Length == 0)
-            {
-                return false;
-            }
-
-            foreach (var ch in normalized)
-            {
-                if (ch != '-' && ch != ':')
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
+        return _markdownRenderer.ParseMarkdownTable(lines);
     }
 
     /// <summary>
@@ -1261,9 +838,7 @@ public static class ConsoleUI
     /// </summary>
     public static void StartAIResponse()
     {
-        ResetStreamBuffer(); // Reset markdown parsing state
-        EnsureLineBreak();
-        AnsiConsole.Markup("[bold green]TroubleScout[/] [grey]>[/] ");
+        _markdownRenderer.StartAIResponse();
     }
 
     /// <summary>
@@ -1271,12 +846,7 @@ public static class ConsoleUI
     /// </summary>
     public static void EndAIResponse()
     {
-        FlushStreamBuffer(forceFlush: true);
-
-        // Ensure any remaining formatting is reset
-        Console.Write("\x1b[0m");
-        AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine();
+        _markdownRenderer.EndAIResponse();
     }
 
     /// <summary>
@@ -1489,387 +1059,29 @@ public static class ConsoleUI
     /// Display AI model selection prompt and return the selected model
     /// </summary>
     public static string? PromptModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
-    {
-        var choices = models
-            .Select(model => new ModelPickerChoice(
-                model.Id,
-                model.Name,
-                GetRateLabel(model),
-                BuildModelDetailSummary(model),
-                model.Id.Equals(currentModel, StringComparison.OrdinalIgnoreCase),
-                null))
-            .ToList();
-
-        return PromptModelSelectionCore(currentModel, choices)?.ModelId;
-    }
-
-    private static string GetRateLabel(ModelInfo model)
-    {
-        if (model.Billing != null)
-        {
-            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
-        }
-
-        return "n/a";
-    }
-
-    private sealed record ModelPickerChoice(
-        string ModelId,
-        string DisplayName,
-        string RateLabel,
-        string DetailSummary,
-        bool IsCurrent,
-        TroubleshootingSession.ModelSource? SourceHint);
+        => ModelPickerUI.PromptModelSelection(currentModel, models);
 
     internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
         string currentModel,
         IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
-    {
-        var choices = entries
-            .Select(entry => new ModelPickerChoice(
-                entry.ModelId,
-                entry.DisplayName,
-                entry.RateLabel,
-                entry.DetailSummary,
-                entry.IsCurrent,
-                entry.Source))
-            .ToList();
-
-        var selectedChoice = PromptModelSelectionCore(currentModel, choices);
-        if (selectedChoice == null)
-        {
-            return null;
-        }
-
-        return entries.FirstOrDefault(entry =>
-            entry.ModelId.Equals(selectedChoice.ModelId, StringComparison.OrdinalIgnoreCase)
-            && entry.Source == selectedChoice.SourceHint);
-    }
+        => ModelPickerUI.PromptModelSelection(currentModel, entries);
 
     internal static TroubleshootingSession.ModelSwitchBehavior? PromptModelSwitchBehavior(
         string currentModel,
         string selectedModel)
-    {
-        if (IsInputRedirectedResolver())
-        {
-            return TroubleshootingSession.ModelSwitchBehavior.CleanSession;
-        }
-
-        const string cleanLabel = "Start a new clean session";
-        const string secondOpinionLabel =
-            "Ask another model for a second opinion using the full conversation and tool outputs (they will all be sent to it)";
-        const string cancelLabel = "Cancel";
-        IReadOnlyList<string> choices = [cleanLabel, secondOpinionLabel, cancelLabel];
-
-        var title =
-            $"[bold cyan]Switch to {Markup.Escape(selectedModel)}[/]{Environment.NewLine}" +
-            $"[grey]Current model:[/] [cyan]{Markup.Escape(currentModel)}[/]{Environment.NewLine}" +
-            "[grey]Choose whether to start fresh or share the current conversation and tool outputs with the selected model.[/]";
-
-        LiveThinkingIndicator.PauseForApproval();
-        try
-        {
-            var selected = ModelSwitchBehaviorPromptOverride != null
-                ? ModelSwitchBehaviorPromptOverride(title, choices)
-                : AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title(title)
-                        .PageSize(3)
-                        .AddChoices(choices)
-                        .UseConverter(choice => choice switch
-                        {
-                            cleanLabel => $"[green]{Markup.Escape(choice)}[/]",
-                            secondOpinionLabel => $"[cyan]{Markup.Escape(choice)}[/]",
-                            _ => $"[grey]{Markup.Escape(choice)}[/]"
-                        }));
-
-            return selected switch
-            {
-                cleanLabel => TroubleshootingSession.ModelSwitchBehavior.CleanSession,
-                secondOpinionLabel => TroubleshootingSession.ModelSwitchBehavior.SecondOpinion,
-                _ => null
-            };
-        }
-        finally
-        {
-            LiveThinkingIndicator.ResumeAfterApproval();
-        }
-    }
+        => ModelPickerUI.PromptModelSwitchBehavior(currentModel, selectedModel);
 
     public static string? PromptReasoningEffort(
         string? currentReasoningEffort,
         IReadOnlyList<string> supportedEfforts,
         string? defaultReasoningEffort)
-    {
-        if (IsInputRedirectedResolver() || supportedEfforts.Count == 0)
-        {
-            return currentReasoningEffort;
-        }
-
-        var automaticLabel = string.IsNullOrWhiteSpace(defaultReasoningEffort)
-            ? "Automatic"
-            : $"Automatic (default: {defaultReasoningEffort})";
-
-        var choices = new List<string> { automaticLabel };
-        choices.AddRange(supportedEfforts);
-
-        var prompt = new SelectionPrompt<string>()
-            .Title("[bold cyan]Select reasoning effort[/]")
-            .PageSize(Math.Min(choices.Count, 8))
-            .AddChoices(choices)
-            .UseConverter(choice => choice == automaticLabel
-                ? $"[green]{Markup.Escape(choice)}[/]"
-                : $"[cyan]{Markup.Escape(choice)}[/]");
-
-        var selected = AnsiConsole.Prompt(prompt);
-        return selected == automaticLabel ? null : selected;
-    }
-
-    private static ModelPickerChoice? PromptModelSelectionCore(string currentModel, IReadOnlyList<ModelPickerChoice> choices)
-    {
-        if (choices.Count == 0)
-        {
-            return null;
-        }
-
-        if (IsInputRedirectedResolver())
-        {
-            return choices.FirstOrDefault(choice => choice.IsCurrent) ?? choices[0];
-        }
-
-        var selectedIndex = 0;
-        for (var i = 0; i < choices.Count; i++)
-        {
-            if (choices[i].IsCurrent)
-            {
-                selectedIndex = i;
-                break;
-            }
-        }
-        ModelPickerChoice? result = null;
-
-        AnsiConsole.Live(BuildModelPickerLayout(currentModel, choices, selectedIndex))
-            .Overflow(VerticalOverflow.Ellipsis)
-            .Start(context =>
-            {
-                while (true)
-                {
-                    context.UpdateTarget(BuildModelPickerLayout(currentModel, choices, selectedIndex));
-
-                    var key = Console.ReadKey(intercept: true).Key;
-                    switch (key)
-                    {
-                        case ConsoleKey.UpArrow:
-                        case ConsoleKey.K:
-                            selectedIndex = (selectedIndex - 1 + choices.Count) % choices.Count;
-                            break;
-                        case ConsoleKey.DownArrow:
-                        case ConsoleKey.J:
-                            selectedIndex = (selectedIndex + 1) % choices.Count;
-                            break;
-                        case ConsoleKey.PageUp:
-                            selectedIndex = Math.Max(0, selectedIndex - 5);
-                            break;
-                        case ConsoleKey.PageDown:
-                            selectedIndex = Math.Min(choices.Count - 1, selectedIndex + 5);
-                            break;
-                        case ConsoleKey.Enter:
-                            result = choices[selectedIndex];
-                            return;
-                        case ConsoleKey.Escape:
-                            result = choices.FirstOrDefault(choice => choice.IsCurrent) ?? choices[selectedIndex];
-                            return;
-                    }
-                }
-            });
-
-        AnsiConsole.WriteLine();
-        return result;
-    }
-
-    private static IRenderable BuildModelPickerLayout(string currentModel, IReadOnlyList<ModelPickerChoice> choices, int selectedIndex)
-    {
-        var visibleRange = GetVisibleModelPickerRange(choices.Count, selectedIndex, GetModelPickerPageSize());
-        var selectedChoice = choices[selectedIndex];
-        var showSourceColumn = choices.Any(c => c.SourceHint.HasValue);
-
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Color.Grey)
-            .Expand()
-            .AddColumn(new TableColumn("[bold] [/]").Width(2))
-            .AddColumn(new TableColumn("[bold]Model[/]"));
-
-        if (showSourceColumn)
-        {
-            table.AddColumn(new TableColumn("[bold]Source[/]"));
-        }
-
-        table.AddColumn(new TableColumn("[bold]Rate[/]").RightAligned());
-
-        foreach (var index in Enumerable.Range(visibleRange.StartIndex, visibleRange.Count))
-        {
-            var choice = choices[index];
-            var pointer = index == selectedIndex ? "[cyan]>[/]" : " ";
-            var name = index == selectedIndex
-                ? $"[bold cyan]{Markup.Escape(choice.DisplayName)}[/]"
-                : Markup.Escape(choice.DisplayName);
-
-            if (choice.IsCurrent)
-            {
-                name += " [grey](active)[/]";
-            }
-
-            var sourceLabel = choice.SourceHint switch
-            {
-                TroubleshootingSession.ModelSource.Byok => "[yellow]BYOK[/]",
-                TroubleshootingSession.ModelSource.GitHub => "[green]GitHub[/]",
-                _ => "[grey]--[/]"
-            };
-
-            if (showSourceColumn)
-            {
-                table.AddRow(pointer, name, sourceLabel, Markup.Escape(choice.RateLabel));
-            }
-            else
-            {
-                table.AddRow(pointer, name, Markup.Escape(choice.RateLabel));
-            }
-        }
-
-        var detailsGrid = new Grid();
-        detailsGrid.AddColumn(new GridColumn().PadRight(1));
-        detailsGrid.AddColumn();
-        detailsGrid.AddRow("[grey]Current:[/]", $"[magenta]{Markup.Escape(currentModel)}[/]");
-        detailsGrid.AddRow("[grey]Selection:[/]", $"[bold cyan]{Markup.Escape(selectedChoice.DisplayName)}[/]");
-        detailsGrid.AddRow("[grey]Rate:[/]", $"[cyan]{Markup.Escape(selectedChoice.RateLabel)}[/]");
-        detailsGrid.AddRow("[grey]Details:[/]", $"[grey]{Markup.Escape(selectedChoice.DetailSummary)}[/]");
-        detailsGrid.AddRow("[grey]Visible:[/]", $"[grey]{visibleRange.StartIndex + 1}-{visibleRange.StartIndex + visibleRange.Count} of {choices.Count}[/]");
-
-        var detailsPanel = new Panel(detailsGrid)
-            .Header("[bold cyan] Model details [/]")
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Grey)
-            .Expand();
-
-        var instructions = new Markup("[grey]Use [cyan]Up/Down[/] to browse, [green]Enter[/] to select, [yellow]Esc[/] to keep the current model.[/]");
-
-        return new Rows(
-            new Panel(table)
-                .Header("[bold cyan] Select AI model [/]") 
-                .Border(BoxBorder.Rounded)
-                .BorderColor(Color.Cyan)
-                .Expand(),
-            detailsPanel,
-            instructions);
-    }
-
-    private static string BuildModelDetailSummary(ModelInfo model)
-    {
-        var details = new List<string>();
-
-        if (model.Capabilities?.Limits?.MaxContextWindowTokens is int contextWindow && contextWindow > 0)
-        {
-            details.Add($"context {FormatCompactTokenCount(contextWindow)}");
-        }
-
-        if (model.Capabilities?.Limits?.MaxPromptTokens is int maxPrompt && maxPrompt > 0)
-        {
-            details.Add($"prompt {FormatCompactTokenCount(maxPrompt)}");
-        }
-
-        if (model.Capabilities?.Supports?.Vision == true)
-        {
-            details.Add("vision");
-        }
-
-        if (model.Capabilities?.Supports?.ReasoningEffort == true)
-        {
-            details.Add("reasoning");
-        }
-
-        if (!string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
-        {
-            details.Add($"default reasoning {model.DefaultReasoningEffort}");
-        }
-
-        return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
-    }
+        => ModelPickerUI.PromptReasoningEffort(currentReasoningEffort, supportedEfforts, defaultReasoningEffort);
 
     internal static string FormatCompactTokenCount(int value)
-    {
-        if (value >= 1_000_000)
-        {
-            return $"{value / 1_000_000d:0.#}M";
-        }
-
-        if (value >= 1_000)
-        {
-            return $"{value / 1_000d:0.#}k";
-        }
-
-        return value.ToString("N0", CultureInfo.InvariantCulture);
-    }
-
-    private static int GetModelPickerPageSize()
-    {
-        var height = Console.WindowHeight;
-        if (height <= 0)
-        {
-            return 8;
-        }
-
-        return Math.Max(5, height - 14);
-    }
-
-    private static (int StartIndex, int Count) GetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
-    {
-        if (totalCount <= 0)
-        {
-            return (0, 0);
-        }
-
-        pageSize = Math.Max(1, Math.Min(pageSize, totalCount));
-        selectedIndex = Math.Max(0, Math.Min(selectedIndex, totalCount - 1));
-
-        var startIndex = Math.Max(0, selectedIndex - (pageSize / 2));
-        if (startIndex + pageSize > totalCount)
-        {
-            startIndex = Math.Max(0, totalCount - pageSize);
-        }
-
-        return (startIndex, pageSize);
-    }
+        => ModelPickerUI.FormatCompactTokenCount(value);
 
     public static void ShowModelSelectionSummary(string selectedModel, IReadOnlyList<(string Label, string Value)> details)
-    {
-        var grid = new Grid();
-        grid.AddColumn(new GridColumn().PadRight(2));
-        grid.AddColumn();
-        grid.AddRow("[grey]Model:[/]", $"[bold magenta]{Markup.Escape(selectedModel)}[/]");
-
-        foreach (var (label, value) in details)
-        {
-            if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
-
-            var markup = label.StartsWith("Context", StringComparison.OrdinalIgnoreCase)
-                ? $"[bold cyan]{Markup.Escape(value)}[/]"
-                : $"[cyan]{Markup.Escape(value)}[/]";
-
-            grid.AddRow($"[grey]{Markup.Escape(label)}:[/]", markup);
-        }
-
-        var panel = new Panel(grid)
-            .Header("[bold green] Model selected [/]") 
-            .Border(BoxBorder.Rounded)
-            .BorderColor(Color.Green);
-
-        AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
-    }
+        => ModelPickerUI.ShowModelSelectionSummary(selectedModel, details);
 
     /// <summary>
     /// Display an error message

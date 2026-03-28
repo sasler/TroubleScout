@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Reflection;
+using System.Globalization;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using TroubleScout.Services;
@@ -221,13 +222,30 @@ public class ConsoleUITests
         table.Rows.Should().HaveCount(1);
     }
 
-    private static string InvokeGetRateLabel(ModelInfo model)
+    [Fact]
+    public void MarkdownStreamRenderer_ParseMarkdownTable_ShouldMatchConsoleUiBehavior()
     {
-        var method = typeof(ConsoleUI).GetMethod("GetRateLabel", BindingFlags.Static | BindingFlags.NonPublic);
+        // Arrange
+        var lines = new[]
+        {
+            "| Name | Status |",
+            "| ---- | ------ |",
+            "| SQL  | Running |",
+            "| IIS  | Stopped |"
+        };
+        var renderer = new MarkdownStreamRenderer();
 
-        method.Should().NotBeNull();
-        return method!.Invoke(null, [model]) as string ?? string.Empty;
+        // Act
+        var table = renderer.ParseMarkdownTable(lines);
+
+        // Assert
+        table.Should().NotBeNull();
+        table!.Columns.Should().HaveCount(2);
+        table.Rows.Should().HaveCount(2);
     }
+
+    private static string InvokeGetRateLabel(ModelInfo model)
+        => ModelPickerUI.GetRateLabel(model);
 
     #region ShowStatusPanel Multi-Server Tests
 
@@ -422,6 +440,27 @@ public class ConsoleUITests
     public void FormatCompactTokenCount_Millions_ShouldReturnMFormat()
     {
         ConsoleUI.FormatCompactTokenCount(1_500_000).Should().Be("1.5M");
+    }
+
+    [Fact]
+    public void FormatCompactTokenCount_ShouldUseInvariantCultureForCompactFormats()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+            CultureInfo.CurrentUICulture = new CultureInfo("de-DE");
+
+            ConsoleUI.FormatCompactTokenCount(1_500).Should().Be("1.5k");
+            ConsoleUI.FormatCompactTokenCount(1_500_000).Should().Be("1.5M");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [Fact]
@@ -828,16 +867,7 @@ public class ConsoleUITests
 
     private static (int StartIndex, int Count) InvokeGetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
     {
-        var method = typeof(ConsoleUI).GetMethod("GetVisibleModelPickerRange", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull();
-        var result = method!.Invoke(null, [totalCount, selectedIndex, pageSize]);
-        result.Should().NotBeNull();
-
-        var type = result!.GetType();
-        return (
-            (int)type.GetField("Item1")!.GetValue(result)!,
-            (int)type.GetField("Item2")!.GetValue(result)!);
+        return ModelPickerUI.GetVisibleModelPickerRange(totalCount, selectedIndex, pageSize);
     }
 
     #region ShowStatusPanel JEA Connection Mode Tests

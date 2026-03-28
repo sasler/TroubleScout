@@ -2,6 +2,26 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.9.2] - 2026-03-22
+
+### 🏗️ Architecture
+
+- **Decompose oversized classes** — extracted 14 focused service/UI classes from TroubleshootingSession.cs (6,627→4,244 lines, −36%), ConsoleUI.cs (2,300→1,319, −43%), and PowerShellExecutor.cs (990→574, −42%):
+  - `Services/JsonParsingHelpers` — static JSON parsing utilities
+  - `Services/PermissionEvaluator` — shell permission analysis and assessment
+  - `Services/ReportHtmlBuilder` — HTML troubleshooting report generation
+  - `Services/CommandValidator` — command safety validation and blocking
+  - `Services/CopilotCliResolver` — CLI path resolution and prerequisite checks
+  - `Services/SystemPromptBuilder` — system prompt construction
+  - `Services/ModelDiscoveryManager` — model listing, pricing, and display
+  - `Services/ConversationHistoryTracker` — thread-safe prompt/reply history
+  - `Services/ServerConnectionManager` — multi-server session lifecycle
+  - `Services/ByokProviderManager` — BYOK OpenAI configuration and auth
+  - `Services/SecondOpinionService` — second-opinion prompt building
+  - `UI/MarkdownStreamRenderer` — streaming markdown-to-ANSI conversion
+  - `UI/ModelPickerUI` — interactive model selection UI
+  - `UI/PowerShellSyntaxHighlighter` — PowerShell syntax highlighting
+
 ## [v1.9.1] - 2026-03-21
 
 ### ✨ New Features
