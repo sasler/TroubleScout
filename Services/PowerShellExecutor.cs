@@ -81,20 +81,6 @@ public class PowerShellExecutor : IDisposable
         TrackCommand(entry);
     }
 
-    /// <summary>
-    /// Commands that are allowed to run automatically (read-only Get-* commands)
-    /// </summary>
-    private static readonly string[] DefaultSafeCommands = AppSettingsStore.DefaultSafeCommands;
-
-    /// <summary>
-    /// Explicitly blocked commands even if they start with Get-
-    /// </summary>
-    private static readonly HashSet<string> BlockedCommands =
-    [
-        "Get-Credential",
-        "Get-Secret"
-    ];
-
     public PowerShellExecutor(string targetServer)
     {
         _targetServer = targetServer;
@@ -118,12 +104,7 @@ public class PowerShellExecutor : IDisposable
         ExecutionMode executionMode,
         IReadOnlyList<string>? safeCommands = null)
     {
-        using var executor = new PowerShellExecutor("localhost")
-        {
-            ExecutionMode = executionMode
-        };
-        executor.SetCustomSafeCommands(safeCommands);
-        return executor.ValidateCommand(command);
+        return CommandValidator.ValidateStandaloneCommand(command, executionMode, safeCommands);
     }
 
     internal static bool IsLocalhostName(string server)
@@ -140,325 +121,16 @@ public class PowerShellExecutor : IDisposable
     /// </summary>
     public virtual CommandValidation ValidateCommand(string command)
     {
-        if (string.IsNullOrWhiteSpace(command))
-        {
-            return new CommandValidation(false, false, "Command cannot be empty");
-        }
-
-        if (IsJeaSession)
-        {
-            return _jeaAllowedCommands != null
-                ? ValidateJeaCommand(command)
-                : new CommandValidation(false, false, "JEA command discovery has not completed for this session.");
-        }
-
-        // Check if it's a multi-line script or simple command
-        var isMultiStatement = command.Contains('\n') || command.Contains(';');
-        
-        if (isMultiStatement)
-        {
-            // For multi-statement scripts, check if ALL statements are read-only
-            if (IsReadOnlyScript(command))
-            {
-                return new CommandValidation(true, false);
-            }
-
-            return GetMutatingCommandValidation("Script contains commands that can modify system state");
-        }
-
-        // Check if it's a pipeline - if so, validate ALL cmdlets in the pipeline
-        if (command.Contains('|'))
-        {
-            // Use IsReadOnlyScript to validate the entire pipeline
-            return IsReadOnlyScript(command)
-                ? new CommandValidation(true, false)
-                : GetMutatingCommandValidation("Pipeline contains commands that can modify system state");
-        }
-
-        // Parse the command to get the cmdlet name
-        var cmdletName = ExtractCmdletName(command);
-
-        if (IsSimpleReadOnlyExpression(command))
-        {
-            return new CommandValidation(true, false);
-        }
-
-        if (string.IsNullOrEmpty(cmdletName))
-        {
-            return new CommandValidation(false, true, "Could not parse command - requires approval");
-        }
-
-        // Check if explicitly blocked
-        if (BlockedCommands.Contains(cmdletName, StringComparer.OrdinalIgnoreCase))
-        {
-            return new CommandValidation(false, false, $"Command '{cmdletName}' is blocked for security reasons");
-        }
-
-        if (IsReadOnlySingleCommand(cmdletName))
-        {
-            return new CommandValidation(true, false);
-        }
-
-        return GetMutatingCommandValidation($"Command '{cmdletName}' is not a read-only command");
+        return CreateCommandValidator().ValidateCommand(command);
     }
-
-    private CommandValidation ValidateJeaCommand(string command)
-    {
-        // Extract only command-position cmdlets (first token of each pipeline segment/statement)
-        var cmdlets = ExtractCommandPositionCmdlets(command);
-        if (cmdlets.Count == 0)
-        {
-            return new CommandValidation(false, false,
-                $"Command does not contain a recognized JEA cmdlet for session '{_configurationName}'.");
-        }
-
-        foreach (var cmdlet in cmdlets)
-        {
-            if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
-            {
-                return new CommandValidation(false, false, $"Command '{cmdlet}' is blocked for security reasons");
-            }
-
-            if (!_jeaAllowedCommands!.Contains(cmdlet))
-            {
-                return new CommandValidation(false, false,
-                    $"Command '{cmdlet}' is not available in JEA session '{_configurationName}'.");
-            }
-        }
-
-        return new CommandValidation(true, false);
-    }
-
-    /// <summary>
-    /// Extracts cmdlet names from command positions only (first token of each pipeline segment/statement),
-    /// ignoring parameter values that happen to look like cmdlets (e.g. hyphenated paths or server names).
-    /// </summary>
-    private static List<string> ExtractCommandPositionCmdlets(string command)
-    {
-        var cmdlets = new List<string>();
-        var statements = command
-            .Replace("\r\n", "\n")
-            .Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s) && !s.StartsWith("#"));
-
-        foreach (var statement in statements)
-        {
-            // Skip variable assignments, block delimiters, etc.
-            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@") ||
-                statement.StartsWith("{") || statement.StartsWith("}") || statement.StartsWith("(") ||
-                statement.StartsWith(")"))
-                continue;
-
-            var pipeParts = statement.Split('|').Select(p => p.Trim());
-            foreach (var part in pipeParts)
-            {
-                if (string.IsNullOrEmpty(part)) continue;
-                if (part.StartsWith("{") || part.StartsWith("}")) continue;
-
-                var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length == 0) continue;
-                var firstToken = words[0];
-
-                // Only consider Verb-Noun shaped tokens (must contain a dash, not start with special chars)
-                if (firstToken.Contains('-') && !firstToken.StartsWith("$") && !firstToken.StartsWith("["))
-                {
-                    cmdlets.Add(firstToken);
-                }
-            }
-        }
-
-        return cmdlets;
-    }
-
-    private static bool IsSimpleReadOnlyExpression(string command)
-    {
-        var trimmed = command.Trim();
-        if (!trimmed.StartsWith("$", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (trimmed.Contains(';') || trimmed.Contains('\n') || trimmed.Contains('\r') || trimmed.Contains('|'))
-        {
-            return false;
-        }
-
-        if (trimmed.Contains("=", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (trimmed.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Set-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Start-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Clear-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Format-Volume", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private bool IsReadOnlySingleCommand(string cmdletName)
-    {
-        return GetSafeCommandPatterns().Any(pattern => MatchesSafeCommandPattern(cmdletName, pattern));
-    }
-
-    private CommandValidation GetMutatingCommandValidation(string baseReason)
-    {
-        return _executionMode switch
-        {
-            ExecutionMode.Safe => new CommandValidation(true, true, $"{baseReason}. Safe mode requires explicit user approval."),
-            ExecutionMode.Yolo => new CommandValidation(true, false, $"{baseReason}. YOLO mode allows execution without confirmation."),
-            _ => new CommandValidation(true, true, $"{baseReason}. Requires user approval.")
-        };
-    }
-
-    /// <summary>
-    /// Extracts the cmdlet name from a command string
-    /// </summary>
-    private static string ExtractCmdletName(string command)
-    {
-        // Simple extraction - get the first word/cmdlet
-        var trimmed = command.Trim();
-        
-        // Handle piped commands - get the first cmdlet
-        var firstPart = trimmed.Split('|')[0].Trim();
-        
-        // Get the cmdlet name (first word)
-        var parts = firstPart.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
-        
-        return parts.Length > 0 ? parts[0] : string.Empty;
-    }
-
-    /// <summary>
-    /// Check if a multi-statement script contains only safe read-only operations
-    /// </summary>
-    private bool IsReadOnlyScript(string command)
-    {
-        // Split by common statement separators
-        var statements = command
-            .Replace("\r\n", "\n")
-            .Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s) && !s.StartsWith("#"));
-
-        foreach (var statement in statements)
-        {
-            // Skip variable assignments, object declarations, and block delimiters
-            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@") ||
-                statement.StartsWith("{") || statement.StartsWith("}") || statement.StartsWith("(") ||
-                statement.StartsWith(")"))
-                continue;
-            
-            // Skip property assignments inside objects (PropertyName = Value)
-            if (statement.Contains(" = ") && !statement.Contains("-"))
-                continue;
-
-            // Check each part of piped commands
-            var pipeParts = statement.Split('|').Select(p => p.Trim());
-            foreach (var part in pipeParts)
-            {
-                if (string.IsNullOrEmpty(part)) continue;
-                
-                // Skip parts that are just block delimiters
-                if (part.StartsWith("{") || part.StartsWith("}") || part == "{" || part == "}")
-                    continue;
-                
-                // Check for dangerous code in script blocks (e.g., ForEach-Object { $_.Kill() })
-                if (part.Contains("{") && part.Contains("}"))
-                {
-                    var scriptBlockContent = part.Substring(part.IndexOf('{') + 1, part.LastIndexOf('}') - part.IndexOf('{') - 1);
-                    // Check for dangerous methods/properties (case-insensitive to match PowerShell semantics)
-                    if (scriptBlockContent.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Set-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return false;
-                    }
-                }
-                
-                var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length == 0) continue;
-                var cmdlet = words[0];
-                
-                // Skip if it's not a cmdlet (no dash, or starts with special chars)
-                if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
-                    continue;
-                // Check if cmdlet is explicitly blocked (e.g., Get-Credential, Get-Secret)
-                if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
-                {
-                    return false;
-                }
-
-                if (!IsReadOnlySingleCommand(cmdlet))
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Verb prefixes that are never safe to auto-execute, even if a user adds them to SafeCommands.
-    /// </summary>
-    private static readonly string[] DangerousVerbPrefixes =
-    [
-        "Set-", "Start-", "Stop-", "Restart-", "Remove-", "New-", "Clear-",
-        "Enable-", "Disable-", "Rename-", "Move-", "Add-", "Install-",
-        "Uninstall-", "Invoke-", "Register-", "Unregister-", "Reset-",
-        "Update-", "Grant-", "Revoke-", "Suspend-", "Resume-", "Push-",
-        "Mount-", "Dismount-", "Repair-"
-    ];
 
     internal static bool MatchesSafeCommandPattern(string cmdletName, string pattern)
     {
-        if (string.IsNullOrWhiteSpace(cmdletName) || string.IsNullOrWhiteSpace(pattern))
-        {
-            return false;
-        }
-
-        var normalizedCmdletName = cmdletName.Trim();
-        var normalizedPattern = pattern.Trim();
-
-        if (normalizedPattern.EndsWith('*'))
-        {
-            var prefix = normalizedPattern[..^1];
-            // Reject empty prefix (bare "*") — would match everything
-            if (string.IsNullOrEmpty(prefix))
-            {
-                return false;
-            }
-
-            // Reject patterns that would auto-approve dangerous verbs (e.g. "Remove-*")
-            if (DangerousVerbPrefixes.Any(dv => prefix.Equals(dv.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
-                                              || prefix.Equals(dv, StringComparison.OrdinalIgnoreCase)))
-            {
-                return false;
-            }
-
-            return normalizedCmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-        }
-
-        // Exact match: allow even dangerous verbs when the user explicitly listed the full command.
-        return normalizedCmdletName.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
+        return CommandValidator.MatchesSafeCommandPattern(cmdletName, pattern);
     }
 
-    private IReadOnlyList<string> GetSafeCommandPatterns()
-    {
-        return _customSafeCommands ?? DefaultSafeCommands;
-    }
+    private CommandValidator CreateCommandValidator() =>
+        new(_executionMode, _customSafeCommands, _jeaAllowedCommands, _configurationName);
 
     /// <summary>
     /// Initializes the PowerShell runspace
@@ -655,7 +327,7 @@ public class PowerShellExecutor : IDisposable
             return true;
         }
 
-        var cmdletName = ExtractCmdletName(trimmed);
+        var cmdletName = CommandValidator.ExtractCmdletName(trimmed);
         if (string.IsNullOrWhiteSpace(cmdletName))
         {
             return false;

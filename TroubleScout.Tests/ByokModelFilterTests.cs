@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using GitHub.Copilot.SDK;
 using TroubleScout;
+using TroubleScout.Services;
 using Xunit;
 
 namespace TroubleScout.Tests;
@@ -124,7 +125,7 @@ public class ByokModelFilterTests
     {
         using var document = JsonDocument.Parse(json);
 
-        var method = typeof(TroubleshootingSession).GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic);
+        var method = typeof(ModelDiscoveryManager).GetMethod("ParseByokModelsResponse", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
         Assert.NotNull(method);
 
         var result = method!.Invoke(null, [document.RootElement]);
