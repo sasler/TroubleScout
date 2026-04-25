@@ -1587,7 +1587,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     {
                         if (hasStartedStreaming())
                         {
-                            ConsoleUI.ShowInfo($"{nextWatchdogStatus} ({LiveThinkingIndicator.FormatElapsed((int)indicator.Elapsed.TotalSeconds)})");
+                            ConsoleUI.ShowLiveStatusNotice($"{nextWatchdogStatus} ({LiveThinkingIndicator.FormatElapsed((int)indicator.Elapsed.TotalSeconds)})");
                         }
                         else
                         {

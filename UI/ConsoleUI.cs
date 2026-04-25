@@ -73,6 +73,7 @@ public static class ConsoleUI
     private static readonly MarkdownStreamRenderer _markdownRenderer = new();
     private const int MaxPromptHistorySize = 100;
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
+    internal static Func<bool> IsOutputRedirectedResolver { get; set; } = static () => Console.IsOutputRedirected;
     internal static Func<bool> IsWindowsTerminalSessionResolver { get; set; } =
         static () => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WT_SESSION"));
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
@@ -81,12 +82,21 @@ public static class ConsoleUI
     internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
     internal static Func<PostAnalysisAction>? PostAnalysisActionPromptOverride { get; set; }
     private static readonly object _terminalStateLock = new();
+    private static readonly object _liveOutputLock = new();
     private static string? _originalConsoleTitle;
     private static bool _capturedOriginalConsoleTitle;
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
         _currentExecutionMode = mode;
+    }
+
+    private static void WithLiveOutputLock(Action action)
+    {
+        lock (_liveOutputLock)
+        {
+            action();
+        }
     }
 
     public static void BeginAppLifetime(string title = "TroubleScout")
@@ -166,7 +176,7 @@ public static class ConsoleUI
 
         try
         {
-            if (!Console.IsOutputRedirected)
+            if (!IsOutputRedirectedResolver())
             {
                 Console.Write(BuildTerminalTitleSequence(title));
             }
@@ -179,7 +189,7 @@ public static class ConsoleUI
 
     public static void SetWindowsTerminalProgress(TerminalProgressState state, int progress = 0)
     {
-        if (!IsWindowsTerminalSessionResolver() || Console.IsOutputRedirected)
+        if (!IsWindowsTerminalSessionResolver() || IsOutputRedirectedResolver())
         {
             return;
         }
@@ -973,7 +983,7 @@ public static class ConsoleUI
     /// </summary>
     public static void WriteAIResponse(string text, bool isComplete = false)
     {
-        _markdownRenderer.WriteAIResponse(text, isComplete);
+        WithLiveOutputLock(() => _markdownRenderer.WriteAIResponse(text, isComplete));
     }
 
     /// <summary>
@@ -981,7 +991,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ResetStreamBuffer()
     {
-        _markdownRenderer.ResetStreamBuffer();
+        WithLiveOutputLock(_markdownRenderer.ResetStreamBuffer);
     }
 
     internal static Table? ParseMarkdownTable(IReadOnlyList<string> lines)
@@ -994,7 +1004,7 @@ public static class ConsoleUI
     /// </summary>
     public static void StartAIResponse()
     {
-        _markdownRenderer.StartAIResponse();
+        WithLiveOutputLock(_markdownRenderer.StartAIResponse);
     }
 
     /// <summary>
@@ -1002,7 +1012,7 @@ public static class ConsoleUI
     /// </summary>
     public static void EndAIResponse()
     {
-        _markdownRenderer.EndAIResponse();
+        WithLiveOutputLock(_markdownRenderer.EndAIResponse);
     }
 
     /// <summary>
@@ -1422,6 +1432,15 @@ public static class ConsoleUI
         AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
     }
 
+    public static void ShowLiveStatusNotice(string message)
+    {
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
+        });
+    }
+
     /// <summary>
     /// Display a warning message
     /// </summary>
@@ -1553,15 +1572,18 @@ public static class ConsoleUI
     public static void WriteReasoningText(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        if (Console.IsOutputRedirected)
+        WithLiveOutputLock(() =>
         {
-            Console.Write(text);
-        }
-        else
-        {
-            // ANSI dark grey (color 238 on 256-color palette) — clearly dimmer than normal output
-            Console.Write($"\x1b[38;5;238m{text}\x1b[0m");
-        }
+            if (Console.IsOutputRedirected)
+            {
+                Console.Write(text);
+            }
+            else
+            {
+                // ANSI dark grey (color 238 on 256-color palette) — clearly dimmer than normal output
+                Console.Write($"\x1b[38;5;238m{text}\x1b[0m");
+            }
+        });
     }
 
     /// <summary>
@@ -1569,9 +1591,12 @@ public static class ConsoleUI
     /// </summary>
     public static void StartReasoningBlock()
     {
-        EnsureLineBreak();
-        if (!Console.IsOutputRedirected)
-            Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            if (!Console.IsOutputRedirected)
+                Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
+        });
     }
 
     /// <summary>
@@ -1579,8 +1604,11 @@ public static class ConsoleUI
     /// </summary>
     public static void EndReasoningBlock()
     {
-        EnsureLineBreak();
-        Console.WriteLine();
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            Console.WriteLine();
+        });
     }
 
     /// <summary>
@@ -1682,11 +1710,11 @@ public class LiveThinkingIndicator : IDisposable
             _phaseElapsed.Restart();
         }
 
+        ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
         _spinnerTask = Task.Run(async () =>
         {
             try
             {
-                ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
                 while (!_cts.Token.IsCancellationRequested)
                 {
                     lock (_lock)

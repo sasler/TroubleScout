@@ -653,6 +653,43 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void LiveThinkingIndicator_DisposeImmediately_ShouldLeaveWindowsTerminalProgressCleared()
+    {
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        var originalResolver = ConsoleUI.IsWindowsTerminalSessionResolver;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+            ConsoleUI.IsWindowsTerminalSessionResolver = static () => true;
+
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+            indicator.Dispose();
+
+            Thread.Sleep(300);
+
+            var output = sw.ToString();
+            var indeterminate = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+            var hidden = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Hidden);
+
+            output.Should().Contain(indeterminate);
+            output.Should().Contain(hidden);
+            output.LastIndexOf(hidden, StringComparison.Ordinal)
+                .Should().BeGreaterThan(output.LastIndexOf(indeterminate, StringComparison.Ordinal));
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            ConsoleUI.IsWindowsTerminalSessionResolver = originalResolver;
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
     public void LiveThinkingIndicator_FormatElapsed_ShouldFormatSeconds()
     {
         LiveThinkingIndicator.FormatElapsed(5).Should().Be("5s");
