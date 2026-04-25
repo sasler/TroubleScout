@@ -387,7 +387,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
-        commandTable.AddRow("[cyan]/mcp-role[/] [grey][[monitoring|ticketing]] [[server|none]][/]", "Configure monitoring and ticketing MCP role mappings");
+        commandTable.AddRow("[cyan]/mcp-role[/] [grey][[<monitoring|ticketing> <server|none> | clear <monitoring|ticketing|all>]][/]", "Configure monitoring and ticketing MCP role mappings; no args opens interactive mode");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model and session handoff mode");
         commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
