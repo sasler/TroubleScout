@@ -51,6 +51,7 @@ public static class ConsoleUI
     private const int MaxPromptHistorySize = 100;
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
+    internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -922,6 +923,11 @@ public static class ConsoleUI
         LiveThinkingIndicator.PauseForApproval();
         try
         {
+            if (CommandApprovalPromptOverride != null)
+            {
+                return CommandApprovalPromptOverride(command, reason, agentIntent, impact);
+            }
+
             AnsiConsole.WriteLine();
             
             var rows = new List<IRenderable>

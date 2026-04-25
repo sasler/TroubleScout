@@ -124,7 +124,7 @@ internal sealed class ModelDiscoveryManager
             }
         }
 
-        return models;
+        return models.ToList();
     }
 
     internal async Task<List<ModelInfo>> TryGetGitHubProviderModelsAsync(

@@ -5,7 +5,10 @@ using System.Globalization;
 using System.Text.Json;
 using TroubleScout;
 using TroubleScout.Services;
+using TroubleScout.UI;
 using Xunit;
+using PermissionDecisionApproveForSession = GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSession;
+using PermissionDecisionApproveForSessionApprovalMcp = GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSessionApprovalMcp;
 
 namespace TroubleScout.Tests;
 
@@ -356,8 +359,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             warnings.Should().BeEmpty();
             servers.Should().HaveCount(2);
             servers.Keys.Should().Contain(["remote-server", "local-server"]);
-            servers["remote-server"].GetType().Name.Should().Be("McpRemoteServerConfig");
-            servers["local-server"].GetType().Name.Should().Be("McpLocalServerConfig");
+            servers["remote-server"].GetType().Name.Should().Be("McpHttpServerConfig");
+            servers["local-server"].GetType().Name.Should().Be("McpStdioServerConfig");
         }
         finally
         {
@@ -1646,6 +1649,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var tracker = GetPrivateField<SessionUsageTracker>(_session, "_sessionUsageTracker");
         var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, null);
         tracker.RecordTurn(100, 50, pricing, 1.0);
+        SetPrivateField(_session, "_sessionPremiumRequestCost", 2.5);
 
         var method = typeof(TroubleshootingSession).GetMethod("ResetStateForNewAiSession", BindingFlags.Instance | BindingFlags.NonPublic);
         method.Should().NotBeNull();
@@ -1656,6 +1660,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         tracker.TotalOutputTokens.Should().Be(0);
         tracker.TotalTurns.Should().Be(0);
         tracker.GetCostEstimateDisplay().Should().BeNull();
+        GetPrivateField<double?>(_session, "_sessionPremiumRequestCost").Should().BeNull();
     }
 
     [Fact]
@@ -1679,6 +1684,31 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             // Assert
             saved.LastModel.Should().Be("gpt-4.1");
             saved.UseByokOpenAi.Should().BeTrue();
+        });
+    }
+
+    [Fact]
+    public void ReloadSafeCommandsFromSettings_ShouldRefreshConfiguredMcpRoles()
+    {
+        ExecuteWithTemporarySettingsPath(_ =>
+        {
+            var session = new TroubleshootingSession("localhost");
+
+            AppSettingsStore.Save(new AppSettings
+            {
+                MonitoringMcpServer = "zabbix",
+                TicketingMcpServer = "redmine"
+            });
+
+            InvokeReloadSafeCommandsFromSettings(session);
+
+            GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().Be("zabbix");
+            GetPrivateField<string?>(session, "_configuredTicketingMcpServer").Should().Be("redmine");
+
+            var prompt = InvokeCreateSystemMessage(session, "localhost");
+            var content = GetCombinedPromptContent(prompt);
+            content.Should().Contain("Monitoring MCP server: zabbix");
+            content.Should().Contain("Ticketing MCP server: redmine");
         });
     }
 
@@ -1853,6 +1883,23 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSessionConfig_ShouldConfigureSubagentFoundation()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        config.IncludeSubAgentStreamingEvents.Should().BeFalse();
+        config.DefaultAgent.Should().NotBeNull();
+        config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
+        config.CustomAgents.Should().NotBeNull();
+        config.CustomAgents.Should().Contain(agent => agent.Name == "server-evidence-collector"
+            && agent.Infer == true
+            && string.Equals(agent.DisplayName, "Server Evidence Collector", StringComparison.Ordinal));
+        var issueResearcher = config.CustomAgents!.Single(agent => agent.Name == "issue-researcher");
+        issueResearcher.Infer.Should().BeTrue();
+        issueResearcher.Tools.Should().Equal("web_search");
+    }
+
+    [Fact]
     public void GetStatusFields_WhenReasoningIsActive_ShouldIncludeReasoningField()
     {
         SetPrivateField(_session, "_selectedModel", "gpt-5");
@@ -1906,6 +1953,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var info = _session.BuildStatusBarInfo();
 
         info.ReasoningEffort.Should().Be("high");
+    }
+
+    [Fact]
+    public void BuildStatusBarInfo_WhenGitHubPremiumCostComesFromSdkMetrics_ShouldUseSdkValue()
+    {
+        SetPrivateField(_session, "_sessionPremiumRequestCost", 2.5);
+
+        var info = _session.BuildStatusBarInfo();
+
+        info.SessionCostEstimate.Should().Be("~2.5 premium reqs");
     }
 
     [Fact]
@@ -1981,6 +2038,60 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task PermissionHandler_Mcp_InSafeMode_WhenApproved_ShouldAddSessionScopedRule()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var request = CreateMcpPermissionRequest("context7", "query-docs", "{\"libraryId\":\"/github/copilot-sdk\"}");
+        var originalOverride = ConsoleUI.CommandApprovalPromptOverride;
+
+        try
+        {
+            ConsoleUI.CommandApprovalPromptOverride = static (_, _, _, _) => ApprovalResult.Approved;
+
+            var result = await handler(request, new PermissionInvocation());
+
+            result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            result.Rules.Should().ContainSingle();
+            result.Rules![0].Should().BeOfType<PermissionDecisionApproveForSession>();
+
+            var rule = (PermissionDecisionApproveForSession)result.Rules[0];
+            rule.Approval.Should().BeOfType<PermissionDecisionApproveForSessionApprovalMcp>();
+
+            var approval = (PermissionDecisionApproveForSessionApprovalMcp)rule.Approval;
+            approval.ServerName.Should().Be("context7");
+            approval.ToolName.Should().Be("query-docs");
+        }
+        finally
+        {
+            ConsoleUI.CommandApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Mcp_InSafeMode_WhenToolNameMissing_ShouldNotAddSessionScopedRule()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var request = CreateMcpPermissionRequest("context7", null, "{}");
+        var originalOverride = ConsoleUI.CommandApprovalPromptOverride;
+
+        try
+        {
+            ConsoleUI.CommandApprovalPromptOverride = static (_, _, _, _) => ApprovalResult.Approved;
+
+            var result = await handler(request, new PermissionInvocation());
+
+            result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            (result.Rules?.Count ?? 0).Should().Be(0);
+        }
+        finally
+        {
+            ConsoleUI.CommandApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
     public async Task PermissionHandler_ShellReadOnlyPowerShellCommand_ShouldApproveInSafeMode()
     {
         // Arrange
@@ -2007,7 +2118,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var result = await handler(request, new PermissionInvocation());
 
         // Assert
-        result.Kind.Should().Be(PermissionRequestResultKind.DeniedInteractivelyByUser);
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
     }
 
     [Fact]
@@ -2287,7 +2398,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         };
     }
 
-    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string toolName, object? args)
+    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string? toolName, object? args)
     {
         return new PermissionRequestMcp
         {
@@ -2373,6 +2484,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("SaveModelAndProviderState should exist on TroubleshootingSession");
         method!.Invoke(null, [model, useByokOpenAi]);
+    }
+
+    private static void InvokeReloadSafeCommandsFromSettings(TroubleshootingSession session)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ReloadSafeCommandsFromSettings", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("ReloadSafeCommandsFromSettings should exist on TroubleshootingSession");
+        method!.Invoke(session, null);
     }
 
     private static void ExecuteWithTemporarySettingsPath(Action<string> testAction)

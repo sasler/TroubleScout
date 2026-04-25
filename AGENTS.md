@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.1.32`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`0.3.0`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 
@@ -50,6 +50,8 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 - Keep `Streaming = true` for interactive UX.
 - Build tool list with `AIFunctionFactory.Create(...)` in `Tools/DiagnosticTools.cs`.
 - When configuring BYOK OpenAI-compatible providers, preserve richer `ModelInfo` metadata and use `ProviderConfig.WireApi = "responses"` for GPT-5-family models.
+- Keep `IncludeSubAgentStreamingEvents = false` unless the TUI is explicitly updated to render sub-agent deltas separately from the main assistant stream.
+- Use `DefaultAgent.ExcludedTools` plus inferable `CustomAgents` to keep the root agent focused; the current foundation routes `web_search` through a dedicated research sub-agent.
 
 ### Resource lifecycle
 
@@ -65,9 +67,11 @@ TroubleScout should support MCP servers and skills through Copilot SDK session c
 - Support local/stdio and remote (`http`/`sse`) MCP server definitions.
 - Default skill directory should be `%USERPROFILE%\\.copilot\\skills` when present.
 - Use `SessionConfig.SkillDirectories` and `SessionConfig.DisabledSkills`.
+- Support optional `MonitoringMcpServer` / `TicketingMcpServer` settings that map existing configured MCP servers to those roles in the system prompt and status output.
 - Track and surface:
   - configured MCP servers and skills
   - runtime-used MCP servers and skills (from session events)
+- Return session-scoped MCP approval rules after the user approves an MCP permission so repeated prompts stop for the rest of the active TroubleScout session.
 - Never print secret values from MCP headers/env vars.
 
 ## PowerShell Safety Model

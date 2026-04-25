@@ -106,6 +106,24 @@ public class SystemPromptTests : IDisposable
     }
 
     [Fact]
+    public async Task SystemPrompt_WhenMonitoringAndTicketingMcpConfigured_ShouldDescribeRolesAndSubagentUsage()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            MonitoringMcpServer = "zabbix",
+            TicketingMcpServer = "redmine"
+        });
+
+        await using var session = new TroubleshootingSession("localhost");
+
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
+
+        content.Should().Contain("Monitoring MCP server: zabbix");
+        content.Should().Contain("Ticketing MCP server: redmine");
+        content.Should().Contain("Use focused sub-agents");
+    }
+
+    [Fact]
     public async Task SystemPromptOverride_ReplacesTroubleshootingApproachSection()
     {
         AppSettingsStore.Save(new AppSettings

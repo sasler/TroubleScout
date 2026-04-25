@@ -210,6 +210,28 @@ internal static class SystemPromptBuilder
             - Always consider the impact of recommended actions
             """;
 
+        var mcpRoleGuidance = string.Empty;
+        if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer) || !string.IsNullOrWhiteSpace(settings.TicketingMcpServer))
+        {
+            var roleLines = new StringBuilder();
+            roleLines.AppendLine("## MCP Role Guidance");
+
+            if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer))
+            {
+                roleLines.AppendLine($"- Monitoring MCP server: {SanitizeServerNameForPrompt(settings.MonitoringMcpServer)}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(settings.TicketingMcpServer))
+            {
+                roleLines.AppendLine($"- Ticketing MCP server: {SanitizeServerNameForPrompt(settings.TicketingMcpServer)}");
+            }
+
+            roleLines.AppendLine("- When monitoring alerts, dashboards, incidents, or ticket history are relevant, consult the mapped MCP role early in the investigation.");
+            roleLines.AppendLine("- Use focused sub-agents for broad MCP lookups and external research, then summarize only the findings that materially affect the diagnosis.");
+            roleLines.AppendLine();
+            mcpRoleGuidance = roleLines.ToString();
+        }
+
         if (settings.SystemPromptOverrides != null)
         {
             if (settings.SystemPromptOverrides.TryGetValue("investigation_approach", out var customInvestigation) && !string.IsNullOrWhiteSpace(customInvestigation))
@@ -265,6 +287,7 @@ internal static class SystemPromptBuilder
             - Always indicate which server each piece of data comes from.
             {connectedSessionsBlock}
             {jeaSessionsBlock}
+            {mcpRoleGuidance}
             """;
 
         var guidelines = $"""
