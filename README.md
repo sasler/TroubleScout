@@ -16,10 +16,13 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Natural Language Troubleshooting**: Describe your issue, and the AI analyzes and diagnoses problems
 - **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval with a three-option prompt (Yes / No / Explain)
 - **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
+- **Guided Next-Step Dialog**: After diagnosis/recommendations or approved changes, TroubleScout asks whether to continue investigating, apply the fix, or stop
 - **Always-Visible Status Bar**: Compact post-response line showing model, provider, token usage, session totals, and estimated cost
 - **Session Cost Tracking**: Cumulative token counts and cost estimates — BYOK shows `~$X.XX est.`, GitHub shows `~X.X premium reqs`
 - **Elapsed Timer**: Thinking indicator shows elapsed time and long-running warnings (30s/60s thresholds)
-- **Activity Watchdog**: Detects stalled operations and updates the user when the model goes quiet
+- **Activity Watchdog**: Detects stalled operations and updates the user when the model goes quiet, including pauses after streaming starts
+- **Windows Terminal Tab Feedback**: Sets the title to `TroubleScout` and shows a Windows Terminal progress ring while the AI is busy
+- **Funny ASCII Wait Indicator**: Live waiting state uses the ASCII-safe "Wheel of IT Blame" animation to make long turns easier to read
 - **Local or Remote**: Works with localhost or remote servers via WinRM
 - **Multi-Server at Startup**: Connect to multiple servers with `--server srv1 --server srv2` (or `--server srv1,srv2`); all sessions are established at launch
 - **Multi-Server Sessions**: Connect to additional servers at runtime with `/server <name>` or via `connect_server` tool to avoid PowerShell double-hop issues
@@ -106,7 +109,7 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 **Validate the WinGet manifest for a release locally:**
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.10.0
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.12.0
 ```
 
 ## Usage

@@ -2,6 +2,22 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.12.0] - 2026-04-25
+
+### ✨ New Features
+
+- 🎛️ **Post-analysis action dialog** - after diagnosis/recommendations or after approved commands finish, TroubleScout now returns control to the user with a next-step dialog: continue investigating, apply the fix, or stop for now.
+- 🎨 **Windows Terminal wait feedback** - TroubleScout now sets the running terminal title to `TroubleScout`, drives the Windows Terminal tab/taskbar progress ring with OSC `9;4`, and uses the ASCII-safe "Wheel of IT Blame" animation while the AI is busy.
+
+### 🐛 Bug Fixes
+
+- ♻️ **Stop endless post-approval recursion** - approved command follow-ups now ask the AI to summarize what changed and then yield control back to TroubleScout instead of recursively telling the model to "continue your analysis" forever.
+- 💤 **Better stalled-stream visibility** - when a streamed response goes quiet mid-turn, TroubleScout now surfaces explicit wait notices while keeping the tab progress indicator active.
+
+### 📝 Documentation & UX
+
+- 📝 **Document the new checkpoint and waiting flow** - refreshed README and AGENTS guidance for the next-step action dialog, Windows Terminal title/progress behavior, and the new waiting animation.
+
 ## [v1.11.0] - 2026-04-25
 
 ### ✨ New Features

@@ -131,6 +131,66 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void PromptPostAnalysisAction_WhenInputRedirected_ShouldReturnStop()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => true;
+            ConsoleUI.PostAnalysisActionPromptOverride = null;
+
+            var result = ConsoleUI.PromptPostAnalysisAction();
+
+            result.Should().Be(PostAnalysisAction.Stop);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void PromptPostAnalysisAction_WhenOverrideChoosesApplyFix_ShouldReturnApplyFix()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => false;
+            ConsoleUI.PostAnalysisActionPromptOverride = static () => PostAnalysisAction.ApplyFix;
+
+            var result = ConsoleUI.PromptPostAnalysisAction();
+
+            result.Should().Be(PostAnalysisAction.ApplyFix);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void BuildTerminalTitleSequence_ShouldEmitOscTitleSequence()
+    {
+        var sequence = ConsoleUI.BuildTerminalTitleSequence("TroubleScout");
+
+        sequence.Should().Be("\u001b]0;TroubleScout\u0007");
+    }
+
+    [Fact]
+    public void BuildWindowsTerminalProgressSequence_ShouldEmitIndeterminateOscSequence()
+    {
+        var sequence = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+
+        sequence.Should().Be("\u001b]9;4;3;0\u0007");
+    }
+
+    [Fact]
     public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
     {
         // Arrange & Act

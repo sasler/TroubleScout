@@ -2513,6 +2513,71 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void ShouldOfferPostAnalysisActionPrompt_WhenResponseContainsReadyForNextAction_ShouldReturnTrue()
+    {
+        var response = """
+            ## Findings
+            - The print spooler is failing after startup.
+
+            ## Ready for next action
+            - Continue investigating or apply the fix.
+            """;
+
+        InvokeShouldOfferPostAnalysisActionPrompt(response, forcePrompt: false).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldOfferPostAnalysisActionPrompt_WhenForcedByApprovedCommands_ShouldReturnTrue()
+    {
+        InvokeShouldOfferPostAnalysisActionPrompt("Interim update only.", forcePrompt: true).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldOfferPostAnalysisActionPrompt_WhenResponseIsInterimUpdate_ShouldReturnFalse()
+    {
+        var response = """
+            ## Investigating
+            - I am checking services and recent event logs now.
+            """;
+
+        InvokeShouldOfferPostAnalysisActionPrompt(response, forcePrompt: false).Should().BeFalse();
+    }
+
+    [Fact]
+    public void BuildPostAnalysisFollowUpPrompt_WhenContinuingInvestigation_ShouldAskForNextDiagnostics()
+    {
+        var prompt = InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ContinueInvestigating);
+
+        prompt.Should().Contain("Continue investigating");
+        prompt.Should().Contain("Ready for next action");
+        prompt.Should().NotContain("Apply the most appropriate remediation");
+    }
+
+    [Fact]
+    public void BuildPostAnalysisFollowUpPrompt_WhenApplyingFix_ShouldAskForRemediation()
+    {
+        var prompt = InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ApplyFix);
+
+        prompt.Should().Contain("Apply the most appropriate remediation");
+        prompt.Should().Contain("If you already recommended a fix");
+        prompt.Should().Contain("Ready for next action");
+    }
+
+    [Fact]
+    public void BuildApprovedCommandFollowUpPrompt_ShouldSummarizeResultsAndYieldControl()
+    {
+        var prompt = InvokeBuildApprovedCommandFollowUpPrompt("""
+            Command: Restart-Service Spooler
+            Result:
+            [OK] Service restarted successfully.
+            """);
+
+        prompt.Should().Contain("approved command");
+        prompt.Should().Contain("Ready for next action");
+        prompt.Should().NotContain("Please continue your analysis");
+    }
+
+    [Fact]
     public void AddContextUsageField_ShouldUseInvariantFormatting()
     {
         var originalCulture = CultureInfo.CurrentCulture;
@@ -2648,6 +2713,33 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("BuildPromptForExecutionSafety should exist on TroubleshootingSession");
         return (string)method!.Invoke(null, [userMessage])!;
+    }
+
+    private static bool InvokeShouldOfferPostAnalysisActionPrompt(string response, bool forcePrompt)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("ShouldOfferPostAnalysisActionPrompt", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("ShouldOfferPostAnalysisActionPrompt should exist on TroubleshootingSession");
+        return (bool)method!.Invoke(null, [response, forcePrompt])!;
+    }
+
+    private static string InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildPostAnalysisFollowUpPrompt", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildPostAnalysisFollowUpPrompt should exist on TroubleshootingSession");
+        return (string)method!.Invoke(null, [action])!;
+    }
+
+    private static string InvokeBuildApprovedCommandFollowUpPrompt(string executionSummary)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("BuildApprovedCommandFollowUpPrompt", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("BuildApprovedCommandFollowUpPrompt should exist on TroubleshootingSession");
+        return (string)method!.Invoke(null, [executionSummary])!;
     }
 
     private static void InvokeAddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)

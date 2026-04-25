@@ -24,6 +24,22 @@ public enum UrlApprovalResult
     Deny
 }
 
+public enum PostAnalysisAction
+{
+    ContinueInvestigating,
+    ApplyFix,
+    Stop
+}
+
+public enum TerminalProgressState
+{
+    Hidden = 0,
+    Normal = 1,
+    Error = 2,
+    Indeterminate = 3,
+    Warning = 4
+}
+
 /// <summary>
 /// Data for the compact status bar shown after each AI response
 /// </summary>
@@ -57,15 +73,129 @@ public static class ConsoleUI
     private static readonly MarkdownStreamRenderer _markdownRenderer = new();
     private const int MaxPromptHistorySize = 100;
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
+    internal static Func<bool> IsWindowsTerminalSessionResolver { get; set; } =
+        static () => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WT_SESSION"));
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
     internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
     internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
+    internal static Func<PostAnalysisAction>? PostAnalysisActionPromptOverride { get; set; }
+    private static readonly object _terminalStateLock = new();
+    private static string? _originalConsoleTitle;
+    private static bool _capturedOriginalConsoleTitle;
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
         _currentExecutionMode = mode;
     }
+
+    public static void BeginAppLifetime(string title = "TroubleScout")
+    {
+        lock (_terminalStateLock)
+        {
+            if (!_capturedOriginalConsoleTitle)
+            {
+                try
+                {
+                    _originalConsoleTitle = OperatingSystem.IsWindows()
+                        ? Console.Title
+                        : null;
+                }
+                catch
+                {
+                    _originalConsoleTitle = null;
+                }
+
+                _capturedOriginalConsoleTitle = true;
+            }
+        }
+
+        SetTerminalTitle(title);
+    }
+
+    public static void EndAppLifetime()
+    {
+        ClearWindowsTerminalProgress();
+
+        lock (_terminalStateLock)
+        {
+            if (!_capturedOriginalConsoleTitle)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_originalConsoleTitle))
+                {
+                    SetTerminalTitle(_originalConsoleTitle);
+                }
+            }
+            finally
+            {
+                _capturedOriginalConsoleTitle = false;
+                _originalConsoleTitle = null;
+            }
+        }
+    }
+
+    internal static string BuildTerminalTitleSequence(string title)
+        => $"\u001b]0;{title}\u0007";
+
+    internal static string BuildWindowsTerminalProgressSequence(TerminalProgressState state, int progress = 0)
+        => $"\u001b]9;4;{(int)state};{Math.Clamp(progress, 0, 100)}\u0007";
+
+    public static void SetTerminalTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Console.Title = title;
+            }
+        }
+        catch
+        {
+            // Ignore when no console title API is available.
+        }
+
+        try
+        {
+            if (!Console.IsOutputRedirected)
+            {
+                Console.Write(BuildTerminalTitleSequence(title));
+            }
+        }
+        catch
+        {
+            // Ignore when escape sequences cannot be written.
+        }
+    }
+
+    public static void SetWindowsTerminalProgress(TerminalProgressState state, int progress = 0)
+    {
+        if (!IsWindowsTerminalSessionResolver() || Console.IsOutputRedirected)
+        {
+            return;
+        }
+
+        try
+        {
+            Console.Write(BuildWindowsTerminalProgressSequence(state, progress));
+        }
+        catch
+        {
+            // Ignore when the active terminal does not accept progress sequences.
+        }
+    }
+
+    public static void ClearWindowsTerminalProgress()
+        => SetWindowsTerminalProgress(TerminalProgressState.Hidden);
 
     private static string GetPromptMarkup()
     {
@@ -301,6 +431,7 @@ public static class ConsoleUI
     {
         AnsiConsole.MarkupLine("[grey]Describe your issue and TroubleScout will investigate.[/]");
         AnsiConsole.MarkupLine("[grey]Type[/] [cyan]/help[/] [grey]for commands,[/] [cyan]/status[/] [grey]for session info,[/] [cyan]/exit[/] [grey]to quit.[/]");
+        AnsiConsole.MarkupLine("[grey]After findings, TroubleScout will ask whether to continue investigating, apply the fix, or stop.[/]");
         if (!string.IsNullOrWhiteSpace(mcpRoleHint))
         {
             AnsiConsole.MarkupLine($"[grey]{Markup.Escape(mcpRoleHint)}[/]");
@@ -405,6 +536,8 @@ public static class ConsoleUI
             new Markup("[grey]Interactive command reference[/]"),
             new Markup(""),
             commandTable,
+            new Markup(""),
+            new Markup("[grey]After diagnosis or approved changes, TroubleScout asks whether to continue investigating, apply the fix, or stop.[/]"),
             new Markup(""),
             new Markup("[grey]Tip:[/] Type [cyan]/[/] and keep typing to filter commands live. Press [cyan]Tab[/] to complete.")
         ))
@@ -817,13 +950,21 @@ public static class ConsoleUI
     public static async Task<T> RunWithSpinnerAsync<T>(string message, Func<Action<string>, Task<T>> action)
     {
         T result = default!;
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("cyan"))
-            .StartAsync(message, async ctx =>
-            {
-                result = await action(status => ctx.Status(status));
-            });
+        SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
+        try
+        {
+            await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("cyan"))
+                .StartAsync(message, async ctx =>
+                {
+                    result = await action(status => ctx.Status(status));
+                });
+        }
+        finally
+        {
+            ClearWindowsTerminalProgress();
+        }
         return result;
     }
 
@@ -1057,6 +1198,45 @@ public static class ConsoleUI
         }
     }
 
+    public static PostAnalysisAction PromptPostAnalysisAction()
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            if (PostAnalysisActionPromptOverride != null)
+            {
+                return PostAnalysisActionPromptOverride();
+            }
+
+            if (IsInputRedirectedResolver())
+            {
+                return PostAnalysisAction.Stop;
+            }
+
+            AnsiConsole.WriteLine();
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What should TroubleScout do next?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices([
+                        "Continue investigating",
+                        "Apply the fix",
+                        "Stop for now"
+                    ]));
+
+            return choice switch
+            {
+                "Continue investigating" => PostAnalysisAction.ContinueInvestigating,
+                "Apply the fix" => PostAnalysisAction.ApplyFix,
+                _ => PostAnalysisAction.Stop
+            };
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
     public static (string? Monitoring, string? Ticketing) PromptMcpRoleSelection(
         string? currentMonitoring,
         string? currentTicketing,
@@ -1238,6 +1418,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowInfo(string message)
     {
+        EnsureLineBreak();
         AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
     }
 
@@ -1458,7 +1639,17 @@ public class LiveThinkingIndicator : IDisposable
     private bool _hasStartedResponse;
     private readonly object _lock = new();
     private Task? _spinnerTask;
-    private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
+    private static readonly string[] SpinnerFrames =
+    [
+        "/ [ DNS? ]",
+        "- [ FW?  ]",
+        "\\ [ RAM? ]",
+        "| [ HDD? ]",
+        "/ [ CPU? ]",
+        "- [ NIC? ]",
+        "\\ [ CERT?]",
+        "| [ USER?]"
+    ];
     private int _spinnerIndex;
     private readonly System.Diagnostics.Stopwatch _totalElapsed = new();
     private readonly System.Diagnostics.Stopwatch _phaseElapsed = new();
@@ -1495,6 +1686,7 @@ public class LiveThinkingIndicator : IDisposable
         {
             try
             {
+                ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
                 while (!_cts.Token.IsCancellationRequested)
                 {
                     lock (_lock)
@@ -1521,6 +1713,7 @@ public class LiveThinkingIndicator : IDisposable
         var phaseSec = (int)_phaseElapsed.Elapsed.TotalSeconds;
         var totalSec = (int)_totalElapsed.Elapsed.TotalSeconds;
         var elapsed = FormatElapsed(totalSec);
+        var animationFrame = SpinnerFrames[_spinnerIndex];
 
         string statusColor;
         string status;
@@ -1529,25 +1722,28 @@ public class LiveThinkingIndicator : IDisposable
         if (phaseSec >= 60)
         {
             statusColor = "\u001b[33m";
-            status = $"\u26a0 Still waiting ({elapsed})";
+            status = $"{animationFrame} Still waiting ({elapsed})";
             hint = "operation may be stalled \u2014 ESC to cancel";
+            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else if (phaseSec >= 30)
         {
             statusColor = "\u001b[33m";
-            status = $"\u26a0 Still working ({elapsed})";
+            status = $"{animationFrame} Still working ({elapsed})";
             hint = "this is taking longer than usual \u2014 ESC to cancel";
+            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else
         {
             statusColor = "\u001b[36m";
-            status = $"{_currentStatus}{SpinnerFrames[_spinnerIndex]}";
+            status = $"{animationFrame} {_currentStatus}";
             if (totalSec >= 3)
             {
                 status += $" ({elapsed})";
             }
 
             hint = "ESC to cancel";
+            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
         }
 
         Console.Write($"\r\x1b[K{statusColor}{status}\u001b[0m  \u001b[90m{hint}\u001b[0m");
@@ -1599,6 +1795,7 @@ public class LiveThinkingIndicator : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        ConsoleUI.ClearWindowsTerminalProgress();
         
         lock (_lock)
         {
