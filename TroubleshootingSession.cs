@@ -1488,7 +1488,7 @@ public class TroubleshootingSession : IAsyncDisposable
             // Show compact status bar after response completes
             if (hasStartedStreaming && !hasError && !wasCancelled)
             {
-                await RefreshSessionUsageMetricsAsync();
+                await RefreshSessionUsageMetricsAsync(cancellationToken);
                 ConsoleUI.WriteStatusBar(BuildStatusBarInfo());
             }
 
@@ -4506,7 +4506,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
-    private async Task RefreshSessionUsageMetricsAsync()
+    private async Task RefreshSessionUsageMetricsAsync(CancellationToken cancellationToken)
     {
         if (_copilotSession == null || _useByokOpenAi)
         {
@@ -4515,10 +4515,17 @@ public class TroubleshootingSession : IAsyncDisposable
 
         try
         {
-            var metrics = await _copilotSession.Rpc.Usage.GetMetricsAsync(CancellationToken.None);
+            using var metricsTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            metricsTimeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            var metrics = await _copilotSession.Rpc.Usage.GetMetricsAsync(metricsTimeoutCts.Token);
             _sessionPremiumRequestCost = metrics.TotalPremiumRequestCost > 0
                 ? metrics.TotalPremiumRequestCost
                 : null;
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore cancellation/timeout so status-bar rendering cannot stall the session loop.
         }
         catch
         {
