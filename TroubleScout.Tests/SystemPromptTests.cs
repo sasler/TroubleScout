@@ -54,13 +54,15 @@ public class SystemPromptTests : IDisposable
     }
 
     [Fact]
-    public async Task DefaultSystemPrompt_ContainsAutonomousGuidance()
+    public async Task DefaultSystemPrompt_ContainsCheckpointGuidance()
     {
         await using var session = new TroubleshootingSession("localhost");
 
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
-        content.Should().Contain("Do NOT pause to ask the user");
+        content.Should().Contain("Ready for next action");
+        content.Should().Contain("hand control back");
+        content.Should().NotContain("Do NOT pause to ask the user");
     }
 
     [Fact]

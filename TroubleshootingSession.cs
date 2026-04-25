@@ -298,6 +298,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private static readonly Regex MutatingIntentRegex = new(
         "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PostAnalysisHeadingRegex = new(
+        "^\\s{0,3}#{1,6}\\s*(diagnosis|findings|recommendation|recommendations|next steps|root cause)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
     private static readonly Regex CliModelIdRegex = new(
         "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -1237,12 +1240,19 @@ public class TroubleshootingSession : IAsyncDisposable
     /// Send a message and process the response with streaming
     /// </summary>
     public async Task<bool> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default)
-        => await SendMessageAsync(userMessage, promptIndexOverride: null, cancellationToken);
+        => await SendMessageAsync(
+            userMessage,
+            promptIndexOverride: null,
+            cancellationToken,
+            showPostAnalysisActionPrompt: false,
+            forcePostAnalysisActionPrompt: false);
 
     private async Task<bool> SendMessageAsync(
         string userMessage,
         int? promptIndexOverride,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool showPostAnalysisActionPrompt = false,
+        bool forcePostAnalysisActionPrompt = false)
     {
         if (_copilotSession == null)
         {
@@ -1280,7 +1290,11 @@ public class TroubleshootingSession : IAsyncDisposable
             thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
             thinkingIndicator.Start();
             watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            watchdogTask = RunActivityWatchdogAsync(thinkingIndicator, () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc), watchdogCts.Token);
+            watchdogTask = RunActivityWatchdogAsync(
+                thinkingIndicator,
+                () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc),
+                () => hasStartedStreaming,
+                watchdogCts.Token);
 
             // Subscribe to session events for streaming (manually disposed before recursive calls)
             subscription = _copilotSession.On(evt =>
@@ -1510,10 +1524,21 @@ public class TroubleshootingSession : IAsyncDisposable
             thinkingIndicator.Dispose();
             thinkingIndicator = null;
 
+            var approvalFollowUpHandled = false;
+
             // Handle any pending approval commands (may call SendMessageAsync recursively)
             if (!hasError && !wasCancelled)
             {
-                await ProcessPendingApprovalsAsync();
+                approvalFollowUpHandled = await ProcessPendingApprovalsAsync(cancellationToken);
+            }
+
+            if (!approvalFollowUpHandled
+                && !hasError
+                && !wasCancelled
+                && showPostAnalysisActionPrompt
+                && ShouldOfferPostAnalysisActionPrompt(responseBuffer.ToString(), forcePostAnalysisActionPrompt))
+            {
+                return await HandlePostAnalysisActionAsync(cancellationToken);
             }
 
             return !hasError && !wasCancelled;
@@ -1544,6 +1569,7 @@ public class TroubleshootingSession : IAsyncDisposable
     internal static async Task RunActivityWatchdogAsync(
         LiveThinkingIndicator indicator,
         Func<DateTime> getLastEventTime,
+        Func<bool> hasStartedStreaming,
         CancellationToken cancellationToken)
     {
         const int checkIntervalMs = 2000;
@@ -1562,7 +1588,14 @@ public class TroubleshootingSession : IAsyncDisposable
                 {
                     if (nextWatchdogStatus is not null)
                     {
-                        indicator.UpdateStatus(nextWatchdogStatus);
+                        if (hasStartedStreaming())
+                        {
+                            ConsoleUI.ShowLiveStatusNotice($"{nextWatchdogStatus} ({LiveThinkingIndicator.FormatElapsed((int)indicator.Elapsed.TotalSeconds)})");
+                        }
+                        else
+                        {
+                            indicator.UpdateStatus(nextWatchdogStatus);
+                        }
                     }
 
                     lastWatchdogStatus = nextWatchdogStatus;
@@ -1609,15 +1642,112 @@ public class TroubleshootingSession : IAsyncDisposable
         return promptBuilder.ToString();
     }
 
+    private static bool ShouldOfferPostAnalysisActionPrompt(string responseText, bool forcePrompt)
+    {
+        if (forcePrompt)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(responseText))
+        {
+            return false;
+        }
+
+        if (responseText.Contains("Ready for next action", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return PostAnalysisHeadingRegex.IsMatch(responseText);
+    }
+
+    private static string BuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)
+    {
+        return action switch
+        {
+            PostAnalysisAction.ContinueInvestigating => """
+                Continue investigating from the current evidence.
+
+                Requirements:
+                - Do not repeat the full prior diagnosis unless something changed.
+                - Gather only the next most useful diagnostics or validation steps.
+                - If you reach an updated diagnosis or recommendation, stop after this response.
+                - End with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.
+                """,
+            PostAnalysisAction.ApplyFix => """
+                Apply the most appropriate remediation based on your latest analysis.
+
+                Requirements:
+                - If you already recommended a fix in your most recent analysis, proceed with that path now instead of starting over.
+                - If you have not proposed a fix yet, determine the next remediation step first.
+                - Keep the explanation brief, request approval for any mutating commands, and do not repeat the full diagnosis unless it changed.
+                - After reporting the outcome or next remediation step, end with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(action), action, "Unsupported post-analysis action.")
+        };
+    }
+
+    private static string BuildApprovedCommandFollowUpPrompt(string executionSummary)
+    {
+        var promptBuilder = new StringBuilder();
+        promptBuilder.AppendLine("One or more approved command(s) have finished running.");
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine("Here are the approved command results:");
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine(executionSummary.Trim());
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine("Analyze what changed, summarize whether the action helped, and clearly state the next best option.");
+        promptBuilder.AppendLine("Do not continue into more diagnostics or remediation on your own after this response.");
+        promptBuilder.Append("End with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.");
+        return promptBuilder.ToString();
+    }
+
+    private async Task<bool> HandlePostAnalysisActionAsync(CancellationToken cancellationToken)
+    {
+        var action = ConsoleUI.PromptPostAnalysisAction();
+
+        switch (action)
+        {
+            case PostAnalysisAction.ContinueInvestigating:
+            {
+                var promptIndex = RecordPrompt("TroubleScout action: Continue investigating.");
+                return await SendMessageAsync(
+                    BuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ContinueInvestigating),
+                    promptIndex,
+                    cancellationToken,
+                    showPostAnalysisActionPrompt: true,
+                    forcePostAnalysisActionPrompt: false);
+            }
+            case PostAnalysisAction.ApplyFix:
+            {
+                var promptIndex = RecordPrompt("TroubleScout action: Apply the fix.");
+                return await SendMessageAsync(
+                    BuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ApplyFix),
+                    promptIndex,
+                    cancellationToken,
+                    showPostAnalysisActionPrompt: true,
+                    forcePostAnalysisActionPrompt: false);
+            }
+            default:
+                ConsoleUI.ShowInfo("Stopping here. TroubleScout is ready when you are.");
+                return true;
+        }
+    }
+
     /// <summary>
     /// Process any commands that require user approval
     /// </summary>
-    private async Task ProcessPendingApprovalsAsync()
+    private async Task<bool> ProcessPendingApprovalsAsync(CancellationToken cancellationToken)
     {
         var pending = _diagnosticTools.PendingCommands;
-        if (pending.Count == 0) return;
+        if (pending.Count == 0)
+        {
+            return false;
+        }
 
         var commands = pending.Select(p => (p.Command, p.Reason)).ToList();
+        var executedSummaries = new List<string>();
         
         if (commands.Count == 1)
         {
@@ -1628,15 +1758,14 @@ public class TroubleshootingSession : IAsyncDisposable
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(pending[0]);
                 ConsoleUI.ShowSuccess("Command executed");
-                
-                // Feed result back to the AI
-                await SendMessageAsync($"The approved command '{cmd.Command}' has been executed. Result:\n{result}\n\nPlease continue your analysis with this information.");
+                executedSummaries.Add($"Command: {cmd.Command}{Environment.NewLine}Result:{Environment.NewLine}{result}");
             }
             else
             {
                 ConsoleUI.ShowWarning("Command skipped by user");
                 _diagnosticTools.LogDeniedCommand(pending[0]);
                 _diagnosticTools.ClearPendingCommands();
+                return false;
             }
         }
         else
@@ -1650,6 +1779,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
                 var result = await _diagnosticTools.ExecuteApprovedCommandAsync(cmd);
                 ConsoleUI.ShowSuccess("Command executed");
+                executedSummaries.Add($"Command: {cmd.Command}{Environment.NewLine}Result:{Environment.NewLine}{result}");
             }
 
             var approvedSet = new HashSet<int>(approved);
@@ -1662,12 +1792,24 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             _diagnosticTools.ClearPendingCommands();
-
-            if (approved.Count > 0)
-            {
-                await SendMessageAsync("The approved commands have been executed. Please continue your analysis.");
-            }
         }
+
+        if (executedSummaries.Count == 0)
+        {
+            return false;
+        }
+
+        var promptIndex = RecordPrompt("TroubleScout action: Analyze approved command results.");
+        var followUpPrompt = BuildApprovedCommandFollowUpPrompt(string.Join(
+            $"{Environment.NewLine}{Environment.NewLine}",
+            executedSummaries));
+
+        return await SendMessageAsync(
+            followUpPrompt,
+            promptIndex,
+            cancellationToken,
+            showPostAnalysisActionPrompt: true,
+            forcePostAnalysisActionPrompt: true);
     }
 
     /// <summary>
@@ -2667,7 +2809,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
             // Send message to Copilot
             var promptIndex = RecordPrompt(input);
-            await RunInteractiveCancelableAiOperationAsync(token => SendMessageAsync(input, promptIndex, token));
+            await RunInteractiveCancelableAiOperationAsync(token => SendMessageAsync(
+                input,
+                promptIndex,
+                token,
+                showPostAnalysisActionPrompt: true,
+                forcePostAnalysisActionPrompt: false));
         }
     }
 
@@ -2945,7 +3092,12 @@ public class TroubleshootingSession : IAsyncDisposable
             MaxSecondOpinionReplyChars,
             MaxSecondOpinionCommandChars,
             MaxSecondOpinionToolOutputChars);
-        return await SendMessageAsync(secondOpinionPrompt, promptIndex, cancellationToken);
+        return await SendMessageAsync(
+            secondOpinionPrompt,
+            promptIndex,
+            cancellationToken,
+            showPostAnalysisActionPrompt: true,
+            forcePostAnalysisActionPrompt: false);
     }
 
     private void GenerateAndOpenReport()

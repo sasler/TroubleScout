@@ -131,6 +131,66 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void PromptPostAnalysisAction_WhenInputRedirected_ShouldReturnStop()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => true;
+            ConsoleUI.PostAnalysisActionPromptOverride = null;
+
+            var result = ConsoleUI.PromptPostAnalysisAction();
+
+            result.Should().Be(PostAnalysisAction.Stop);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void PromptPostAnalysisAction_WhenOverrideChoosesApplyFix_ShouldReturnApplyFix()
+    {
+        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
+        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
+
+        try
+        {
+            ConsoleUI.IsInputRedirectedResolver = static () => false;
+            ConsoleUI.PostAnalysisActionPromptOverride = static () => PostAnalysisAction.ApplyFix;
+
+            var result = ConsoleUI.PromptPostAnalysisAction();
+
+            result.Should().Be(PostAnalysisAction.ApplyFix);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalResolver;
+            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
+        }
+    }
+
+    [Fact]
+    public void BuildTerminalTitleSequence_ShouldEmitOscTitleSequence()
+    {
+        var sequence = ConsoleUI.BuildTerminalTitleSequence("TroubleScout");
+
+        sequence.Should().Be("\u001b]0;TroubleScout\u0007\u001b]2;TroubleScout\u0007");
+    }
+
+    [Fact]
+    public void BuildWindowsTerminalProgressSequence_ShouldEmitIndeterminateOscSequence()
+    {
+        var sequence = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+
+        sequence.Should().Be("\u001b]9;4;3;0\u0007");
+    }
+
+    [Fact]
     public void ShowCliHelp_ShouldRenderUsageAndOptions_WhenVersionIsProvided()
     {
         // Arrange & Act
@@ -588,6 +648,75 @@ public class ConsoleUITests
         }
         finally
         {
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_DisposeImmediately_ShouldLeaveWindowsTerminalProgressCleared()
+    {
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        var originalResolver = ConsoleUI.IsWindowsTerminalSessionResolver;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+            ConsoleUI.IsWindowsTerminalSessionResolver = static () => true;
+
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+            indicator.Dispose();
+
+            Thread.Sleep(300);
+
+            var output = sw.ToString();
+            var indeterminate = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+            var hidden = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Hidden);
+
+            output.Should().Contain(indeterminate);
+            output.Should().Contain(hidden);
+            output.LastIndexOf(hidden, StringComparison.Ordinal)
+                .Should().BeGreaterThan(output.LastIndexOf(indeterminate, StringComparison.Ordinal));
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            ConsoleUI.IsWindowsTerminalSessionResolver = originalResolver;
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
+    public void LiveThinkingIndicator_ShortRun_ShouldEmitIndeterminateProgressOnlyOnce()
+    {
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        var originalResolver = ConsoleUI.IsWindowsTerminalSessionResolver;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+            ConsoleUI.IsWindowsTerminalSessionResolver = static () => true;
+
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+            Thread.Sleep(500);
+            indicator.Dispose();
+
+            var output = sw.ToString();
+            var indeterminate = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+
+            (output.Split(indeterminate, StringSplitOptions.None).Length - 1).Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            ConsoleUI.IsWindowsTerminalSessionResolver = originalResolver;
             Console.SetOut(originalOut);
         }
     }

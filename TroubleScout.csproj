@@ -12,9 +12,9 @@
          always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
          downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
-    <Version>1.11.0</Version>
-    <AssemblyVersion>1.11.0.0</AssemblyVersion>
-    <FileVersion>1.11.0.0</FileVersion>
+    <Version>1.12.0</Version>
+    <AssemblyVersion>1.12.0.0</AssemblyVersion>
+    <FileVersion>1.12.0.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

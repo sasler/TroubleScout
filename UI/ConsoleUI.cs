@@ -24,6 +24,22 @@ public enum UrlApprovalResult
     Deny
 }
 
+public enum PostAnalysisAction
+{
+    ContinueInvestigating,
+    ApplyFix,
+    Stop
+}
+
+public enum TerminalProgressState
+{
+    Hidden = 0,
+    Normal = 1,
+    Error = 2,
+    Indeterminate = 3,
+    Warning = 4
+}
+
 /// <summary>
 /// Data for the compact status bar shown after each AI response
 /// </summary>
@@ -57,15 +73,139 @@ public static class ConsoleUI
     private static readonly MarkdownStreamRenderer _markdownRenderer = new();
     private const int MaxPromptHistorySize = 100;
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
+    internal static Func<bool> IsOutputRedirectedResolver { get; set; } = static () => Console.IsOutputRedirected;
+    internal static Func<bool> IsWindowsTerminalSessionResolver { get; set; } =
+        static () => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WT_SESSION"));
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
     internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
     internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
+    internal static Func<PostAnalysisAction>? PostAnalysisActionPromptOverride { get; set; }
+    private static readonly object _terminalStateLock = new();
+    private static readonly object _liveOutputLock = new();
+    private static string? _originalConsoleTitle;
+    private static bool _capturedOriginalConsoleTitle;
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
         _currentExecutionMode = mode;
     }
+
+    private static void WithLiveOutputLock(Action action)
+    {
+        lock (_liveOutputLock)
+        {
+            action();
+        }
+    }
+
+    public static void BeginAppLifetime(string title = "TroubleScout")
+    {
+        lock (_terminalStateLock)
+        {
+            if (!_capturedOriginalConsoleTitle)
+            {
+                try
+                {
+                    _originalConsoleTitle = OperatingSystem.IsWindows()
+                        ? Console.Title
+                        : null;
+                }
+                catch
+                {
+                    _originalConsoleTitle = null;
+                }
+
+                _capturedOriginalConsoleTitle = true;
+            }
+        }
+
+        SetTerminalTitle(title);
+    }
+
+    public static void EndAppLifetime()
+    {
+        ClearWindowsTerminalProgress();
+
+        lock (_terminalStateLock)
+        {
+            if (!_capturedOriginalConsoleTitle)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_originalConsoleTitle))
+                {
+                    SetTerminalTitle(_originalConsoleTitle);
+                }
+            }
+            finally
+            {
+                _capturedOriginalConsoleTitle = false;
+                _originalConsoleTitle = null;
+            }
+        }
+    }
+
+    internal static string BuildTerminalTitleSequence(string title)
+        => $"\u001b]0;{title}\u0007\u001b]2;{title}\u0007";
+
+    internal static string BuildWindowsTerminalProgressSequence(TerminalProgressState state, int progress = 0)
+        => $"\u001b]9;4;{(int)state};{Math.Clamp(progress, 0, 100)}\u0007";
+
+    public static void SetTerminalTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Console.Title = title;
+            }
+        }
+        catch
+        {
+            // Ignore when no console title API is available.
+        }
+
+        try
+        {
+            if (!IsOutputRedirectedResolver())
+            {
+                Console.Write(BuildTerminalTitleSequence(title));
+            }
+        }
+        catch
+        {
+            // Ignore when escape sequences cannot be written.
+        }
+    }
+
+    public static void SetWindowsTerminalProgress(TerminalProgressState state, int progress = 0)
+    {
+        if (!IsWindowsTerminalSessionResolver() || IsOutputRedirectedResolver())
+        {
+            return;
+        }
+
+        try
+        {
+            Console.Write(BuildWindowsTerminalProgressSequence(state, progress));
+        }
+        catch
+        {
+            // Ignore when the active terminal does not accept progress sequences.
+        }
+    }
+
+    public static void ClearWindowsTerminalProgress()
+        => SetWindowsTerminalProgress(TerminalProgressState.Hidden);
 
     private static string GetPromptMarkup()
     {
@@ -86,6 +226,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowBanner(string? version = null)
     {
+        SetTerminalTitle("TroubleScout");
         AnsiConsole.Clear();
         
         var banner = new FigletText("TroubleScout")
@@ -301,6 +442,7 @@ public static class ConsoleUI
     {
         AnsiConsole.MarkupLine("[grey]Describe your issue and TroubleScout will investigate.[/]");
         AnsiConsole.MarkupLine("[grey]Type[/] [cyan]/help[/] [grey]for commands,[/] [cyan]/status[/] [grey]for session info,[/] [cyan]/exit[/] [grey]to quit.[/]");
+        AnsiConsole.MarkupLine("[grey]After findings, TroubleScout will ask whether to continue investigating, apply the fix, or stop.[/]");
         if (!string.IsNullOrWhiteSpace(mcpRoleHint))
         {
             AnsiConsole.MarkupLine($"[grey]{Markup.Escape(mcpRoleHint)}[/]");
@@ -405,6 +547,8 @@ public static class ConsoleUI
             new Markup("[grey]Interactive command reference[/]"),
             new Markup(""),
             commandTable,
+            new Markup(""),
+            new Markup("[grey]After diagnosis or approved changes, TroubleScout asks whether to continue investigating, apply the fix, or stop.[/]"),
             new Markup(""),
             new Markup("[grey]Tip:[/] Type [cyan]/[/] and keep typing to filter commands live. Press [cyan]Tab[/] to complete.")
         ))
@@ -817,13 +961,21 @@ public static class ConsoleUI
     public static async Task<T> RunWithSpinnerAsync<T>(string message, Func<Action<string>, Task<T>> action)
     {
         T result = default!;
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("cyan"))
-            .StartAsync(message, async ctx =>
-            {
-                result = await action(status => ctx.Status(status));
-            });
+        SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
+        try
+        {
+            await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("cyan"))
+                .StartAsync(message, async ctx =>
+                {
+                    result = await action(status => ctx.Status(status));
+                });
+        }
+        finally
+        {
+            ClearWindowsTerminalProgress();
+        }
         return result;
     }
 
@@ -832,7 +984,7 @@ public static class ConsoleUI
     /// </summary>
     public static void WriteAIResponse(string text, bool isComplete = false)
     {
-        _markdownRenderer.WriteAIResponse(text, isComplete);
+        WithLiveOutputLock(() => _markdownRenderer.WriteAIResponse(text, isComplete));
     }
 
     /// <summary>
@@ -840,7 +992,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ResetStreamBuffer()
     {
-        _markdownRenderer.ResetStreamBuffer();
+        WithLiveOutputLock(_markdownRenderer.ResetStreamBuffer);
     }
 
     internal static Table? ParseMarkdownTable(IReadOnlyList<string> lines)
@@ -853,7 +1005,7 @@ public static class ConsoleUI
     /// </summary>
     public static void StartAIResponse()
     {
-        _markdownRenderer.StartAIResponse();
+        WithLiveOutputLock(_markdownRenderer.StartAIResponse);
     }
 
     /// <summary>
@@ -861,7 +1013,7 @@ public static class ConsoleUI
     /// </summary>
     public static void EndAIResponse()
     {
-        _markdownRenderer.EndAIResponse();
+        WithLiveOutputLock(_markdownRenderer.EndAIResponse);
     }
 
     /// <summary>
@@ -1057,6 +1209,45 @@ public static class ConsoleUI
         }
     }
 
+    public static PostAnalysisAction PromptPostAnalysisAction()
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            if (PostAnalysisActionPromptOverride != null)
+            {
+                return PostAnalysisActionPromptOverride();
+            }
+
+            if (IsInputRedirectedResolver())
+            {
+                return PostAnalysisAction.Stop;
+            }
+
+            AnsiConsole.WriteLine();
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What should TroubleScout do next?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices([
+                        "Continue investigating",
+                        "Apply the fix",
+                        "Stop for now"
+                    ]));
+
+            return choice switch
+            {
+                "Continue investigating" => PostAnalysisAction.ContinueInvestigating,
+                "Apply the fix" => PostAnalysisAction.ApplyFix,
+                _ => PostAnalysisAction.Stop
+            };
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
     public static (string? Monitoring, string? Ticketing) PromptMcpRoleSelection(
         string? currentMonitoring,
         string? currentTicketing,
@@ -1238,7 +1429,17 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowInfo(string message)
     {
+        EnsureLineBreak();
         AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
+    }
+
+    public static void ShowLiveStatusNotice(string message)
+    {
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
+        });
     }
 
     /// <summary>
@@ -1372,15 +1573,18 @@ public static class ConsoleUI
     public static void WriteReasoningText(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        if (Console.IsOutputRedirected)
+        WithLiveOutputLock(() =>
         {
-            Console.Write(text);
-        }
-        else
-        {
-            // ANSI dark grey (color 238 on 256-color palette) — clearly dimmer than normal output
-            Console.Write($"\x1b[38;5;238m{text}\x1b[0m");
-        }
+            if (Console.IsOutputRedirected)
+            {
+                Console.Write(text);
+            }
+            else
+            {
+                // ANSI dark grey (color 238 on 256-color palette) — clearly dimmer than normal output
+                Console.Write($"\x1b[38;5;238m{text}\x1b[0m");
+            }
+        });
     }
 
     /// <summary>
@@ -1388,9 +1592,12 @@ public static class ConsoleUI
     /// </summary>
     public static void StartReasoningBlock()
     {
-        EnsureLineBreak();
-        if (!Console.IsOutputRedirected)
-            Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            if (!Console.IsOutputRedirected)
+                Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
+        });
     }
 
     /// <summary>
@@ -1398,8 +1605,11 @@ public static class ConsoleUI
     /// </summary>
     public static void EndReasoningBlock()
     {
-        EnsureLineBreak();
-        Console.WriteLine();
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            Console.WriteLine();
+        });
     }
 
     /// <summary>
@@ -1455,11 +1665,24 @@ public class LiveThinkingIndicator : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private string _currentStatus = "Thinking";
     private bool _isRunning;
+    private bool _isDisposed;
     private bool _hasStartedResponse;
     private readonly object _lock = new();
     private Task? _spinnerTask;
-    private static readonly string[] SpinnerFrames = [".", "..", "...", "....", "...."];
+    private static readonly string[] SpinnerFrames =
+    [
+        "/ [ DNS? ]",
+        "- [ FW?  ]",
+        "\\ [ RAM? ]",
+        "| [ HDD? ]",
+        "/ [ CPU? ]",
+        "- [ NIC? ]",
+        "\\ [ CERT?]",
+        "| [ USER?]"
+    ];
     private int _spinnerIndex;
+    private TerminalProgressState? _lastProgressState;
+    private int? _lastProgressValue;
     private readonly System.Diagnostics.Stopwatch _totalElapsed = new();
     private readonly System.Diagnostics.Stopwatch _phaseElapsed = new();
 
@@ -1486,9 +1709,13 @@ public class LiveThinkingIndicator : IDisposable
         {
             if (_isRunning) return;
             _isRunning = true;
+            _isDisposed = false;
             _hasStartedResponse = false;
+            _lastProgressState = null;
+            _lastProgressValue = null;
             _totalElapsed.Restart();
             _phaseElapsed.Restart();
+            UpdateTerminalProgress(TerminalProgressState.Indeterminate);
         }
 
         _spinnerTask = Task.Run(async () =>
@@ -1521,6 +1748,7 @@ public class LiveThinkingIndicator : IDisposable
         var phaseSec = (int)_phaseElapsed.Elapsed.TotalSeconds;
         var totalSec = (int)_totalElapsed.Elapsed.TotalSeconds;
         var elapsed = FormatElapsed(totalSec);
+        var animationFrame = SpinnerFrames[_spinnerIndex];
 
         string statusColor;
         string status;
@@ -1529,29 +1757,57 @@ public class LiveThinkingIndicator : IDisposable
         if (phaseSec >= 60)
         {
             statusColor = "\u001b[33m";
-            status = $"\u26a0 Still waiting ({elapsed})";
+            status = $"{animationFrame} Still waiting ({elapsed})";
             hint = "operation may be stalled \u2014 ESC to cancel";
+            UpdateTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else if (phaseSec >= 30)
         {
             statusColor = "\u001b[33m";
-            status = $"\u26a0 Still working ({elapsed})";
+            status = $"{animationFrame} Still working ({elapsed})";
             hint = "this is taking longer than usual \u2014 ESC to cancel";
+            UpdateTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else
         {
             statusColor = "\u001b[36m";
-            status = $"{_currentStatus}{SpinnerFrames[_spinnerIndex]}";
+            status = $"{animationFrame} {_currentStatus}";
             if (totalSec >= 3)
             {
                 status += $" ({elapsed})";
             }
 
             hint = "ESC to cancel";
+            UpdateTerminalProgress(TerminalProgressState.Indeterminate);
         }
 
         Console.Write($"\r\x1b[K{statusColor}{status}\u001b[0m  \u001b[90m{hint}\u001b[0m");
         _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+    }
+
+    private void UpdateTerminalProgress(TerminalProgressState state, int progress = 0)
+    {
+        if (_cts.IsCancellationRequested || _isDisposed)
+        {
+            return;
+        }
+
+        progress = Math.Clamp(progress, 0, 100);
+        if (_lastProgressState == state && _lastProgressValue == progress)
+        {
+            return;
+        }
+
+        _lastProgressState = state;
+        _lastProgressValue = progress;
+        ConsoleUI.SetWindowsTerminalProgress(state, progress);
+    }
+
+    private void ClearTerminalProgress()
+    {
+        _lastProgressState = TerminalProgressState.Hidden;
+        _lastProgressValue = 0;
+        ConsoleUI.ClearWindowsTerminalProgress();
     }
 
     internal static string FormatElapsed(int totalSeconds)
@@ -1598,20 +1854,18 @@ public class LiveThinkingIndicator : IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel();
-        
         lock (_lock)
         {
-            _totalElapsed.Stop();
-            _phaseElapsed.Stop();
-            
-            if (!_hasStartedResponse)
+            if (_isDisposed)
             {
-                // Clear the status line if we haven't started a response
-                Console.Write("\r\x1b[K");
+                return;
             }
+
+            _isDisposed = true;
         }
-        
+
+        _cts.Cancel();
+
         try
         {
             _spinnerTask?.Wait(TimeSpan.FromSeconds(1));
@@ -1620,6 +1874,21 @@ public class LiveThinkingIndicator : IDisposable
         {
             // Ignore
         }
+
+        lock (_lock)
+        {
+            _totalElapsed.Stop();
+            _phaseElapsed.Stop();
+
+            if (!_hasStartedResponse)
+            {
+                // Clear the status line if we haven't started a response
+                Console.Write("\r\x1b[K");
+            }
+
+            ClearTerminalProgress();
+        }
+
         _cts.Dispose();
     }
 }

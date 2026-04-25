@@ -189,13 +189,29 @@ disabledSkills = disabledSkills
 
 if (!string.IsNullOrWhiteSpace(prompt))
 {
-    // Headless mode - single prompt execution
-    await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+    ConsoleUI.BeginAppLifetime();
+    try
+    {
+        // Headless mode - single prompt execution
+        await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+    }
+    finally
+    {
+        ConsoleUI.EndAppLifetime();
+    }
 }
 else
 {
-    // Interactive mode with full TUI
-    await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+    ConsoleUI.BeginAppLifetime();
+    try
+    {
+        // Interactive mode with full TUI
+        await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+    }
+    finally
+    {
+        ConsoleUI.EndAppLifetime();
+    }
 }
 
 return Environment.ExitCode;
