@@ -1665,6 +1665,7 @@ public class LiveThinkingIndicator : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private string _currentStatus = "Thinking";
     private bool _isRunning;
+    private bool _isDisposed;
     private bool _hasStartedResponse;
     private readonly object _lock = new();
     private Task? _spinnerTask;
@@ -1680,6 +1681,8 @@ public class LiveThinkingIndicator : IDisposable
         "| [ USER?]"
     ];
     private int _spinnerIndex;
+    private TerminalProgressState? _lastProgressState;
+    private int? _lastProgressValue;
     private readonly System.Diagnostics.Stopwatch _totalElapsed = new();
     private readonly System.Diagnostics.Stopwatch _phaseElapsed = new();
 
@@ -1706,12 +1709,15 @@ public class LiveThinkingIndicator : IDisposable
         {
             if (_isRunning) return;
             _isRunning = true;
+            _isDisposed = false;
             _hasStartedResponse = false;
+            _lastProgressState = null;
+            _lastProgressValue = null;
             _totalElapsed.Restart();
             _phaseElapsed.Restart();
+            UpdateTerminalProgress(TerminalProgressState.Indeterminate);
         }
 
-        ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
         _spinnerTask = Task.Run(async () =>
         {
             try
@@ -1753,14 +1759,14 @@ public class LiveThinkingIndicator : IDisposable
             statusColor = "\u001b[33m";
             status = $"{animationFrame} Still waiting ({elapsed})";
             hint = "operation may be stalled \u2014 ESC to cancel";
-            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Warning, 100);
+            UpdateTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else if (phaseSec >= 30)
         {
             statusColor = "\u001b[33m";
             status = $"{animationFrame} Still working ({elapsed})";
             hint = "this is taking longer than usual \u2014 ESC to cancel";
-            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Warning, 100);
+            UpdateTerminalProgress(TerminalProgressState.Warning, 100);
         }
         else
         {
@@ -1772,11 +1778,36 @@ public class LiveThinkingIndicator : IDisposable
             }
 
             hint = "ESC to cancel";
-            ConsoleUI.SetWindowsTerminalProgress(TerminalProgressState.Indeterminate);
+            UpdateTerminalProgress(TerminalProgressState.Indeterminate);
         }
 
         Console.Write($"\r\x1b[K{statusColor}{status}\u001b[0m  \u001b[90m{hint}\u001b[0m");
         _spinnerIndex = (_spinnerIndex + 1) % SpinnerFrames.Length;
+    }
+
+    private void UpdateTerminalProgress(TerminalProgressState state, int progress = 0)
+    {
+        if (_cts.IsCancellationRequested || _isDisposed)
+        {
+            return;
+        }
+
+        progress = Math.Clamp(progress, 0, 100);
+        if (_lastProgressState == state && _lastProgressValue == progress)
+        {
+            return;
+        }
+
+        _lastProgressState = state;
+        _lastProgressValue = progress;
+        ConsoleUI.SetWindowsTerminalProgress(state, progress);
+    }
+
+    private void ClearTerminalProgress()
+    {
+        _lastProgressState = TerminalProgressState.Hidden;
+        _lastProgressValue = 0;
+        ConsoleUI.ClearWindowsTerminalProgress();
     }
 
     internal static string FormatElapsed(int totalSeconds)
@@ -1823,21 +1854,18 @@ public class LiveThinkingIndicator : IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel();
-        ConsoleUI.ClearWindowsTerminalProgress();
-        
         lock (_lock)
         {
-            _totalElapsed.Stop();
-            _phaseElapsed.Stop();
-            
-            if (!_hasStartedResponse)
+            if (_isDisposed)
             {
-                // Clear the status line if we haven't started a response
-                Console.Write("\r\x1b[K");
+                return;
             }
+
+            _isDisposed = true;
         }
-        
+
+        _cts.Cancel();
+
         try
         {
             _spinnerTask?.Wait(TimeSpan.FromSeconds(1));
@@ -1846,6 +1874,21 @@ public class LiveThinkingIndicator : IDisposable
         {
             // Ignore
         }
+
+        lock (_lock)
+        {
+            _totalElapsed.Stop();
+            _phaseElapsed.Stop();
+
+            if (!_hasStartedResponse)
+            {
+                // Clear the status line if we haven't started a response
+                Console.Write("\r\x1b[K");
+            }
+
+            ClearTerminalProgress();
+        }
+
         _cts.Dispose();
     }
 }

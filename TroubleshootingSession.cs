@@ -298,6 +298,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private static readonly Regex MutatingIntentRegex = new(
         "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PostAnalysisHeadingRegex = new(
+        "^\\s{0,3}#{1,6}\\s*(diagnosis|findings|recommendation|recommendations|next steps|root cause)\\b",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
     private static readonly Regex CliModelIdRegex = new(
         "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -1656,9 +1659,7 @@ public class TroubleshootingSession : IAsyncDisposable
             return true;
         }
 
-        return Regex.IsMatch(
-            responseText,
-            @"(?im)^\s{0,3}#{1,6}\s*(diagnosis|findings|recommendation|recommendations|next steps|root cause)\b");
+        return PostAnalysisHeadingRegex.IsMatch(responseText);
     }
 
     private static string BuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)

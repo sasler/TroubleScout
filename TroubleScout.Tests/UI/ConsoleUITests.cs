@@ -690,6 +690,38 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void LiveThinkingIndicator_ShortRun_ShouldEmitIndeterminateProgressOnlyOnce()
+    {
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        var originalResolver = ConsoleUI.IsWindowsTerminalSessionResolver;
+        using var sw = new StringWriter();
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+            ConsoleUI.IsWindowsTerminalSessionResolver = static () => true;
+
+            var indicator = ConsoleUI.CreateLiveThinkingIndicator();
+            indicator.Start();
+            Thread.Sleep(500);
+            indicator.Dispose();
+
+            var output = sw.ToString();
+            var indeterminate = ConsoleUI.BuildWindowsTerminalProgressSequence(TerminalProgressState.Indeterminate);
+
+            (output.Split(indeterminate, StringSplitOptions.None).Length - 1).Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            ConsoleUI.IsWindowsTerminalSessionResolver = originalResolver;
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [Fact]
     public void LiveThinkingIndicator_FormatElapsed_ShouldFormatSeconds()
     {
         LiveThinkingIndicator.FormatElapsed(5).Should().Be("5s");
