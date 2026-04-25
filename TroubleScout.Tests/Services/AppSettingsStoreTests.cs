@@ -117,7 +117,9 @@ public class AppSettingsStoreTests : IDisposable
             ReasoningEffort = "high",
             UseByokOpenAi = true,
             ByokOpenAiBaseUrl = "https://proxy.example/v1",
-            ByokOpenAiApiKey = "sk-test"
+            ByokOpenAiApiKey = "sk-test",
+            MonitoringMcpServer = "zabbix",
+            TicketingMcpServer = "redmine"
         };
 
         // Act
@@ -131,6 +133,28 @@ public class AppSettingsStoreTests : IDisposable
         loaded.UseByokOpenAi.Should().BeTrue();
         loaded.ByokOpenAiBaseUrl.Should().Be("https://proxy.example/v1");
         loaded.ByokOpenAiApiKey.Should().Be("sk-test");
+        loaded.MonitoringMcpServer.Should().Be("zabbix");
+        loaded.TicketingMcpServer.Should().Be("redmine");
+    }
+
+    [Fact]
+    public void Load_ShouldNormalizeMonitoringAndTicketingMcpServerNames()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "MonitoringMcpServer": "  zabbix  ",
+          "TicketingMcpServer": "   "
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+
+        settings.MonitoringMcpServer.Should().Be("zabbix");
+        settings.TicketingMcpServer.Should().BeNull();
+        json.Should().Contain("\"MonitoringMcpServer\": \"zabbix\"");
+        json.Should().Contain("\"TicketingMcpServer\": null");
     }
 
     [Fact]

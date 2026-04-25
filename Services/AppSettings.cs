@@ -15,6 +15,8 @@ public sealed class AppSettings
     public List<string>? SafeCommands { get; set; }
     public Dictionary<string, string>? SystemPromptOverrides { get; set; }
     public string? SystemPromptAppend { get; set; }
+    public string? MonitoringMcpServer { get; set; }
+    public string? TicketingMcpServer { get; set; }
 }
 
 public static class AppSettingsStore
@@ -186,7 +188,9 @@ public static class AppSettingsStore
             SafeCommands = settings.SafeCommands?.Where(command => !string.IsNullOrWhiteSpace(command)).Select(command => command.Trim()).ToList()
                 ?? DefaultSafeCommands.ToList(),
             SystemPromptOverrides = settings.SystemPromptOverrides,
-            SystemPromptAppend = settings.SystemPromptAppend
+            SystemPromptAppend = settings.SystemPromptAppend,
+            MonitoringMcpServer = NormalizeOptionalValue(settings.MonitoringMcpServer),
+            TicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer)
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
@@ -213,6 +217,20 @@ public static class AppSettingsStore
         if (!string.Equals(settings.ReasoningEffort, normalizedReasoningEffort, StringComparison.Ordinal))
         {
             settings.ReasoningEffort = normalizedReasoningEffort;
+            changed = true;
+        }
+
+        var normalizedMonitoringMcpServer = NormalizeOptionalValue(settings.MonitoringMcpServer);
+        if (!string.Equals(settings.MonitoringMcpServer, normalizedMonitoringMcpServer, StringComparison.Ordinal))
+        {
+            settings.MonitoringMcpServer = normalizedMonitoringMcpServer;
+            changed = true;
+        }
+
+        var normalizedTicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer);
+        if (!string.Equals(settings.TicketingMcpServer, normalizedTicketingMcpServer, StringComparison.Ordinal))
+        {
+            settings.TicketingMcpServer = normalizedTicketingMcpServer;
             changed = true;
         }
 
@@ -317,5 +335,12 @@ public static class AppSettingsStore
         {
             return cipherText;
         }
+    }
+
+    private static string? NormalizeOptionalValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Trim();
     }
 }

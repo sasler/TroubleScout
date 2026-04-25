@@ -30,6 +30,9 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
 - **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing (with LiteLLM fallback estimates), context-window metadata, and a clearer selected-model summary
 - **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
+- **Session-Scoped MCP Approvals**: approve an MCP request once and TroubleScout remembers it for the rest of the active session
+- **MCP Role Mapping**: optional `MonitoringMcpServer` and `TicketingMcpServer` settings tell the agent which configured MCP servers represent those systems
+- **Focused Sub-Agents**: inferable evidence-collection and issue-research sub-agents keep delegated work concise; web research is routed through the dedicated researcher agent
 - **Editable Prompt Defaults**: `/settings` creates a ready-to-edit `settings.json` with the built-in system prompt sections pre-populated
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
@@ -102,7 +105,7 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 **Validate the WinGet manifest for a release locally:**
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.9.0
+pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.10.0
 ```
 
 ## Usage
@@ -200,7 +203,7 @@ The active reasoning setting is shown in the selected-model summary, `/status`, 
 After each AI response, the status bar shows cumulative session usage:
 
 - **BYOK models**: `Session: 12.5k in / 8.2k out | ~$0.04 est.` — cost estimated from LiteLLM pricing data
-- **GitHub models**: `Session: 12.5k in / 8.2k out | ~2.5 premium reqs` — based on model multiplier
+- **GitHub models**: `Session: 12.5k in / 8.2k out | ~2.5 premium reqs` — reported from Copilot SDK session metrics
 
 ### Customizing System Prompts
 
@@ -208,6 +211,8 @@ System prompt sections can be customized via the `/settings` configuration file.
 
 ```json
 {
+  "MonitoringMcpServer": "zabbix",
+  "TicketingMcpServer": "redmine",
   "SystemPromptOverrides": {
     "investigation_approach": "Your custom investigation instructions here"
   },
@@ -223,7 +228,10 @@ TroubleScout can load MCP servers and skills through Copilot SDK session configu
 
 - By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
 - By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
+- Approving MCP access in Safe mode now persists for the current TroubleScout session, so repeated MCP calls do not keep re-prompting
+- Optional `MonitoringMcpServer` / `TicketingMcpServer` settings can point at existing configured MCP server names
 - Use `/status` or `/capabilities` to see configured MCP servers/skills and runtime-used MCP servers/skills.
+- TroubleScout configures focused sub-agents for evidence gathering and web research; sub-agent streaming deltas stay out of the main terminal stream to avoid mixed output.
 
 Examples:
 

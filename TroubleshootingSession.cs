@@ -100,6 +100,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _configuredSystemPromptAppend;
     private string? _configuredReasoningEffort;
     private string? _selectedReasoningEffort;
+    private string? _configuredMonitoringMcpServer;
+    private string? _configuredTicketingMcpServer;
+    private double? _sessionPremiumRequestCost;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -158,7 +161,9 @@ public class TroubleshootingSession : IAsyncDisposable
         var settings = new AppSettings
         {
             SystemPromptOverrides = _configuredSystemPromptOverrides?.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
-            SystemPromptAppend = _configuredSystemPromptAppend
+            SystemPromptAppend = _configuredSystemPromptAppend,
+            MonitoringMcpServer = _configuredMonitoringMcpServer,
+            TicketingMcpServer = _configuredTicketingMcpServer
         };
 
         return SystemPromptBuilder.CreateSystemMessage(
@@ -214,6 +219,8 @@ public class TroubleshootingSession : IAsyncDisposable
         var settings = AppSettingsStore.Load();
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
+        _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
+        _configuredTicketingMcpServer = settings.TicketingMcpServer;
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
@@ -1357,7 +1364,31 @@ public class TroubleshootingSession : IAsyncDisposable
                         }
                         thinkingIndicator.UpdateStatus("Processing results");
                         break;
-                    
+
+                    case SubagentStartedEvent subagentStarted:
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
+                        thinkingIndicator.UpdateStatus($"Delegating to {subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "sub-agent"}");
+                        break;
+
+                    case SubagentCompletedEvent:
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
+                        thinkingIndicator.UpdateStatus("Processing delegated results");
+                        break;
+
+                    case SubagentFailedEvent:
+                        if (hasStartedStreaming)
+                        {
+                            pendingStreamLineBreak = true;
+                        }
+                        thinkingIndicator.UpdateStatus("Delegated task failed");
+                        break;
+                     
                     case AssistantMessageDeltaEvent delta:
                         // Skip if we've already processed this event (deduplicate)
                         if (!processedDeltaIds.Add(delta.Id.ToString()))
@@ -1457,6 +1488,7 @@ public class TroubleshootingSession : IAsyncDisposable
             // Show compact status bar after response completes
             if (hasStartedStreaming && !hasError && !wasCancelled)
             {
+                await RefreshSessionUsageMetricsAsync();
                 ConsoleUI.WriteStatusBar(BuildStatusBarInfo());
             }
 
@@ -1680,6 +1712,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private void ReloadSafeCommandsFromSettings()
     {
         var settings = AppSettingsStore.Load();
+        _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
+        _configuredTicketingMcpServer = settings.TicketingMcpServer;
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
@@ -3250,6 +3284,9 @@ public class TroubleshootingSession : IAsyncDisposable
             _configuredMcpServers.Add(serverName);
         }
 
+        ValidateConfiguredMcpRole("Monitoring", _configuredMonitoringMcpServer, mcpServers);
+        ValidateConfiguredMcpRole("Ticketing", _configuredTicketingMcpServer, mcpServers);
+
         var config = BuildSessionConfig(model);
 
         if (_useByokOpenAi)
@@ -3302,6 +3339,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _sessionId = CreateSessionId();
         _lastUsage = null;
         _toolInvocationCount = 0;
+        _sessionPremiumRequestCost = null;
         _sessionUsageTracker.Reset();
     }
 
@@ -3362,7 +3400,13 @@ public class TroubleshootingSession : IAsyncDisposable
             ReasoningEffort = ResolveConfiguredReasoningEffort(model),
             SystemMessage = _systemMessageConfig,
             Streaming = true,
+            IncludeSubAgentStreamingEvents = false,
             Tools = _diagnosticTools.GetTools().ToList(),
+            DefaultAgent = new DefaultAgentConfig
+            {
+                ExcludedTools = ["web_search"]
+            },
+            CustomAgents = BuildCustomAgentConfigs(),
             ClientName = "TroubleScout",
             OnEvent = HandleSessionLifecycleStateEvent,
             OnPermissionRequest = (req, inv) =>
@@ -3403,7 +3447,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         {
                             return Task.FromResult(new PermissionRequestResult
                             {
-                                Kind = PermissionRequestResultKind.DeniedInteractivelyByUser
+                                Kind = PermissionRequestResultKind.Rejected
                             });
                         }
 
@@ -3415,7 +3459,7 @@ public class TroubleshootingSession : IAsyncDisposable
                         {
                             Kind = shellApproval == ApprovalResult.Approved
                                 ? PermissionRequestResultKind.Approved
-                                : PermissionRequestResultKind.DeniedInteractivelyByUser
+                                : PermissionRequestResultKind.Rejected
                         });
                     }
                 }
@@ -3425,12 +3469,112 @@ public class TroubleshootingSession : IAsyncDisposable
                 var approval = ConsoleUI.PromptCommandApproval(
                     description,
                     BuildPermissionPromptReason(kind));
-                return Task.FromResult(new PermissionRequestResult
-                {
-                    Kind = approval == ApprovalResult.Approved
-                        ? PermissionRequestResultKind.Approved
-                        : PermissionRequestResultKind.DeniedInteractivelyByUser
-                });
+                return Task.FromResult(CreatePermissionApprovalResult(req, kind, approval));
+            }
+        };
+    }
+
+    private static IList<CustomAgentConfig> BuildCustomAgentConfigs()
+    {
+        return
+        [
+            new CustomAgentConfig
+            {
+                Name = "server-evidence-collector",
+                DisplayName = "Server Evidence Collector",
+                Description = "Collects targeted server and MCP evidence, then returns only the relevant findings.",
+                Infer = true,
+                Prompt = """
+                    You are TroubleScout's focused evidence-collection sub-agent.
+                    Gather only the evidence needed for the current troubleshooting step.
+                    Prefer concise summaries over raw output dumps.
+                    Always identify the source server or MCP system for each finding.
+                    Do not recommend fixes unless the parent agent explicitly asked for remediation options.
+                    Return only the findings that materially affect the diagnosis.
+                    """
+            },
+            new CustomAgentConfig
+            {
+                Name = "issue-researcher",
+                DisplayName = "Issue Researcher",
+                Description = "Researches detected errors, symptoms, and event IDs on the web and returns concise findings.",
+                Infer = true,
+                Tools = ["web_search"],
+                Prompt = """
+                    You are TroubleScout's focused web research sub-agent.
+                    Use web_search to validate suspected issues, error messages, event IDs, and likely root causes.
+                    Prefer high-signal, directly relevant findings over generic troubleshooting advice.
+                    Return a short summary of what is relevant, why it matters, and any high-confidence remediation guidance.
+                    """
+            }
+        ];
+    }
+
+    private void ValidateConfiguredMcpRole(string roleName, string? configuredServerName, IReadOnlyDictionary<string, McpServerConfig> mcpServers)
+    {
+        if (string.IsNullOrWhiteSpace(configuredServerName))
+        {
+            return;
+        }
+
+        if (!mcpServers.ContainsKey(configuredServerName))
+        {
+            _configurationWarnings.Add($"{roleName} MCP '{configuredServerName}' is not available in the current MCP configuration.");
+        }
+    }
+
+    private static PermissionRequestResult CreatePermissionApprovalResult(
+        PermissionRequest request,
+        string kind,
+        ApprovalResult approval)
+    {
+        if (approval != ApprovalResult.Approved)
+        {
+            return new PermissionRequestResult
+            {
+                Kind = PermissionRequestResultKind.Rejected
+            };
+        }
+
+        var result = new PermissionRequestResult
+        {
+            Kind = PermissionRequestResultKind.Approved
+        };
+
+        var sessionRule = TryCreateSessionScopedApprovalRule(request, kind);
+        if (sessionRule != null)
+        {
+            result.Rules = [sessionRule];
+        }
+
+        return result;
+    }
+
+    private static object? TryCreateSessionScopedApprovalRule(PermissionRequest request, string kind)
+    {
+        if (!string.Equals(kind, "mcp", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var serverName = request is PermissionRequestMcp typedMcp
+            ? typedMcp.ServerName?.Trim()
+            : ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
+        var toolName = request is PermissionRequestMcp typedTool
+            ? typedTool.ToolName?.Trim() ?? typedTool.ToolTitle?.Trim()
+            : ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
+
+        if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(toolName))
+        {
+            return null;
+        }
+
+        return new GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSession
+        {
+            Approval = new GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSessionApprovalMcp
+            {
+                ServerName = serverName,
+                ToolName = toolName
             }
         };
     }
@@ -4162,8 +4306,20 @@ public class TroubleshootingSession : IAsyncDisposable
             ReasoningEffort = GetReasoningDisplay(GetSelectedModelInfo()),
             SessionInputTokens = _sessionUsageTracker.TotalInputTokens > 0 ? _sessionUsageTracker.TotalInputTokens : null,
             SessionOutputTokens = _sessionUsageTracker.TotalOutputTokens > 0 ? _sessionUsageTracker.TotalOutputTokens : null,
-            SessionCostEstimate = _sessionUsageTracker.GetCostEstimateDisplay()
+            SessionCostEstimate = GetSessionCostEstimateDisplay()
         };
+    }
+
+    private string? GetSessionCostEstimateDisplay()
+    {
+        if (_useByokOpenAi)
+        {
+            return _sessionUsageTracker.GetCostEstimateDisplay();
+        }
+
+        return _sessionPremiumRequestCost is > 0
+            ? $"~{_sessionPremiumRequestCost.Value.ToString("0.#", CultureInfo.InvariantCulture)} premium reqs"
+            : null;
     }
 
     public IReadOnlyList<(string Label, string Value)> GetStatusFields()
@@ -4208,6 +4364,8 @@ public class TroubleshootingSession : IAsyncDisposable
         var hasMcpOrSkills =
             _configuredMcpServers.Any(v => !string.IsNullOrWhiteSpace(v))
             || _runtimeMcpServers.Count > 0
+            || !string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
+            || !string.IsNullOrWhiteSpace(_configuredTicketingMcpServer)
             || _configuredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
             || _runtimeSkills.Count > 0
             || _configurationWarnings.Count > 0;
@@ -4219,6 +4377,8 @@ public class TroubleshootingSession : IAsyncDisposable
 
         AddCapabilityField(fields, "MCP configured", _configuredMcpServers);
         AddCapabilityField(fields, "MCP used", _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+        AddCapabilityField(fields, "Monitoring MCP", _configuredMonitoringMcpServer is null ? [] : [_configuredMonitoringMcpServer]);
+        AddCapabilityField(fields, "Ticketing MCP", _configuredTicketingMcpServer is null ? [] : [_configuredTicketingMcpServer]);
         AddCapabilityField(fields, "Skills configured", _configuredSkills);
         AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
 
@@ -4346,6 +4506,26 @@ public class TroubleshootingSession : IAsyncDisposable
         }
     }
 
+    private async Task RefreshSessionUsageMetricsAsync()
+    {
+        if (_copilotSession == null || _useByokOpenAi)
+        {
+            return;
+        }
+
+        try
+        {
+            var metrics = await _copilotSession.Rpc.Usage.GetMetricsAsync(CancellationToken.None);
+            _sessionPremiumRequestCost = metrics.TotalPremiumRequestCost > 0
+                ? metrics.TotalPremiumRequestCost
+                : null;
+        }
+        catch
+        {
+            // Ignore metrics fetch failures and leave the display empty rather than falling back to a guessed premium cost.
+        }
+    }
+
     private void CaptureCapabilityUsage(SessionEvent evt)
     {
         if (evt is ToolExecutionStartEvent toolStart)
@@ -4467,9 +4647,9 @@ public class TroubleshootingSession : IAsyncDisposable
         _configuredSkills.Sort(StringComparer.OrdinalIgnoreCase);
     }
 
-    internal static Dictionary<string, object> LoadMcpServersFromConfig(string? mcpConfigPath, List<string> warnings)
+    internal static Dictionary<string, McpServerConfig> LoadMcpServersFromConfig(string? mcpConfigPath, List<string> warnings)
     {
-        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase);
 
         if (string.IsNullOrWhiteSpace(mcpConfigPath))
         {
@@ -4536,7 +4716,7 @@ public class TroubleshootingSession : IAsyncDisposable
         return result;
     }
 
-    private static object? TryMapMcpServer(string serverName, JsonElement serverElement, out string? warning)
+    private static McpServerConfig? TryMapMcpServer(string serverName, JsonElement serverElement, out string? warning)
     {
         warning = null;
 
@@ -4547,7 +4727,7 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         var type = GetOptionalString(serverElement, "type")?.Trim().ToLowerInvariant();
-        if (type is "http" or "sse")
+        if (type is "http" or "sse" or "remote")
         {
             var url = GetOptionalString(serverElement, "url");
             if (string.IsNullOrWhiteSpace(url))
@@ -4556,9 +4736,8 @@ public class TroubleshootingSession : IAsyncDisposable
                 return null;
             }
 
-            var remote = new McpRemoteServerConfig
+            var remote = new McpHttpServerConfig
             {
-                Type = type!,
                 Url = url!
             };
 
@@ -4590,9 +4769,8 @@ public class TroubleshootingSession : IAsyncDisposable
             return null;
         }
 
-        var local = new McpLocalServerConfig
+        var local = new McpStdioServerConfig
         {
-            Type = string.IsNullOrWhiteSpace(type) ? "local" : type!,
             Command = command!
         };
 

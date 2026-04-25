@@ -2,6 +2,24 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.10.0] - 2026-04-25
+
+### ✨ New Features
+
+- 🚀 **Upgrade to GitHub.Copilot.SDK `0.3.0`** - TroubleScout now targets the latest Copilot SDK release, including the current MCP config types, session metrics RPC surface, and custom-agent session configuration.
+- 🧭 **Focused sub-agent groundwork** - TroubleScout now provisions inferable sub-agents for server evidence collection and issue research, keeps `web_search` on the dedicated research path, and suppresses sub-agent delta streaming from the main TUI output so delegated work stays concise.
+- 🏷️ **Optional monitoring/ticketing MCP roles** - `settings.json` now supports `MonitoringMcpServer` and `TicketingMcpServer` so existing MCP servers can be mapped to those org-specific roles and surfaced back to the agent and status views.
+
+### 🐛 Bug Fixes
+
+- 🐛 **Persist MCP approvals for the active session** - approving an MCP permission now returns a session-scoped SDK rule, so TroubleScout stops re-prompting for the same MCP access within the current session.
+- 🐛 **Use SDK session metrics for GitHub premium request totals** - GitHub-mode session cost display now comes from `session.rpc.usage.getMetrics()` instead of TroubleScout's old local multiplier estimate.
+- 🐛 **Update MCP config compatibility for SDK `0.3.0`** - MCP config parsing now maps SDK `stdio` / `http` server types while preserving compatibility with older `local` / `remote` config values.
+
+### 📝 Documentation & UX
+
+- 📝 **Refresh README and AGENTS guidance for SDK `0.3.0`** - updated version references, MCP-role settings, session-scoped approvals, and the new sub-agent/session-metrics behavior.
+
 ## [v1.9.2] - 2026-03-22
 
 ### 🏗️ Architecture
