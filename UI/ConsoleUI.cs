@@ -150,7 +150,7 @@ public static class ConsoleUI
     }
 
     internal static string BuildTerminalTitleSequence(string title)
-        => $"\u001b]0;{title}\u0007";
+        => $"\u001b]0;{title}\u0007\u001b]2;{title}\u0007";
 
     internal static string BuildWindowsTerminalProgressSequence(TerminalProgressState state, int progress = 0)
         => $"\u001b]9;4;{(int)state};{Math.Clamp(progress, 0, 100)}\u0007";
@@ -226,6 +226,7 @@ public static class ConsoleUI
     /// </summary>
     public static void ShowBanner(string? version = null)
     {
+        SetTerminalTitle("TroubleScout");
         AnsiConsole.Clear();
         
         var banner = new FigletText("TroubleScout")

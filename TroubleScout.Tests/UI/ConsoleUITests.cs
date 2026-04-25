@@ -179,7 +179,7 @@ public class ConsoleUITests
     {
         var sequence = ConsoleUI.BuildTerminalTitleSequence("TroubleScout");
 
-        sequence.Should().Be("\u001b]0;TroubleScout\u0007");
+        sequence.Should().Be("\u001b]0;TroubleScout\u0007\u001b]2;TroubleScout\u0007");
     }
 
     [Fact]
