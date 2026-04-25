@@ -2,6 +2,22 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [v1.11.0] - 2026-04-25
+
+### ✨ New Features
+
+- 🧭 **In-app MCP role mapping** - added `/mcp-role` so monitoring and ticketing MCP roles can be assigned or cleared directly from TroubleScout without editing `settings.json` by hand.
+- 🤝 **Role-aware MCP delegation** - TroubleScout now exposes focused monitoring and ticketing sub-agents that use only the mapped MCP server for that role, keeping delegated evidence collection targeted and concise.
+
+### 🐛 Bug Fixes
+
+- 🌐 **Three-way URL approval flow** - URL permission prompts now support allow-this-URL, allow-all-URLs, or deny, with per-session persistence for approved URLs.
+- 🐛 **Prominent MCP role visibility** - startup hints, `/help`, and status output now make the configured monitoring/ticketing MCP roles easier to discover and confirm.
+
+### 📝 Documentation & UX
+
+- 📝 **Document MCP role workflows** - refreshed README and AGENTS guidance for `/mcp-role`, role-aware delegation, and session-scoped URL approval behavior.
+
 ## [v1.10.0] - 2026-04-25
 
 ### ✨ New Features

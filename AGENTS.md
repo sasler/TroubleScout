@@ -68,6 +68,7 @@ TroubleScout should support MCP servers and skills through Copilot SDK session c
 - Default skill directory should be `%USERPROFILE%\\.copilot\\skills` when present.
 - Use `SessionConfig.SkillDirectories` and `SessionConfig.DisabledSkills`.
 - Support optional `MonitoringMcpServer` / `TicketingMcpServer` settings that map existing configured MCP servers to those roles in the system prompt and status output.
+- Preserve the in-app `/mcp-role` workflow so those role mappings can be assigned or cleared without editing JSON manually.
 - Track and surface:
   - configured MCP servers and skills
   - runtime-used MCP servers and skills (from session events)
@@ -102,6 +103,8 @@ Preserve this model for all changes.
 - **Reasoning display** — `AssistantReasoningEvent` handled in `SendMessageAsync` event switch; routed to `ConsoleUI.WriteReasoningText()` (ANSI 256-colour dark grey 238, falls back to plain text when stdout is redirected).
 - **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Prompt` or `SelectionPrompt` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
 - **Three-option approval prompts** — `ConsoleUI.PromptCommandApproval` returns `ApprovalResult` (Approved/Denied). The prompt offers Yes, No, or Explain via `SelectionPrompt<string>`. Explain shows a detail panel then re-prompts with a binary Yes/No.
+- **URL approval prompts** — `ConsoleUI.PromptUrlApproval()` provides a three-way choice: allow this URL, allow all URLs for the active session, or deny. Exact-URL approvals and allow-all state are stored only for the current TroubleScout session.
+- **`/mcp-role` slash command** — supports interactive mapping plus direct assignment (`/mcp-role monitoring zabbix`, `/mcp-role ticketing redmine`, `/mcp-role clear all`). Changes persist to `settings.json`, reload session settings immediately, and should remain visible in startup/status surfaces.
 - **Post-response status bar** — `ConsoleUI.WriteStatusBar(StatusBarInfo)` renders a compact one-line bar after each AI response with model name, provider, token counts, and tool invocations. Data comes from `BuildStatusBarInfo()`.
 - **Elapsed timer** — `LiveThinkingIndicator` tracks total and per-phase elapsed time. Shows `(Xs)` after 3s of runtime. Per-phase timer resets on `UpdateStatus`/`ShowToolExecution`. Warnings appear at 30s ("Still working...") and 60s ("Still waiting...") when a phase is stuck.
 - **Activity watchdog** — `RunActivityWatchdogAsync` runs alongside `SendMessageAsync` and monitors `lastEventTime`. If no events arrive for 15s, updates indicator to "Waiting for response"; at 30s, "Connection seems slow". Watchdog is cancelled before the thinking indicator is disposed.

@@ -31,8 +31,9 @@ TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an A
 - **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing (with LiteLLM fallback estimates), context-window metadata, and a clearer selected-model summary
 - **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
 - **Session-Scoped MCP Approvals**: approve an MCP request once and TroubleScout remembers it for the rest of the active session
-- **MCP Role Mapping**: optional `MonitoringMcpServer` and `TicketingMcpServer` settings tell the agent which configured MCP servers represent those systems
-- **Focused Sub-Agents**: inferable evidence-collection and issue-research sub-agents keep delegated work concise; web research is routed through the dedicated researcher agent
+- **MCP Role Mapping**: optional `MonitoringMcpServer` and `TicketingMcpServer` settings tell the agent which configured MCP servers represent those systems, and `/mcp-role` lets you manage those mappings in-app
+- **Focused Sub-Agents**: inferable evidence-collection, monitoring, ticketing, and issue-research sub-agents keep delegated work concise; web research is routed through the dedicated researcher agent
+- **Session-Scoped URL Approvals**: URL prompts now support allow this URL, allow all URLs, or deny for the current TroubleScout session
 - **Editable Prompt Defaults**: `/settings` creates a ready-to-edit `settings.json` with the built-in system prompt sections pre-populated
 - **Session Persistence**: Maintains conversation context for follow-up questions
 
@@ -229,9 +230,11 @@ TroubleScout can load MCP servers and skills through Copilot SDK session configu
 - By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
 - By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
 - Approving MCP access in Safe mode now persists for the current TroubleScout session, so repeated MCP calls do not keep re-prompting
+- Use `/mcp-role` to assign or clear the optional monitoring and ticketing MCP role mappings without editing JSON by hand
 - Optional `MonitoringMcpServer` / `TicketingMcpServer` settings can point at existing configured MCP server names
 - Use `/status` or `/capabilities` to see configured MCP servers/skills and runtime-used MCP servers/skills.
-- TroubleScout configures focused sub-agents for evidence gathering and web research; sub-agent streaming deltas stay out of the main terminal stream to avoid mixed output.
+- TroubleScout configures focused sub-agents for evidence gathering, monitoring MCP lookups, ticketing MCP lookups, and web research; sub-agent streaming deltas stay out of the main terminal stream to avoid mixed output.
+- URL approvals now use a three-way Safe-mode prompt: allow this URL, allow all URLs for the current session, or deny.
 
 Examples:
 
@@ -297,6 +300,7 @@ When approval is required, a three-option prompt is shown: **Yes** (execute), **
 | `/status`              | Show provider, model, usage, and capability details   |
 | `/clear`               | Start a new AI session                                |
 | `/settings`            | Open `settings.json`, then reload prompt/safety config |
+| `/mcp-role`            | Configure monitoring and ticketing MCP role mappings  |
 | `/model`               | Choose another model/provider and session handoff mode |
 | `/reasoning`           | Set or clear reasoning effort for supported models    |
 | `/mode <safe|yolo>`    | Change PowerShell execution mode                      |

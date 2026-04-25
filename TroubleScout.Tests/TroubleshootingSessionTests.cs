@@ -1900,6 +1900,46 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildSessionConfig_WhenMonitoringAndTicketingRolesConfigured_ShouldAddRoleScopedAgents()
+    {
+        ExecuteWithTemporarySettingsPath(tempSettingsPath =>
+        {
+            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
+            File.WriteAllText(mcpConfigPath, """
+            {
+              "mcpServers": {
+                "zabbix": {
+                  "type": "http",
+                  "url": "https://monitoring.example/mcp"
+                },
+                "redmine": {
+                  "type": "http",
+                  "url": "https://ticketing.example/mcp"
+                }
+              }
+            }
+            """);
+
+            AppSettingsStore.Save(new AppSettings
+            {
+                MonitoringMcpServer = "zabbix",
+                TicketingMcpServer = "redmine"
+            });
+
+            var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
+            var config = InvokeBuildSessionConfig(session, "gpt-4.1");
+
+            var monitoringAgent = config.CustomAgents!.Single(agent => agent.Name == "monitoring-investigator");
+            monitoringAgent.McpServers.Should().NotBeNull();
+            monitoringAgent.McpServers!.Keys.Should().Equal("zabbix");
+
+            var ticketingAgent = config.CustomAgents.Single(agent => agent.Name == "ticket-investigator");
+            ticketingAgent.McpServers.Should().NotBeNull();
+            ticketingAgent.McpServers!.Keys.Should().Equal("redmine");
+        });
+    }
+
+    [Fact]
     public void GetStatusFields_WhenReasoningIsActive_ShouldIncludeReasoningField()
     {
         SetPrivateField(_session, "_selectedModel", "gpt-5");
@@ -1980,17 +2020,65 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PermissionHandler_UrlFetch_ShouldApproveInSafeMode()
+    public async Task PermissionHandler_UrlFetch_WhenApprovedForThisUrl_ShouldPersistThatUrlForSession()
     {
-        // Arrange
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
+        var promptCount = 0;
+        var originalOverride = ConsoleUI.UrlApprovalPromptOverride;
 
-        // Act
-        var result = await handler(new PermissionRequest { Kind = "url-fetch" }, new PermissionInvocation());
+        try
+        {
+            ConsoleUI.UrlApprovalPromptOverride = (_, _) =>
+            {
+                promptCount++;
+                return promptCount == 1
+                    ? UrlApprovalResult.ApproveThisUrl
+                    : UrlApprovalResult.Deny;
+            };
 
-        // Assert
-        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            var first = await handler(CreateUrlPermissionRequest("https://example.com/a"), new PermissionInvocation());
+            var second = await handler(CreateUrlPermissionRequest("https://example.com/a"), new PermissionInvocation());
+            var third = await handler(CreateUrlPermissionRequest("https://example.com/b"), new PermissionInvocation());
+
+            first.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            second.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            third.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            promptCount.Should().Be(2);
+        }
+        finally
+        {
+            ConsoleUI.UrlApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
+    public async Task PermissionHandler_UrlFetch_WhenApprovedForAllUrls_ShouldAutoApproveSubsequentUrls()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var promptCount = 0;
+        var originalOverride = ConsoleUI.UrlApprovalPromptOverride;
+
+        try
+        {
+            ConsoleUI.UrlApprovalPromptOverride = (_, _) =>
+            {
+                promptCount++;
+                return UrlApprovalResult.ApproveAllUrls;
+            };
+
+            var first = await handler(CreateUrlPermissionRequest("https://example.com/a"), new PermissionInvocation());
+            var second = await handler(CreateUrlPermissionRequest("https://example.com/b"), new PermissionInvocation());
+
+            first.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            second.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            promptCount.Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.UrlApprovalPromptOverride = originalOverride;
+        }
     }
 
     [Fact]
@@ -2035,6 +2123,116 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Assert
         result.Kind.Should().Be(PermissionRequestResultKind.Approved);
         await session.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task HandleMcpRoleCommandAsync_WhenInteractiveSelectionIsUsed_ShouldPersistRoles()
+    {
+        await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
+        {
+            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
+            File.WriteAllText(mcpConfigPath, """
+            {
+              "mcpServers": {
+                "zabbix": {
+                  "type": "http",
+                  "url": "https://monitoring.example/mcp"
+                },
+                "redmine": {
+                  "type": "http",
+                  "url": "https://ticketing.example/mcp"
+                }
+              }
+            }
+            """);
+
+            await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
+            var originalOverride = ConsoleUI.McpRolePromptOverride;
+
+            try
+            {
+                ConsoleUI.McpRolePromptOverride = static (_, _, _) => ("zabbix", "redmine");
+
+                await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role");
+
+                var settings = AppSettingsStore.Load();
+                settings.MonitoringMcpServer.Should().Be("zabbix");
+                settings.TicketingMcpServer.Should().Be("redmine");
+                GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().Be("zabbix");
+                GetPrivateField<string?>(session, "_configuredTicketingMcpServer").Should().Be("redmine");
+            }
+            finally
+            {
+                ConsoleUI.McpRolePromptOverride = originalOverride;
+            }
+        });
+    }
+
+    [Fact]
+    public async Task HandleMcpRoleCommandAsync_WhenDirectMonitoringAssignmentIsUsed_ShouldPersistRole()
+    {
+        await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
+        {
+            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
+            File.WriteAllText(mcpConfigPath, """
+            {
+              "mcpServers": {
+                "zabbix": {
+                  "type": "http",
+                  "url": "https://monitoring.example/mcp"
+                }
+              }
+            }
+            """);
+
+            await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
+
+            await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role monitoring zabbix");
+
+            var settings = AppSettingsStore.Load();
+            settings.MonitoringMcpServer.Should().Be("zabbix");
+            settings.TicketingMcpServer.Should().BeNull();
+            GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().Be("zabbix");
+        });
+    }
+
+    [Fact]
+    public async Task HandleMcpRoleCommandAsync_WhenClearAllIsUsed_ShouldClearPersistedRoles()
+    {
+        await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
+        {
+            AppSettingsStore.Save(new AppSettings
+            {
+                MonitoringMcpServer = "zabbix",
+                TicketingMcpServer = "redmine"
+            });
+
+            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
+            File.WriteAllText(mcpConfigPath, """
+            {
+              "mcpServers": {
+                "zabbix": {
+                  "type": "http",
+                  "url": "https://monitoring.example/mcp"
+                },
+                "redmine": {
+                  "type": "http",
+                  "url": "https://ticketing.example/mcp"
+                }
+              }
+            }
+            """);
+
+            await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
+
+            await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role clear all");
+
+            var settings = AppSettingsStore.Load();
+            settings.MonitoringMcpServer.Should().BeNull();
+            settings.TicketingMcpServer.Should().BeNull();
+            GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().BeNull();
+            GetPrivateField<string?>(session, "_configuredTicketingMcpServer").Should().BeNull();
+        });
     }
 
     [Fact]
@@ -2372,7 +2570,12 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
     {
         var method = typeof(TroubleshootingSession)
-            .GetMethod("BuildSessionConfig", BindingFlags.Instance | BindingFlags.NonPublic);
+            .GetMethod(
+                "BuildSessionConfig",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                types: [typeof(string)],
+                modifiers: null);
 
         method.Should().NotBeNull("BuildSessionConfig should be an internal/private method on TroubleshootingSession");
         return (SessionConfig)method!.Invoke(session, [model])!;
@@ -2493,6 +2696,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("ReloadSafeCommandsFromSettings should exist on TroubleshootingSession");
         method!.Invoke(session, null);
+    }
+
+    private static async Task InvokeHandleMcpRoleCommandAsync(TroubleshootingSession session, string input)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("HandleMcpRoleCommandAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("HandleMcpRoleCommandAsync should exist on TroubleshootingSession");
+        var task = (Task)method!.Invoke(session, [input])!;
+        await task;
     }
 
     private static void ExecuteWithTemporarySettingsPath(Action<string> testAction)
@@ -2766,6 +2979,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             maxContextTokens,
             usedContextTokens,
             freeContextTokens)!;
+    }
+
+    private static PermissionRequestUrl CreateUrlPermissionRequest(string url, string? intention = null)
+    {
+        return new PermissionRequestUrl
+        {
+            Kind = "url-fetch",
+            Url = url,
+            Intention = intention ?? "Research the issue"
+        };
     }
 
     #region Multi-PSSession / AllTargetServers Tests
