@@ -120,7 +120,27 @@ public class SystemPromptTests : IDisposable
 
         content.Should().Contain("Monitoring MCP server: zabbix");
         content.Should().Contain("Ticketing MCP server: redmine");
-        content.Should().Contain("Use focused sub-agents");
+        content.Should().Contain("Delegate monitoring lookups to the monitoring-focused sub-agent");
+        content.Should().Contain("Delegate ticket history lookups to the ticket-focused sub-agent");
+        content.Should().Contain("Delegate external issue and remediation research to the issue-researcher sub-agent");
+    }
+
+    [Fact]
+    public async Task SystemPrompt_WhenOnlyTicketingMcpConfigured_ShouldNotMentionMonitoringSubagent()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            TicketingMcpServer = "redmine"
+        });
+
+        await using var session = new TroubleshootingSession("localhost");
+
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
+
+        content.Should().Contain("Ticketing MCP server: redmine");
+        content.Should().Contain("Delegate ticket history lookups to the ticket-focused sub-agent");
+        content.Should().NotContain("Monitoring MCP server:");
+        content.Should().NotContain("Delegate monitoring lookups to the monitoring-focused sub-agent");
     }
 
     [Fact]

@@ -103,6 +103,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _configuredMonitoringMcpServer;
     private string? _configuredTicketingMcpServer;
     private double? _sessionPremiumRequestCost;
+    private readonly HashSet<string> _approvedUrlsForSession = new(StringComparer.OrdinalIgnoreCase);
+    private bool _allowAllUrlsForSession;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -130,6 +132,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/status",
         "/clear",
         "/settings",
+        "/mcp-role",
         "/model",
         "/reasoning",
         "/mode",
@@ -1699,6 +1702,14 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
+    private static void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
+    {
+        var settings = AppSettingsStore.Load();
+        settings.MonitoringMcpServer = string.IsNullOrWhiteSpace(monitoringMcpServer) ? null : monitoringMcpServer.Trim();
+        settings.TicketingMcpServer = string.IsNullOrWhiteSpace(ticketingMcpServer) ? null : ticketingMcpServer.Trim();
+        AppSettingsStore.Save(settings);
+    }
+
     private void ApplySafeCommandsToAllExecutors(IReadOnlyList<string>? safeCommands)
     {
         _configuredSafeCommands = safeCommands?.Where(command => !string.IsNullOrWhiteSpace(command))
@@ -1718,6 +1729,241 @@ public class TroubleshootingSession : IAsyncDisposable
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
+    }
+
+    private async Task<(bool Success, string? Error)> RecreateCurrentCopilotSessionAsync()
+    {
+        if (_copilotClient == null || _copilotSession == null)
+        {
+            return (true, null);
+        }
+
+        await _copilotSession.DisposeAsync();
+        _copilotSession = null;
+
+        try
+        {
+            var success = await CreateCopilotSessionAsync(
+                string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
+                null);
+            return (success, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, TrimSingleLine(ex.Message));
+        }
+    }
+
+    internal string? GetWelcomeHint()
+    {
+        if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer) || !string.IsNullOrWhiteSpace(_configuredTicketingMcpServer))
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer))
+            {
+                parts.Add($"Monitoring MCP: {_configuredMonitoringMcpServer}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(_configuredTicketingMcpServer))
+            {
+                parts.Add($"Ticketing MCP: {_configuredTicketingMcpServer}");
+            }
+
+            return $"{string.Join(" | ", parts)}. Use /mcp-role to change role mappings.";
+        }
+
+        return _configuredMcpServers.Count > 0
+            ? "Use /mcp-role to map monitoring and ticketing MCP servers."
+            : null;
+    }
+
+    private async Task HandleMcpRoleCommandAsync(string input)
+    {
+        var availableServers = GetAvailableMcpRoleServerNames();
+        var monitoring = _configuredMonitoringMcpServer;
+        var ticketing = _configuredTicketingMcpServer;
+        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 1)
+        {
+            if (availableServers.Count == 0 && string.IsNullOrWhiteSpace(monitoring) && string.IsNullOrWhiteSpace(ticketing))
+            {
+                ConsoleUI.ShowWarning("No MCP servers are configured. Add servers in your MCP config first, then use /mcp-role.");
+                return;
+            }
+
+            (monitoring, ticketing) = ConsoleUI.PromptMcpRoleSelection(monitoring, ticketing, availableServers);
+        }
+        else
+        {
+            if (!TryApplyDirectMcpRoleCommand(parts, availableServers, ref monitoring, ref ticketing, out var usageError))
+            {
+                ConsoleUI.ShowWarning(usageError);
+                ConsoleUI.ShowInfo("Usage:");
+                ConsoleUI.ShowInfo("  /mcp-role");
+                ConsoleUI.ShowInfo("  /mcp-role monitoring <server|none>");
+                ConsoleUI.ShowInfo("  /mcp-role ticketing <server|none>");
+                ConsoleUI.ShowInfo("  /mcp-role clear <monitoring|ticketing|all>");
+                return;
+            }
+        }
+
+        if (McpRoleValuesEqual(monitoring, _configuredMonitoringMcpServer)
+            && McpRoleValuesEqual(ticketing, _configuredTicketingMcpServer))
+        {
+            ConsoleUI.ShowInfo($"MCP roles unchanged. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
+            ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
+            return;
+        }
+
+        SaveMcpRoleSettings(monitoring, ticketing);
+        ReloadSafeCommandsFromSettings();
+        var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
+
+        if (sessionReloadSucceeded)
+        {
+            ConsoleUI.ShowSuccess($"MCP roles saved. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
+            ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
+        }
+        else
+        {
+            var message = "MCP roles were saved, but the AI session could not be recreated. Use /login or /model to reconnect.";
+            if (!string.IsNullOrWhiteSpace(sessionReloadError))
+            {
+                message += $" {sessionReloadError}";
+            }
+
+            ConsoleUI.ShowWarning(message);
+        }
+    }
+
+    private bool TryApplyDirectMcpRoleCommand(
+        string[] parts,
+        IReadOnlyList<string> availableServers,
+        ref string? monitoring,
+        ref string? ticketing,
+        out string error)
+    {
+        error = "Invalid /mcp-role command.";
+        if (parts.Length < 2)
+        {
+            return false;
+        }
+
+        var action = parts[1].Trim().ToLowerInvariant();
+        if (action == "clear")
+        {
+            if (parts.Length < 3)
+            {
+                error = "Specify which role to clear: monitoring, ticketing, or all.";
+                return false;
+            }
+
+            switch (parts[2].Trim().ToLowerInvariant())
+            {
+                case "monitoring":
+                    monitoring = null;
+                    return true;
+                case "ticketing":
+                    ticketing = null;
+                    return true;
+                case "all":
+                    monitoring = null;
+                    ticketing = null;
+                    return true;
+                default:
+                    error = "Use /mcp-role clear <monitoring|ticketing|all>.";
+                    return false;
+            }
+        }
+
+        if (action is not "monitoring" and not "ticketing")
+        {
+            error = "Use /mcp-role monitoring <server|none> or /mcp-role ticketing <server|none>.";
+            return false;
+        }
+
+        if (parts.Length < 3)
+        {
+            error = $"Specify the MCP server name to assign to the {action} role, or 'none' to clear it.";
+            return false;
+        }
+
+        if (!TryResolveRequestedMcpRoleValue(parts[2], availableServers, out var resolvedValue, out error))
+        {
+            return false;
+        }
+
+        if (action == "monitoring")
+        {
+            monitoring = resolvedValue;
+        }
+        else
+        {
+            ticketing = resolvedValue;
+        }
+
+        return true;
+    }
+
+    private static bool McpRoleValuesEqual(string? left, string? right)
+    {
+        return string.Equals(
+            left?.Trim(),
+            right?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyList<string> GetAvailableMcpRoleServerNames()
+    {
+        var warnings = new List<string>();
+        var servers = LoadMcpServersFromConfig(_mcpConfigPath, warnings);
+        var choices = servers.Keys.ToList();
+
+        if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
+            && !choices.Contains(_configuredMonitoringMcpServer, StringComparer.OrdinalIgnoreCase))
+        {
+            choices.Add(_configuredMonitoringMcpServer);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_configuredTicketingMcpServer)
+            && !choices.Contains(_configuredTicketingMcpServer, StringComparer.OrdinalIgnoreCase))
+        {
+            choices.Add(_configuredTicketingMcpServer);
+        }
+
+        return choices
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool TryResolveRequestedMcpRoleValue(
+        string requestedValue,
+        IReadOnlyList<string> availableServers,
+        out string? resolvedValue,
+        out string error)
+    {
+        var trimmed = requestedValue.Trim();
+        if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedValue = null;
+            error = string.Empty;
+            return true;
+        }
+
+        var match = availableServers.FirstOrDefault(server => server.Equals(trimmed, StringComparison.OrdinalIgnoreCase));
+        if (match != null)
+        {
+            resolvedValue = match;
+            error = string.Empty;
+            return true;
+        }
+
+        resolvedValue = null;
+        error = $"Unknown MCP server '{trimmed}'. Use /capabilities to see configured MCP servers.";
+        return false;
     }
 
     private void ApplySystemPromptSettings(IReadOnlyDictionary<string, string>? overrides, string? append)
@@ -1869,7 +2115,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     ConsoleUI.ShowBanner();
                     ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                     ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
-                    ConsoleUI.ShowWelcomeMessage();
+                    ConsoleUI.ShowWelcomeMessage(GetWelcomeHint());
                 }
                 else
                 {
@@ -1897,24 +2143,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
-                var sessionReloadSucceeded = true;
-                string? sessionReloadError = null;
-                if (_copilotClient != null && _copilotSession != null)
-                {
-                    await _copilotSession.DisposeAsync();
-                    _copilotSession = null;
-                    try
-                    {
-                        sessionReloadSucceeded = await CreateCopilotSessionAsync(
-                            string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
-                            null);
-                    }
-                    catch (Exception ex)
-                    {
-                        sessionReloadSucceeded = false;
-                        sessionReloadError = TrimSingleLine(ex.Message);
-                    }
-                }
+                var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
 
                 if (sessionReloadSucceeded)
                 {
@@ -1931,6 +2160,12 @@ public class TroubleshootingSession : IAsyncDisposable
                     ConsoleUI.ShowWarning(message);
                 }
 
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/mcp-role"))
+            {
+                await HandleMcpRoleCommandAsync(input);
                 continue;
             }
 
@@ -3287,7 +3522,7 @@ public class TroubleshootingSession : IAsyncDisposable
         ValidateConfiguredMcpRole("Monitoring", _configuredMonitoringMcpServer, mcpServers);
         ValidateConfiguredMcpRole("Ticketing", _configuredTicketingMcpServer, mcpServers);
 
-        var config = BuildSessionConfig(model);
+        var config = BuildSessionConfig(model, mcpServers);
 
         if (_useByokOpenAi)
         {
@@ -3341,6 +3576,8 @@ public class TroubleshootingSession : IAsyncDisposable
         _toolInvocationCount = 0;
         _sessionPremiumRequestCost = null;
         _sessionUsageTracker.Reset();
+        _approvedUrlsForSession.Clear();
+        _allowAllUrlsForSession = false;
     }
 
     private static string? GetByokWireApi(string? model)
@@ -3394,6 +3631,13 @@ public class TroubleshootingSession : IAsyncDisposable
 
     internal SessionConfig BuildSessionConfig(string? model)
     {
+        var warnings = new List<string>();
+        var mcpServers = LoadMcpServersFromConfig(_mcpConfigPath, warnings);
+        return BuildSessionConfig(model, mcpServers);
+    }
+
+    private SessionConfig BuildSessionConfig(string? model, IReadOnlyDictionary<string, McpServerConfig> availableMcpServers)
+    {
         return new SessionConfig
         {
             Model = model,
@@ -3406,14 +3650,14 @@ public class TroubleshootingSession : IAsyncDisposable
             {
                 ExcludedTools = ["web_search"]
             },
-            CustomAgents = BuildCustomAgentConfigs(),
+            CustomAgents = BuildCustomAgentConfigs(availableMcpServers),
             ClientName = "TroubleScout",
             OnEvent = HandleSessionLifecycleStateEvent,
             OnPermissionRequest = (req, inv) =>
             {
                 // Read-only operations and our own custom tools are always auto-approved
                 var kind = NormalizePermissionKind(req.Kind);
-                if (kind is "read" or "url" or "custom-tool")
+                if (kind is "read" or "custom-tool")
                 {
                     return Task.FromResult(new PermissionRequestResult
                     {
@@ -3464,6 +3708,22 @@ public class TroubleshootingSession : IAsyncDisposable
                     }
                 }
 
+                if (kind == "url")
+                {
+                    if (TryIsApprovedUrlRequest(req))
+                    {
+                        return Task.FromResult(new PermissionRequestResult
+                        {
+                            Kind = PermissionRequestResultKind.Approved
+                        });
+                    }
+
+                    var url = GetUrlFromPermissionRequest(req);
+                    var intention = GetUrlPermissionIntention(req);
+                    var urlApproval = ConsoleUI.PromptUrlApproval(url ?? "URL fetch", intention);
+                    return Task.FromResult(CreateUrlPermissionApprovalResult(url, urlApproval));
+                }
+
                 // In Safe mode: MCP, shell, file-write require user approval
                 var description = DescribePermissionRequest(req);
                 var approval = ConsoleUI.PromptCommandApproval(
@@ -3474,10 +3734,10 @@ public class TroubleshootingSession : IAsyncDisposable
         };
     }
 
-    private static IList<CustomAgentConfig> BuildCustomAgentConfigs()
+    private IList<CustomAgentConfig> BuildCustomAgentConfigs(IReadOnlyDictionary<string, McpServerConfig> availableMcpServers)
     {
-        return
-        [
+        var agents = new List<CustomAgentConfig>
+        {
             new CustomAgentConfig
             {
                 Name = "server-evidence-collector",
@@ -3507,7 +3767,141 @@ public class TroubleshootingSession : IAsyncDisposable
                     Return a short summary of what is relevant, why it matters, and any high-confidence remediation guidance.
                     """
             }
-        ];
+        };
+
+        var monitoringAgent = BuildRoleScopedAgent(
+            "monitoring-investigator",
+            "Monitoring Investigator",
+            _configuredMonitoringMcpServer,
+            availableMcpServers,
+            """
+            You are TroubleScout's monitoring-focused sub-agent.
+            Use the mapped monitoring MCP server to gather only the alert, dashboard, trigger, incident, or telemetry data that is relevant to the current issue.
+            Return concise findings with the monitoring source clearly identified.
+            """
+        );
+        if (monitoringAgent != null)
+        {
+            agents.Add(monitoringAgent);
+        }
+
+        var ticketingAgent = BuildRoleScopedAgent(
+            "ticket-investigator",
+            "Ticket Investigator",
+            _configuredTicketingMcpServer,
+            availableMcpServers,
+            """
+            You are TroubleScout's ticket-focused sub-agent.
+            Use the mapped ticketing MCP server to gather only the tickets, incidents, prior actions, or historical notes that materially affect the current diagnosis.
+            Return concise findings with the ticketing source clearly identified.
+            """
+        );
+        if (ticketingAgent != null)
+        {
+            agents.Add(ticketingAgent);
+        }
+
+        return agents;
+    }
+
+    private static CustomAgentConfig? BuildRoleScopedAgent(
+        string name,
+        string displayName,
+        string? configuredServerName,
+        IReadOnlyDictionary<string, McpServerConfig> availableMcpServers,
+        string prompt)
+    {
+        if (string.IsNullOrWhiteSpace(configuredServerName)
+            || !availableMcpServers.TryGetValue(configuredServerName, out var serverConfig))
+        {
+            return null;
+        }
+
+        return new CustomAgentConfig
+        {
+            Name = name,
+            DisplayName = displayName,
+            Description = $"Uses the mapped MCP role '{configuredServerName}' and returns concise findings.",
+            Infer = true,
+            McpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                [configuredServerName] = serverConfig
+            },
+            Prompt = prompt
+        };
+    }
+
+    private PermissionRequestResult CreateUrlPermissionApprovalResult(string? url, UrlApprovalResult approval)
+    {
+        switch (approval)
+        {
+            case UrlApprovalResult.ApproveAllUrls:
+                _allowAllUrlsForSession = true;
+                return new PermissionRequestResult
+                {
+                    Kind = PermissionRequestResultKind.Approved
+                };
+
+            case UrlApprovalResult.ApproveThisUrl:
+            {
+                var normalizedUrl = NormalizeUrlForApproval(url);
+                if (!string.IsNullOrWhiteSpace(normalizedUrl))
+                {
+                    _approvedUrlsForSession.Add(normalizedUrl);
+                }
+
+                return new PermissionRequestResult
+                {
+                    Kind = PermissionRequestResultKind.Approved
+                };
+            }
+
+            default:
+                return new PermissionRequestResult
+                {
+                    Kind = PermissionRequestResultKind.Rejected
+                };
+        }
+    }
+
+    private bool TryIsApprovedUrlRequest(PermissionRequest request)
+    {
+        if (_allowAllUrlsForSession)
+        {
+            return true;
+        }
+
+        var normalizedUrl = NormalizeUrlForApproval(GetUrlFromPermissionRequest(request));
+        return !string.IsNullOrWhiteSpace(normalizedUrl) && _approvedUrlsForSession.Contains(normalizedUrl);
+    }
+
+    private static string? GetUrlFromPermissionRequest(PermissionRequest request)
+    {
+        return request is PermissionRequestUrl urlRequest
+            ? urlRequest.Url?.Trim()
+            : ReadStringProperty(request, "Url", "Uri");
+    }
+
+    private static string? GetUrlPermissionIntention(PermissionRequest request)
+    {
+        return request is PermissionRequestUrl urlRequest
+            ? urlRequest.Intention?.Trim()
+            : ReadStringProperty(request, "Intention", "Reason", "Purpose");
+    }
+
+    private static string? NormalizeUrlForApproval(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed))
+        {
+            return parsed.AbsoluteUri;
+        }
+
+        return url.Trim();
     }
 
     private void ValidateConfiguredMcpRole(string roleName, string? configuredServerName, IReadOnlyDictionary<string, McpServerConfig> mcpServers)

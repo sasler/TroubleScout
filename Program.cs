@@ -329,7 +329,7 @@ static async Task RunInteractiveModeAsync(
     ConsoleUI.ShowStatusPanel(session.EffectiveTargetServer, session.EffectiveConnectionMode, session.IsAiSessionReady, session.SelectedModel, session.CurrentExecutionMode, session.GetStatusFields(), additionalTargets, session.DefaultSessionTarget);
     
     // Show welcome and help hints
-    ConsoleUI.ShowWelcomeMessage();
+    ConsoleUI.ShowWelcomeMessage(session.GetWelcomeHint());
     ConsoleUI.ShowRule();
     Console.WriteLine();
 

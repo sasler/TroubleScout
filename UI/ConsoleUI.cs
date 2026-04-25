@@ -17,6 +17,13 @@ public enum ApprovalResult
     Denied
 }
 
+public enum UrlApprovalResult
+{
+    ApproveThisUrl,
+    ApproveAllUrls,
+    Deny
+}
+
 /// <summary>
 /// Data for the compact status bar shown after each AI response
 /// </summary>
@@ -52,6 +59,8 @@ public static class ConsoleUI
     internal static Func<bool> IsInputRedirectedResolver { get; set; } = static () => Console.IsInputRedirected;
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
+    internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
+    internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
 
     public static void SetExecutionMode(ExecutionMode mode)
     {
@@ -288,10 +297,14 @@ public static class ConsoleUI
     /// Display a compact welcome hint after the status table.
     /// The full command reference lives in /help.
     /// </summary>
-    public static void ShowWelcomeMessage()
+    public static void ShowWelcomeMessage(string? mcpRoleHint = null)
     {
         AnsiConsole.MarkupLine("[grey]Describe your issue and TroubleScout will investigate.[/]");
         AnsiConsole.MarkupLine("[grey]Type[/] [cyan]/help[/] [grey]for commands,[/] [cyan]/status[/] [grey]for session info,[/] [cyan]/exit[/] [grey]to quit.[/]");
+        if (!string.IsNullOrWhiteSpace(mcpRoleHint))
+        {
+            AnsiConsole.MarkupLine($"[grey]{Markup.Escape(mcpRoleHint)}[/]");
+        }
     }
 
     /// <summary>
@@ -374,6 +387,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
+        commandTable.AddRow("[cyan]/mcp-role[/] [grey][[<monitoring|ticketing> <server|none> | clear <monitoring|ticketing|all>]][/]", "Configure monitoring and ticketing MCP role mappings; no args opens interactive mode");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model and session handoff mode");
         commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
@@ -979,6 +993,114 @@ public static class ConsoleUI
         {
             LiveThinkingIndicator.ResumeAfterApproval();
         }
+    }
+
+    public static UrlApprovalResult PromptUrlApproval(string url, string? intention = null)
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            if (UrlApprovalPromptOverride != null)
+            {
+                return UrlApprovalPromptOverride(url, intention);
+            }
+
+            AnsiConsole.WriteLine();
+
+            var rows = new List<IRenderable>
+            {
+                new Markup($"[yellow]URL:[/] [white]{Markup.Escape(url)}[/]")
+            };
+
+            if (!string.IsNullOrWhiteSpace(intention))
+            {
+                rows.Add(new Markup(""));
+                rows.Add(new Markup($"[cyan]Why:[/] [white]{Markup.Escape(intention)}[/]"));
+            }
+
+            rows.Add(new Markup(""));
+            rows.Add(new Markup("[red]External URL access can bring non-local data into the session.[/]"));
+
+            var panel = new Panel(new Rows(rows))
+                .Header("[bold yellow] URL Approval Required [/]")
+                .Border(BoxBorder.Heavy)
+                .BorderColor(Color.Yellow);
+
+            AnsiConsole.Write(panel);
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(new[]
+                    {
+                        "✅ Allow this URL",
+                        "🌐 Allow all URLs for this session",
+                        "❌ Deny"
+                    }));
+
+            if (choice.Contains("all URLs", StringComparison.OrdinalIgnoreCase))
+            {
+                return UrlApprovalResult.ApproveAllUrls;
+            }
+
+            if (choice.Contains("Allow this URL", StringComparison.OrdinalIgnoreCase))
+            {
+                return UrlApprovalResult.ApproveThisUrl;
+            }
+
+            return UrlApprovalResult.Deny;
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
+    public static (string? Monitoring, string? Ticketing) PromptMcpRoleSelection(
+        string? currentMonitoring,
+        string? currentTicketing,
+        IReadOnlyList<string> availableServers)
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            if (McpRolePromptOverride != null)
+            {
+                return McpRolePromptOverride(currentMonitoring, currentTicketing, availableServers);
+            }
+
+            var choices = new List<string> { "<None>" };
+            choices.AddRange(availableServers
+                .Where(server => !string.IsNullOrWhiteSpace(server))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(server => server, StringComparer.OrdinalIgnoreCase));
+
+            var monitoring = PromptMcpRoleValue("monitoring", currentMonitoring, choices);
+            var ticketing = PromptMcpRoleValue("ticketing", currentTicketing, choices);
+            return (monitoring, ticketing);
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
+    private static string? PromptMcpRoleValue(string roleName, string? currentValue, IReadOnlyList<string> choices)
+    {
+        var title = string.IsNullOrWhiteSpace(currentValue)
+            ? $"[yellow]Select the {roleName} MCP server[/]"
+            : $"[yellow]Select the {roleName} MCP server (current: {Markup.Escape(currentValue)})[/]";
+
+        var selection = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title(title)
+                .HighlightStyle(new Style(Color.Cyan1))
+                .AddChoices(choices));
+
+        return selection.Equals("<None>", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : selection;
     }
 
     private static void ShowCommandExplanation(
