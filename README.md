@@ -220,15 +220,17 @@ dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFil
 
 ## Troubleshooting
 
+Most users can ignore this section. If you installed with WinGet and `troublescout` starts normally, you do not need to install anything else.
+
 ### Copilot login or startup problems
 
-If TroubleScout cannot reach GitHub Copilot, verify the CLI and then sign in again from inside TroubleScout with `/login`:
+If TroubleScout cannot reach GitHub Copilot, first try `/login` inside the app. Only if startup still fails should you check the underlying Copilot CLI installation:
 
 ```powershell
 copilot --version
 ```
 
-Official setup guide: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+Official setup guide for advanced troubleshooting: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
 
 ### Remote server connectivity problems
 
@@ -240,7 +242,7 @@ Enable-PSRemoting -Force
 
 ### SDK or CLI compatibility issues
 
-Current Copilot SDK and CLI builds may require an up-to-date Node.js installation on systems where you manage the Copilot CLI separately.
+This usually matters only for advanced setups where you manage the Copilot CLI separately instead of relying on the normal app installation path.
 
 ```powershell
 winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
