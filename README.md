@@ -98,7 +98,7 @@ You can also pass a comma-separated list such as `--server dc01,files01,sql01`.
 ### Start with a JEA session
 
 ```powershell
-troublescout --server myserver.domain.com --jea myserver.domain.com JEA-Admins
+troublescout --server server1 --jea server2 JEA-Admins
 ```
 
 ## Reports And Session Tools
@@ -170,7 +170,7 @@ TroubleScout can load MCP servers and Copilot skills through session configurati
 | `/mcp-role` | Configure monitoring and ticketing MCP role mappings. |
 | `/model` | Choose another model or provider. |
 | `/reasoning [auto or effort]` | Set reasoning effort for the current model when supported. |
-| `/mode safe or yolo` | Change the PowerShell execution mode. |
+| `/mode <safe or yolo>` | Change the PowerShell execution mode. |
 | `/server server1 [server2 ...]` | Connect to one or more additional servers, using spaces or commas. |
 | `/jea [server] [configurationName]` | Connect to a JEA constrained endpoint. |
 | `/login` | Run GitHub Copilot login inside TroubleScout. |
@@ -189,7 +189,7 @@ TroubleScout can load MCP servers and Copilot skills through session configurati
 | `--prompt`, `-p` | Run a single prompt in headless mode. |
 | `--jea <server> <configurationName>` | Preconnect one JEA session at startup. |
 | `--model`, `-m` | Select a model such as `gpt-4.1`. |
-| `--mode safe or yolo` | Set the PowerShell execution mode. |
+| `--mode <safe or yolo>` | Set the PowerShell execution mode. |
 | `--mcp-config` | Set a custom MCP config path. |
 | `--skills-dir` | Add an extra skills directory. |
 | `--disable-skill` | Disable a loaded skill by name. |
