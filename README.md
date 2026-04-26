@@ -1,474 +1,264 @@
 # TroubleScout
 
-![TroubleScout demo showing a sample troubleshooting session](docs/assets/troublescout-v1.7.0.gif)
+![TroubleScout demo showing a sample troubleshooting session](docs/assets/troublescout.gif)
 
 [![Build and Test](https://github.com/sasler/TroubleScout/actions/workflows/build.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/build.yml)
 [![Tests](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/tests.yml)
 [![Branch Protection](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/branch-protection.yml)
 [![Release](https://github.com/sasler/TroubleScout/actions/workflows/release.yml/badge.svg)](https://github.com/sasler/TroubleScout/actions/workflows/release.yml)
 
-## AI-Powered Windows Server Troubleshooting Assistant
+## Description
 
-TroubleScout is a .NET CLI tool that uses the GitHub Copilot SDK to provide an AI-powered Windows Server troubleshooting assistant. Describe your issue in natural language, and TroubleScout will investigate using safe, read-only PowerShell commands.
+TroubleScout is an AI-powered troubleshooting assistant for Windows. It was originally designed for Windows Server, but it also works well on regular Windows clients. It uses the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) to investigate issues with safe PowerShell-based diagnostics.
 
-## Features
+If you just want to get started, jump to [Installation](#installation).
 
-- **Natural Language Troubleshooting**: Describe your issue, and the AI analyzes and diagnoses problems
-- **Safe by Default**: Only `Get-*` commands execute automatically; remediation commands require explicit approval with a three-option prompt (Yes / No / Explain)
-- **Interactive TUI**: Rich terminal UI with streaming responses using Spectre.Console
-- **Guided Next-Step Dialog**: After diagnosis/recommendations or approved changes, TroubleScout asks whether to continue investigating, apply the fix, or stop
-- **Always-Visible Status Bar**: Compact post-response line showing model, provider, token usage, session totals, and estimated cost
-- **Session Cost Tracking**: Cumulative token counts and cost estimates — BYOK shows `~$X.XX est.`, GitHub shows `~X.X premium reqs`
-- **Elapsed Timer**: Thinking indicator shows elapsed time and long-running warnings (30s/60s thresholds)
-- **Activity Watchdog**: Detects stalled operations and updates the user when the model goes quiet, including pauses after streaming starts
-- **Windows Terminal Tab Feedback**: Sets the title to `TroubleScout` and shows a Windows Terminal progress ring while the AI is busy
-- **Funny ASCII Wait Indicator**: Live waiting state uses the ASCII-safe "Wheel of IT Blame" animation to make long turns easier to read
-- **Local or Remote**: Works with localhost or remote servers via WinRM
-- **Multi-Server at Startup**: Connect to multiple servers with `--server srv1 --server srv2` (or `--server srv1,srv2`); all sessions are established at launch
-- **Multi-Server Sessions**: Connect to additional servers at runtime with `/server <name>` or via `connect_server` tool to avoid PowerShell double-hop issues
-- **ESC Cancellation**: Press ESC at any time to cancel the current AI turn; spinner shows `(ESC to cancel)` as a persistent hint
-- **Prompt History**: Up/Down arrow recalls previous inputs; ESC clears the current buffer
-- **Reasoning Visibility**: Thinking tokens from reasoning models displayed in dark grey with 💭 prefix
-- **Reasoning Control**: Use `/reasoning` with compatible models to persist a preferred reasoning effort or switch back to automatic reasoning
-- **Provider Switching**: Dual-source models appear as separate entries in `/model` so you always know which provider (GitHub Copilot or BYOK) will be used
-- **Richer Model Metadata**: `/model` shows GitHub premium multipliers, BYOK pricing (with LiteLLM fallback estimates), context-window metadata, and a clearer selected-model summary
-- **Status Visibility**: `/status` keeps provider, usage, context, MCP, and skill details grouped and easy to scan
-- **Session-Scoped MCP Approvals**: approve an MCP request once and TroubleScout remembers it for the rest of the active session
-- **MCP Role Mapping**: optional `MonitoringMcpServer` and `TicketingMcpServer` settings tell the agent which configured MCP servers represent those systems, and `/mcp-role` lets you manage those mappings in-app
-- **Focused Sub-Agents**: inferable evidence-collection, monitoring, ticketing, and issue-research sub-agents keep delegated work concise; web research is routed through the dedicated researcher agent
-- **Session-Scoped URL Approvals**: URL prompts now support allow this URL, allow all URLs, or deny for the current TroubleScout session
-- **Editable Prompt Defaults**: `/settings` creates a ready-to-edit `settings.json` with the built-in system prompt sections pre-populated
-- **Session Persistence**: Maintains conversation context for follow-up questions
+## Prompt Examples
 
-## Prerequisites
+| Prompt | Description |
+| --- | --- |
+| How is this computer doing? | Get a general health check for the local machine or target server. |
+| Find out why the server restarted unexpectedly last night. | Review recent shutdown and restart events to identify the likely cause. |
+| D volume is getting full. Is this normal growth? | Check disk usage, recent growth, and the most likely sources of storage pressure. |
+| Why are users complaining that logons are slow? | Investigate authentication, profile, service, and performance issues affecting sign-in speed. |
+| Check why the SQL Server service is stopped. | Inspect service state, recent failures, dependencies, and related event log entries. |
+| What changed on this machine after the last patch window? | Correlate updates, restarts, and new warnings or errors after maintenance. |
+| CPU usage is high. What is driving it? | Identify the busiest processes, services, and counters behind sustained CPU pressure. |
+| Compare the health of these two servers and tell me what stands out. | Use a multi-server session to spot differences across systems quickly. |
 
-**For pre-built release:**
+## Main Features
 
-1. **Windows x64 or Windows ARM64** operating system
-2. **Authentication mode**:
-   - **GitHub mode (default):** Active GitHub Copilot subscription and authenticated Copilot CLI
-   - **BYOK mode:** OpenAI API key (`OPENAI_API_KEY`) with `--byok-openai`
-3. **GitHub Copilot CLI** - Bundled with TroubleScout releases; install separately only if you run from source without bundled assets:
-
-   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
-
-4. **On Windows:** PowerShell 6+ is required by Copilot CLI docs (PowerShell 7+ recommended)
-
-5. **Node.js 24+ (LTS recommended)** is only needed when using npm-based Copilot CLI installs - [Download](https://nodejs.org/)
-
-> **Important**: TroubleScout release packages include architecture-specific Copilot CLI assets for bundled use.
-
-**For building from source:**
-
-1. **.NET 10.0 SDK** - [Download](https://dotnet.microsoft.com/download/dotnet/10.0)
-2. All prerequisites listed above
-
-> **Note**: The pre-built release includes a self-contained .NET runtime, so you don't need to install .NET SDK unless you're building from source.
+- **Natural language troubleshooting**: Ask questions in plain English instead of building diagnostic command sequences yourself.
+- **Safe by default**: Read-only commands run automatically, while system-changing actions require approval.
+- **Local or remote troubleshooting**: Work against the current machine or connect to remote systems over WinRM.
+- **Multi-server sessions**: Start with several servers at once or add more during the session.
+- **JEA support**: Connect to constrained PowerShell remoting endpoints with [Just Enough Administration](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview).
+- **HTML report**: Generate a session report with `/report` when you want a shareable troubleshooting summary.
+- **Interactive terminal UI**: Streamed responses, session status, prompt history, and cancellation are built into the console experience.
+- **Model and provider flexibility**: Use GitHub Copilot by default or switch to OpenAI-compatible BYOK mode if needed.
+- **Reasoning visibility**: Supported reasoning models can show their thinking output and let you adjust reasoning effort.
+- **MCP and skills support**: Load MCP servers and Copilot skills to extend what TroubleScout can access and automate.
 
 ## Installation
 
-### Option 1: Download Pre-built Release (Recommended)
+### Recommended: WinGet
 
-1. **Download the latest release** from [Releases](https://github.com/sasler/TroubleScout/releases)
-2. **Extract** `TroubleScout.exe` (and `runtimes/` if present) to a directory
-3. **Choose auth mode**:
-   - GitHub mode: run `copilot login` once
-   - BYOK mode: set `OPENAI_API_KEY` and pass `--byok-openai`
-4. **Install prerequisites**:
-   - Ensure PowerShell 6+ (PowerShell 7+ recommended)
-   - Install/update GitHub Copilot CLI only if you are not using bundled release assets: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
-   - Install [Node.js](https://nodejs.org/) only if you choose npm-based Copilot CLI install
-5. **Run** `TroubleScout.exe` from the command line
-
-> **Note**: The release includes a self-contained .NET runtime - no .NET SDK installation required!
-
-### Option 2: Build from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/sasler/TroubleScout.git
-cd TroubleScout
-
-# Build the project
-dotnet build
-
-# Run the application
-dotnet run
-```
-
-**Build a self-contained executable:**
+Install TroubleScout:
 
 ```powershell
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
-# Output: bin\Release\net10.0\win-x64\publish\TroubleScout.exe
-
-dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true
-# Output: bin\Release\net10.0\win-arm64\publish\TroubleScout.exe
+winget install sasler.TroubleScout
 ```
 
-**Validate the WinGet manifest for a release locally:**
+Start TroubleScout:
 
 ```powershell
-pwsh .\Tools\Validate-WinGetRelease.ps1 -Version 1.12.0
+troublescout
+```
+
+That is the main path most users need. If you need to sign in to GitHub Copilot, you can do it from inside TroubleScout with `/login`.
+
+### Manual installation
+
+If you do not want to use WinGet, download the latest release from [Releases](https://github.com/sasler/TroubleScout/releases), extract `TroubleScout.exe` and the `runtimes/` folder when it is included, then run:
+
+```powershell
+TroubleScout.exe
 ```
 
 ## Usage
 
-### Interactive Mode (Default)
+### Start an interactive session
 
-```bash
-# Using pre-built release
-TroubleScout.exe
-
-# Using source build
-dotnet run
-
-# Troubleshoot a remote server
-TroubleScout.exe --server myserver.domain.com
-# or
-dotnet run -- --server myserver.domain.com
-
-# Connect to multiple servers at startup
-TroubleScout.exe --server srv1 --server srv2 --server srv3
-# or comma-separated
-TroubleScout.exe --server srv1,srv2,srv3
-
-# Preconnect a single startup JEA session
-TroubleScout.exe --server server1 --jea server2 JEA-Admins
+```powershell
+troublescout
 ```
 
-### Headless Mode
+By default, TroubleScout starts locally, so you can immediately ask questions such as `How is this computer doing?`.
 
-```bash
-# Single prompt execution for scripting (pre-built release)
-TroubleScout.exe --server localhost --prompt "Check why the SQL Server service is stopped"
+### Connect to a remote server from the start
 
-# Using source build
-dotnet run -- --server localhost --prompt "Check why the SQL Server service is stopped"
+```powershell
+troublescout --server myserver.domain.com
 ```
 
-### Command Line Options
+### Ask one question in headless mode
 
-- `--server` (`-s`): Target server name or IP (default: localhost); **repeatable** or comma-separated for multi-server (e.g., `--server srv1 --server srv2` or `--server srv1,srv2`)
-- `--jea`: Preconnect a single JEA session at startup (`--jea server1 JEA-Admins`)
-- `--model` (`-m`): AI model to use (e.g., gpt-4.1, claude-sonnet-4.6)
-- `--prompt` (`-p`): Initial prompt for headless mode
-- `--mcp-config`: MCP config JSON path (default: `%USERPROFILE%\\.copilot\\mcp-config.json`)
-- `--skills-dir`: Skills root directory (repeatable, default: `%USERPROFILE%\\.copilot\\skills` when present)
-- `--disable-skill`: Disable a loaded skill by name (repeatable)
-- `--debug` (`-d`): Show technical diagnostics and exception details
-- `--byok-openai`: Use BYOK mode with OpenAI provider instead of GitHub auth
-- `--openai-base-url`: Override OpenAI base URL (default: `https://api.openai.com/v1`)
-- `--openai-api-key`: Provide OpenAI API key directly (or use `OPENAI_API_KEY`)
-- `--version` (`-v`): Show app version and exit
-- `--help` (`-h`): Show help information
-
-### Model Selection
-
-You can specify which AI model to use with the `--model` option:
-
-```bash
-# Use a specific model
-dotnet run -- --model gpt-5.3-codex
-
-# Use Claude
-dotnet run -- --model claude-sonnet-4.6
+```powershell
+troublescout --server myserver.domain.com --prompt "Check why the SQL Server service is stopped"
 ```
 
-Available models depend on auth mode:
+### Start with more than one server
 
-- GitHub mode: models available to your Copilot account/subscription
-- BYOK mode: models available from your configured OpenAI provider
-
-In the interactive TUI, `/model` now:
-
-- Shows only models from providers that are currently connected
-- Filters out non-chat models (image generators, embedding, audio, etc.) for BYOK providers
-- Restores GitHub premium multipliers next to supported models
-- Shows BYOK pricing when the provider exposes pricing metadata in `/models`
-- Falls back to LiteLLM-based price estimates when API pricing is unavailable (shown with `~` prefix)
-- Lets you press `ESC` to keep the current model and return to the prompt
-- After choosing a different model, lets you either start a clean session or share the recorded conversation and tool outputs with the selected model for a second opinion
-- Shows a confirmation panel with provider, rate/pricing, context window, and capability details after selection
-- Uses full terminal width for consistent layout
-
-### Reasoning Effort
-
-For models that advertise reasoning-effort support, TroubleScout now exposes a dedicated `/reasoning` command:
-
-- `/reasoning` opens an interactive picker
-- `/reasoning high` (or another supported value) saves a specific effort level
-- `/reasoning auto` clears the override and returns to automatic/default model behavior
-
-The active reasoning setting is shown in the selected-model summary, `/status`, and the post-response status bar.
-
-### Session Cost Tracking
-
-After each AI response, the status bar shows cumulative session usage:
-
-- **BYOK models**: `Session: 12.5k in / 8.2k out | ~$0.04 est.` — cost estimated from LiteLLM pricing data
-- **GitHub models**: `Session: 12.5k in / 8.2k out | ~2.5 premium reqs` — reported from Copilot SDK session metrics
-
-### Customizing System Prompts
-
-System prompt sections can be customized via the `/settings` configuration file. When the file is first created or normalized, TroubleScout now writes the built-in prompt sections into `settings.json` so you can edit them in place:
-
-```json
-{
-  "MonitoringMcpServer": "zabbix",
-  "TicketingMcpServer": "redmine",
-  "SystemPromptOverrides": {
-    "investigation_approach": "Your custom investigation instructions here"
-  },
-  "SystemPromptAppend": "Additional instructions appended to the system message"
-}
+```powershell
+troublescout --server dc01 --server files01 --server sql01
 ```
 
-Available override keys: `investigation_approach`, `response_format`, `safety`, `troubleshooting_approach`.
+You can also pass a comma-separated list such as `--server dc01,files01,sql01`.
 
-### MCP Servers and Skills
+### Start with a JEA session
 
-TroubleScout can load MCP servers and skills through Copilot SDK session configuration.
-
-- By default, MCP server config is read from `%USERPROFILE%\\.copilot\\mcp-config.json`
-- By default, skills are loaded from `%USERPROFILE%\\.copilot\\skills` if that directory exists
-- Approving MCP access in Safe mode now persists for the current TroubleScout session, so repeated MCP calls do not keep re-prompting
-- Use `/mcp-role` to assign or clear the optional monitoring and ticketing MCP role mappings without editing JSON by hand
-- Optional `MonitoringMcpServer` / `TicketingMcpServer` settings can point at existing configured MCP server names
-- Use `/status` or `/capabilities` to see configured MCP servers/skills and runtime-used MCP servers/skills.
-- TroubleScout configures focused sub-agents for evidence gathering, monitoring MCP lookups, ticketing MCP lookups, and web research; sub-agent streaming deltas stay out of the main terminal stream to avoid mixed output.
-- URL approvals now use a three-way Safe-mode prompt: allow this URL, allow all URLs for the current session, or deny.
-
-Examples:
-
-```bash
-# Use default MCP config (%USERPROFILE%\\.copilot\\mcp-config.json) and skills (%USERPROFILE%\\.copilot\\skills, if present)
-dotnet run -- --server localhost
-
-# Use a custom MCP config path
-dotnet run -- --mcp-config C:\\path\\to\\mcp-config.json
-
-# Add additional skill directory and disable a skill
-dotnet run -- --skills-dir C:\\skills --disable-skill experimental-feature
+```powershell
+troublescout --server myserver.domain.com --jea myserver.domain.com JEA-Admins
 ```
 
-## Example Prompts
+## Reports And Session Tools
 
-- "The server is running slow and users are complaining about login times"
-- "Check why the SQL Server service keeps stopping"
-- "Analyze disk space and find what's using the most storage"
-- "Look for errors in the System event log from the past hour"
-- "Why is CPU usage so high?"
+These are useful once you are already in TroubleScout:
 
-## Diagnostic Categories
+- `/status` shows the current connection, model, execution mode, and session details.
+- `/history` shows PowerShell command history.
+- `/report` generates and opens an HTML session report.
+- `/clear` starts a fresh AI session.
 
-| Category    | Description                          | Example Commands                          |
-| ----------- | ------------------------------------ | ----------------------------------------- |
-| System      | OS info, uptime, hardware specs      | `Get-ComputerInfo`, `Get-CimInstance`     |
-| Events      | Windows Event Log analysis           | `Get-EventLog`, `Get-WinEvent`            |
-| Services    | Windows service status               | `Get-Service`                             |
-| Processes   | Running processes and resource usage | `Get-Process`                             |
-| Performance | CPU, memory, disk metrics            | `Get-Counter`                             |
-| Network     | Network adapters and configuration   | `Get-NetAdapter`, `Get-NetIPAddress`      |
-| Storage     | Disk space and volume health         | `Get-Volume`, `Get-Disk`                  |
+## Safety Model
 
-## Security Model
+TroubleScout is designed to investigate first and change things only with your approval.
 
-TroubleScout uses a permission-based security model:
+- Read-only commands such as `Get-*` run automatically.
+- Mutating commands such as `Set-*`, `Start-*`, `Stop-*`, `Restart-*`, `Remove-*`, and similar actions require confirmation.
+- Sensitive commands such as `Get-Credential` and `Get-Secret` are blocked.
 
-### Automatic Execution (No Approval Required)
+When approval is required, TroubleScout offers a `Yes`, `No`, or `Explain` choice so you can review the action before allowing it.
 
-- All `Get-*` commands (read-only)
-- Multi-line scripts containing only safe read operations
-- Commands like `Format-*`, `Select-*`, `Where-*`, `Sort-*`
+## Authentication And Models
 
-### Requires User Approval
+### GitHub mode
 
-- `Set-*`, `Start-*`, `Stop-*`, `Restart-*`
-- `Remove-*`, `New-*`, `Add-*`, `Enable-*`, `Disable-*`
-- Any command that can modify system state
+GitHub Copilot is the default path. If you are not authenticated yet, start TroubleScout and use `/login`.
 
-When approval is required, a three-option prompt is shown: **Yes** (execute), **No** (skip), or **Explain** (show command details before deciding).
+### BYOK mode
 
-### Blocked Commands
+If you want to use an OpenAI-compatible provider instead, configure it from inside TroubleScout with `/byok`.
 
-- `Get-Credential` (sensitive credential handling)
-- `Get-Secret` (secret management)
+Useful related options:
+
+- `--model` selects a specific model.
+- `--openai-base-url` points to a compatible endpoint.
+- `--openai-api-key` passes the API key directly.
+- `/model` switches models interactively.
+- `/reasoning` sets the reasoning effort for supported models.
+- `/byok` configures or switches BYOK mode from inside the app.
+
+## Remote Troubleshooting
+
+For remote troubleshooting, WinRM must be enabled on the target machine and reachable from the system running TroubleScout. Windows Integrated Authentication is used for standard remote sessions.
+
+Useful remote workflows:
+
+- `troublescout --server myserver.domain.com` starts on a remote server.
+- `/server srv1 srv2` or `/server srv1,srv2` adds more servers during an interactive session.
+- `/jea` walks you through connecting to a JEA endpoint.
+
+## MCP Servers And Skills
+
+TroubleScout can load MCP servers and Copilot skills through session configuration.
+
+- Default MCP config path: `%USERPROFILE%\\.copilot\\mcp-config.json`
+- Default skills path: `%USERPROFILE%\\.copilot\\skills`
+- `/capabilities` shows configured and runtime-used MCP servers and skills, which are also visible in `/status`.
+- `/mcp-role` assigns optional monitoring and ticketing MCP role mappings.
+- MCP and URL approvals can be remembered for the current TroubleScout session.
 
 ## Interactive Commands
 
-| Command                | Description                                           |
-| ---------------------- | ----------------------------------------------------- |
-| `/help`                | Show the full interactive command reference           |
-| `/status`              | Show provider, model, usage, and capability details   |
-| `/clear`               | Start a new AI session                                |
-| `/settings`            | Open `settings.json`, then reload prompt/safety config |
-| `/mcp-role`            | Configure monitoring and ticketing MCP role mappings  |
-| `/model`               | Choose another model/provider and session handoff mode |
-| `/reasoning`           | Set or clear reasoning effort for supported models    |
-| `/mode <safe|yolo>`    | Change PowerShell execution mode                      |
-| `/server <servers>`    | Connect to one or more additional servers             |
-| `/jea [server] [name]` | Connect to a JEA endpoint                             |
-| `/login`               | Run Copilot login from the app                        |
-| `/byok ...`            | Configure OpenAI-compatible BYOK mode                 |
-| `/capabilities`        | Show configured and used MCP servers / skills         |
-| `/history`             | Show PowerShell command history                       |
-| `/report`              | Generate and open the HTML session report             |
-| `/exit` or `/quit`     | End the session                                       |
+| Command | Description |
+| --- | --- |
+| `/help` | Show the interactive command reference. |
+| `/status` | Show connection, model, mode, usage, and capability details. |
+| `/clear` | Start a new AI session. |
+| `/settings` | Open `settings.json`, then reload prompt and safety configuration. |
+| `/mcp-role` | Configure monitoring and ticketing MCP role mappings. |
+| `/model` | Choose another model or provider. |
+| `/reasoning [auto or effort]` | Set reasoning effort for the current model when supported. |
+| `/mode safe or yolo` | Change the PowerShell execution mode. |
+| `/server server1 [server2 ...]` | Connect to one or more additional servers, using spaces or commas. |
+| `/jea [server] [configurationName]` | Connect to a JEA constrained endpoint. |
+| `/login` | Run GitHub Copilot login inside TroubleScout. |
+| `/byok env or <api-key> [base-url] [model]` | Enable OpenAI-compatible BYOK mode. |
+| `/byok clear` | Clear saved BYOK settings for this profile. |
+| `/capabilities` | Show configured and used MCP servers and skills. |
+| `/history` | Show PowerShell command history. |
+| `/report` | Generate and open the HTML session report. |
+| `/exit` or `/quit` | End the session. |
 
-Use `/byok env <base-url> [model]` (or `/byok <api-key> <base-url> [model]`) to enable OpenAI-compatible BYOK. TroubleScout fetches available models from that endpoint and uses the same model picker as `/model`.
+## Command-Line Reference
+
+| Option | Description |
+| --- | --- |
+| `--server`, `-s` | Target server name or IP. Repeat it or use a comma-separated list for multi-server startup. |
+| `--prompt`, `-p` | Run a single prompt in headless mode. |
+| `--jea <server> <configurationName>` | Preconnect one JEA session at startup. |
+| `--model`, `-m` | Select a model such as `gpt-4.1`. |
+| `--mode safe or yolo` | Set the PowerShell execution mode. |
+| `--mcp-config` | Set a custom MCP config path. |
+| `--skills-dir` | Add an extra skills directory. |
+| `--disable-skill` | Disable a loaded skill by name. |
+| `--debug`, `-d` | Show technical diagnostics and exception details. |
+| `--byok-openai` | Use an OpenAI-compatible provider instead of GitHub authentication. |
+| `--no-byok` | Force GitHub Copilot even if BYOK is saved in settings. |
+| `--openai-base-url` | Override the OpenAI-compatible endpoint URL. |
+| `--openai-api-key` | Provide the OpenAI-compatible API key directly. |
+| `--version`, `-v` | Show the app version and exit. |
+| `--help`, `-h` | Show command-line help. |
+
+## Manual Build From Source
+
+Most users do not need this section. It is for contributors and advanced users.
+
+```powershell
+git clone https://github.com/sasler/TroubleScout.git
+cd TroubleScout
+dotnet build
+```
+
+To publish a self-contained executable:
+
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+dotnet publish -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true
+```
+
+## Troubleshooting
+
+### Copilot login or startup problems
+
+If TroubleScout cannot reach GitHub Copilot, verify the CLI and then sign in again from inside TroubleScout with `/login`:
+
+```powershell
+copilot --version
+```
+
+Official setup guide: [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
+
+### Remote server connectivity problems
+
+If remote sessions fail, confirm that WinRM is enabled on the target system and reachable from your machine.
+
+```powershell
+Enable-PSRemoting -Force
+```
+
+### SDK or CLI compatibility issues
+
+Current Copilot SDK and CLI builds may require an up-to-date Node.js installation on systems where you manage the Copilot CLI separately.
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
+```
 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────┐
-│                 TroubleScout CLI                │
-├─────────────────────────────────────────────────┤
-│  ┌───────────────┐  ┌─────────────────────────┐ │
-│  │  Spectre.     │  │    GitHub Copilot SDK   │ │
-│  │  Console TUI  │  │    (JSON-RPC Client)    │ │
-│  └───────────────┘  └─────────────────────────┘ │
-│           │                     │               │
-│           ▼                     ▼               │
-│  ┌───────────────────────────────────────────┐  │
-│  │         TroubleshootingSession            │  │
-│  │  - Session management                     │  │
-│  │  - Event handling (streaming)             │  │
-│  │  - Tool execution                         │  │
-│  └───────────────────────────────────────────┘  │
-│           │                     │               │
-│           ▼                     ▼               │
-│  ┌───────────────┐  ┌─────────────────────────┐ │
-│  │  PowerShell   │  │    DiagnosticTools      │ │
-│  │  Executor     │  │    (AI Functions)       │ │
-│  │  (Local/WinRM)│  │                         │ │
-│  └───────────────┘  └─────────────────────────┘ │
-└─────────────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────┐
-│           Copilot CLI (SDK Server)              │
-│           copilot --server --stdio              │
-└─────────────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────┐
-│           GitHub Copilot API                    │
-│           (AI Language Model)                   │
-└─────────────────────────────────────────────────┘
+Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
+                                   |
+        +--------------------------+--------------------------+
+        |                          |                          |
+  UI/ConsoleUI.cs         Tools/DiagnosticTools.cs   Services/PowerShellExecutor.cs
 ```
 
 ## Environment Variables
 
-| Variable           | Description                               |
-| ------------------ | ----------------------------------------- |
-| `COPILOT_CLI_PATH` | Custom path to the Copilot CLI executable |
-
-## Remote Server Requirements (WinRM)
-
-When troubleshooting remote servers:
-
-1. **WinRM must be enabled** on the target server:
-
-   ```powershell
-   Enable-PSRemoting -Force
-   ```
-
-2. **Windows Integrated Authentication** is used (Kerberos/NTLM)
-
-3. **Network connectivity** on port 5985 (HTTP) or 5986 (HTTPS)
-
-## Troubleshooting
-
-### "Copilot CLI Not Found"
-
-Install or update GitHub Copilot CLI using the official setup guide:
-
-[Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
-
-If you still see startup failures, verify the CLI and re-authenticate:
-
-```bash
-copilot --version
-copilot login
-```
-
-References:
-
-- [Copilot CLI](https://github.com/github/copilot-cli)
-- [Copilot CLI install guide](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
-
-### "Protocol version mismatch" or SDK/CLI compatibility errors
-
-TroubleScout requires Node.js 24+ for current Copilot SDK/CLI builds.
-
-- On Windows, install/update Node LTS:
-
-   ```powershell
-   winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
-   ```
-
-- Restart the terminal.
-
-- Install or update Copilot CLI:
-
-   [Install Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli)
-
-- Re-authenticate:
-
-   ```bash
-   copilot login
-   ```
-
-- If you run TroubleScout from source, update the SDK package:
-
-   ```bash
-   dotnet add package GitHub.Copilot.SDK --version <latest>
-   dotnet build
-   ```
-
-### "JSON-RPC connection lost"
-
-- Ensure Node.js 24+ is installed and in PATH
-- Check that you have an active GitHub Copilot subscription
-- Verify authentication with `copilot` interactive mode
-
-### "Connection Failed" (Remote Server)
-
-- Verify WinRM is enabled on the target server
-- Check firewall allows port 5985/5986
-- Ensure your account has admin privileges on the target
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! This repository has branch protection enabled on the `main` branch to maintain code quality.
-
-**Before contributing:**
-
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines
-- Follow branch naming conventions: `feature/`, `fix/`, `docs/`, etc.
-- Use emoji-prefixed or conventional commit messages
-- Ensure all tests pass locally before opening a PR
-
-**Quick Start:**
-
-1. Fork the repository
-2. Create a branch: `git checkout -b feature/your-feature`
-3. Make changes and commit: `git commit -m "✨ Add your feature"`
-4. Push and open a pull request
-
-All pull requests require:
-
-- ✅ Passing CI/CD checks (build and tests)
-- ✅ Code owner review and approval
-- ✅ Branch up-to-date with main
-
-## Release Process
-
-Releases are automatically published via GitHub Actions when version tags are pushed. If WinGet automation is configured, a follow-up workflow also opens or updates the `winget-pkgs` PR after the **Release** workflow completes. See [RELEASE-PROCESS.md](RELEASE-PROCESS.md) for detailed instructions and required setup for the `v1.9.0` release flow and beyond.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
+| Variable | Description |
+| --- | --- |
+| `COPILOT_CLI_PATH` | Custom path to the Copilot CLI executable. |
+| `OPENAI_API_KEY` | API key for OpenAI-compatible BYOK mode. |
