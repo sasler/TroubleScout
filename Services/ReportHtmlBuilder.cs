@@ -1,11 +1,17 @@
 using System.Globalization;
+using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace TroubleScout.Services;
 
-internal sealed record ReportPromptEntry(DateTimeOffset Timestamp, string Prompt, List<ReportActionEntry> Actions, string AgentReply);
+internal sealed record ReportPromptEntry(DateTimeOffset Timestamp, string Prompt, List<ReportActionEntry> Actions, string AgentReply)
+{
+    public TroubleScout.UI.StatusBarInfo? StatusBar { get; init; }
+}
 
     internal sealed record ReportActionEntry(
         DateTimeOffset Timestamp,
@@ -13,11 +19,34 @@ internal sealed record ReportPromptEntry(DateTimeOffset Timestamp, string Prompt
         string Command,
         string Output,
         string SafetyApproval,
-        string Source);
+        string Source)
+    {
+        public string? Arguments { get; init; }
+        public bool? Success { get; init; }
+        public string? ToolCallId { get; init; }
+    }
+
+internal sealed record ReportSessionSummary(
+    string CurrentModel,
+    string CurrentProvider,
+    IReadOnlyList<string> ModelsUsed,
+    IReadOnlyList<string> ConfiguredMcpServers,
+    IReadOnlyList<string> UsedMcpServers,
+    string? MonitoringMcp,
+    string? TicketingMcp,
+    IReadOnlyList<string> ApprovedMcpServersForSession,
+    IReadOnlyList<string> PersistedApprovedMcpServers,
+    IReadOnlyList<string> ConfiguredSkills,
+    IReadOnlyList<string> UsedSkills,
+    string ExecutionMode,
+    string TargetServer);
 
 internal static class ReportHtmlBuilder
 {
-    internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts)
+    internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts) =>
+        BuildReportHtml(prompts, summary: null);
+
+    internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts, ReportSessionSummary? summary)
     {
         var totalActions = prompts.Sum(prompt => prompt.Actions.Count);
         var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
@@ -186,6 +215,88 @@ internal static class ReportHtmlBuilder
         // No actions
         sb.AppendLine("    .no-actions { padding: 16px; text-align: center; color: #64748b; font-style: italic; }");
 
+        // Status bar (mirrors terminal)
+        sb.AppendLine("    .statusbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #1e293b; font-size: 0.78rem; }");
+        sb.AppendLine("    .sb-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid #334155; color: #94a3b8; font-family: 'Cascadia Mono', Consolas, monospace; }");
+        sb.AppendLine("    .sb-chip strong { color: #e2e8f0; font-weight: 600; }");
+        sb.AppendLine("    .sb-chip.sb-model { color: #67e8f9; border-color: rgba(103,232,249,0.3); }");
+        sb.AppendLine("    .sb-chip.sb-tokens { color: #a5b4fc; border-color: rgba(165,180,252,0.3); }");
+        sb.AppendLine("    .sb-chip.sb-tools { color: #fcd34d; border-color: rgba(252,211,77,0.3); }");
+
+        // MCP server chip
+        sb.AppendLine("    .mcp-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; background: rgba(168,85,247,0.12); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); }");
+        sb.AppendLine("    .approval-MCP { background: rgba(168,85,247,0.12); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); }");
+        sb.AppendLine("    .approval-Failed { background: rgba(239,68,68,0.12); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }");
+
+        // Markdown-rendered reply
+        sb.AppendLine("    .reply-markdown { font-size: 0.95rem; line-height: 1.7; color: #cbd5e1; }");
+        sb.AppendLine("    .reply-markdown h1, .reply-markdown h2, .reply-markdown h3, .reply-markdown h4 { color: #f1f5f9; margin: 1.1em 0 0.5em; line-height: 1.3; }");
+        sb.AppendLine("    .reply-markdown h1 { font-size: 1.4rem; border-bottom: 1px solid #334155; padding-bottom: 0.3em; }");
+        sb.AppendLine("    .reply-markdown h2 { font-size: 1.2rem; }");
+        sb.AppendLine("    .reply-markdown h3 { font-size: 1.05rem; }");
+        sb.AppendLine("    .reply-markdown h4 { font-size: 0.95rem; color: #93c5fd; }");
+        sb.AppendLine("    .reply-markdown p { margin: 0.6em 0; }");
+        sb.AppendLine("    .reply-markdown code { background: rgba(255,255,255,0.06); border: 1px solid #1e293b; border-radius: 4px; padding: 1px 6px; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 0.86em; color: #fde68a; }");
+        sb.AppendLine("    .reply-markdown pre { background: #080e1c; border: 1px solid #1e293b; border-radius: 8px; padding: 12px 14px; overflow-x: auto; }");
+        sb.AppendLine("    .reply-markdown pre code { background: transparent; border: none; padding: 0; color: #e2e8f0; font-size: 0.88rem; }");
+        sb.AppendLine("    .reply-markdown a { color: #60a5fa; text-decoration: none; }");
+        sb.AppendLine("    .reply-markdown a:hover { text-decoration: underline; }");
+        sb.AppendLine("    .reply-markdown ul, .reply-markdown ol { padding-left: 1.6em; margin: 0.5em 0; }");
+        sb.AppendLine("    .reply-markdown li { margin: 0.25em 0; }");
+        sb.AppendLine("    .reply-markdown blockquote { margin: 0.6em 0; padding: 0.4em 1em; border-left: 3px solid #475569; color: #94a3b8; background: rgba(255,255,255,0.02); border-radius: 0 6px 6px 0; }");
+        sb.AppendLine("    .reply-markdown table { border-collapse: collapse; margin: 0.7em 0; font-size: 0.88rem; }");
+        sb.AppendLine("    .reply-markdown th, .reply-markdown td { border: 1px solid #334155; padding: 6px 10px; }");
+        sb.AppendLine("    .reply-markdown th { background: rgba(255,255,255,0.04); }");
+        sb.AppendLine("    .reply-markdown hr { border: none; border-top: 1px solid #334155; margin: 1em 0; }");
+        sb.AppendLine("    .reply-actions { display: flex; gap: 8px; margin-top: 12px; }");
+        sb.AppendLine("    .reply-action-btn { background: rgba(255,255,255,0.05); border: 1px solid #334155; color: #94a3b8; font-size: 0.78rem; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-family: inherit; transition: all 0.15s ease; }");
+        sb.AppendLine("    .reply-action-btn:hover { background: rgba(255,255,255,0.1); color: #e2e8f0; }");
+        sb.AppendLine("    .reply-action-btn.copied { background: rgba(34,197,94,0.15); border-color: rgba(34,197,94,0.3); color: #22c55e; }");
+
+        // Top action bar
+        sb.AppendLine("    .top-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; margin-bottom: 12px; }");
+        sb.AppendLine("    .top-btn { background: rgba(255,255,255,0.04); border: 1px solid #334155; color: #cbd5e1; font-size: 0.85rem; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-family: inherit; transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 6px; }");
+        sb.AppendLine("    .top-btn:hover { background: rgba(255,255,255,0.1); }");
+
+        // Session header card
+        sb.AppendLine("    .session-header { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 18px 22px; margin-bottom: 20px; }");
+        sb.AppendLine("    .session-header h2 { margin: 0 0 12px; font-size: 1rem; color: #93c5fd; text-transform: uppercase; letter-spacing: 0.05em; }");
+        sb.AppendLine("    .session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; font-size: 0.88rem; }");
+        sb.AppendLine("    .session-grid dt { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }");
+        sb.AppendLine("    .session-grid dd { margin: 0 0 4px; color: #e2e8f0; word-break: break-word; }");
+
+        // TOC
+        sb.AppendLine("    .toc { position: fixed; top: 80px; right: 16px; max-width: 240px; max-height: calc(100vh - 120px); overflow-y: auto; background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; font-size: 0.82rem; z-index: 50; }");
+        sb.AppendLine("    .toc h3 { margin: 0 0 8px; font-size: 0.78rem; color: #93c5fd; text-transform: uppercase; letter-spacing: 0.05em; }");
+        sb.AppendLine("    .toc ol { padding-left: 18px; margin: 0; }");
+        sb.AppendLine("    .toc li { margin: 3px 0; }");
+        sb.AppendLine("    .toc a { color: #cbd5e1; text-decoration: none; }");
+        sb.AppendLine("    .toc a:hover { color: #60a5fa; }");
+        sb.AppendLine("    @media (max-width: 1400px) { .toc { display: none; } }");
+
+        // Light theme overrides
+        sb.AppendLine("    [data-theme=\"light\"] { color-scheme: light; }");
+        sb.AppendLine("    [data-theme=\"light\"] body { background: #f8fafc; color: #1e293b; }");
+        sb.AppendLine("    [data-theme=\"light\"] .hero { background: linear-gradient(135deg, #e0f2fe 0%, #f1f5f9 100%); border-color: #cbd5e1; }");
+        sb.AppendLine("    [data-theme=\"light\"] .hero h1, [data-theme=\"light\"] .hero-stat-value { color: #0f172a; }");
+        sb.AppendLine("    [data-theme=\"light\"] .hero-subtitle, [data-theme=\"light\"] .hero-stat-label { color: #475569; }");
+        sb.AppendLine("    [data-theme=\"light\"] .hero-stat { background: rgba(255,255,255,0.6); border-color: #cbd5e1; }");
+        sb.AppendLine("    [data-theme=\"light\"] .prompt-card, [data-theme=\"light\"] .session-header, [data-theme=\"light\"] .toc { background: #ffffff; border-color: #cbd5e1; }");
+        sb.AppendLine("    [data-theme=\"light\"] .prompt-text { color: #0f172a; }");
+        sb.AppendLine("    [data-theme=\"light\"] .prompt-meta, [data-theme=\"light\"] .muted, [data-theme=\"light\"] .session-grid dt, [data-theme=\"light\"] .toc h3 { color: #475569; }");
+        sb.AppendLine("    [data-theme=\"light\"] .prompt-card:hover, [data-theme=\"light\"] .prompt-header:hover { background: #f1f5f9; border-color: #cbd5e1; }");
+        sb.AppendLine("    [data-theme=\"light\"] .action-card { background: #f8fafc; border-color: #e2e8f0; }");
+        sb.AppendLine("    [data-theme=\"light\"] .inner-section { background: #ffffff; border-color: #e2e8f0; }");
+        sb.AppendLine("    [data-theme=\"light\"] .code-block, [data-theme=\"light\"] .output-block, [data-theme=\"light\"] .reply-markdown pre { background: #f1f5f9; border-color: #cbd5e1; color: #1e293b; }");
+        sb.AppendLine("    [data-theme=\"light\"] .reply-bubble { background: linear-gradient(135deg, #eff6ff, #f8fafc); border-color: #cbd5e1; }");
+        sb.AppendLine("    [data-theme=\"light\"] .reply-markdown { color: #1e293b; }");
+        sb.AppendLine("    [data-theme=\"light\"] .reply-markdown h1, [data-theme=\"light\"] .reply-markdown h2, [data-theme=\"light\"] .reply-markdown h3 { color: #0f172a; }");
+        sb.AppendLine("    [data-theme=\"light\"] .reply-markdown code { background: rgba(0,0,0,0.05); border-color: #cbd5e1; color: #b45309; }");
+        sb.AppendLine("    [data-theme=\"light\"] .reply-label { color: #4f46e5; }");
+        sb.AppendLine("    [data-theme=\"light\"] .top-btn, [data-theme=\"light\"] .reply-action-btn, [data-theme=\"light\"] .copy-btn, [data-theme=\"light\"] .sb-chip { background: rgba(0,0,0,0.04); border-color: #cbd5e1; color: #1e293b; }");
+        sb.AppendLine("    [data-theme=\"light\"] .session-grid dd, [data-theme=\"light\"] .toc a { color: #1e293b; }");
+        sb.AppendLine("    [data-theme=\"light\"] .footer { color: #94a3b8; border-color: #cbd5e1; }");
+
         // Footer
         sb.AppendLine("    .footer { margin-top: 40px; padding: 20px 0; border-top: 1px solid #1e293b; text-align: center; color: #475569; font-size: 0.82rem; }");
         sb.AppendLine("    .footer a { color: #64748b; text-decoration: none; }");
@@ -246,6 +357,12 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("<body>");
         sb.AppendLine("  <div class=\"wrap\">");
 
+        // ── Top action bar (theme + export) ──
+        sb.AppendLine("    <div class=\"top-bar\">");
+        sb.AppendLine("      <button class=\"top-btn\" id=\"export-md-btn\" type=\"button\" title=\"Download full session as Markdown\">&#128194; Export .md</button>");
+        sb.AppendLine("      <button class=\"top-btn\" id=\"theme-toggle-btn\" type=\"button\" title=\"Toggle light/dark theme\">&#9788; Theme</button>");
+        sb.AppendLine("    </div>");
+
         // ── Hero header ──
         sb.AppendLine("    <div class=\"hero\">");
         sb.AppendLine("      <div class=\"hero-top\">");
@@ -269,6 +386,63 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("      </div>");
         sb.AppendLine("    </div>");
 
+        // ── Session header card (model, mcp, etc.) ──
+        if (summary != null)
+        {
+            sb.AppendLine("    <div class=\"session-header\">");
+            sb.AppendLine("      <h2>Session</h2>");
+            sb.AppendLine("      <dl class=\"session-grid\">");
+            sb.AppendLine($"        <div><dt>Model</dt><dd>{HtmlEncode(summary.CurrentModel)}</dd></div>");
+            sb.AppendLine($"        <div><dt>Provider</dt><dd>{HtmlEncode(summary.CurrentProvider)}</dd></div>");
+            sb.AppendLine($"        <div><dt>Target</dt><dd>{HtmlEncode(summary.TargetServer)}</dd></div>");
+            sb.AppendLine($"        <div><dt>Execution mode</dt><dd>{HtmlEncode(summary.ExecutionMode)}</dd></div>");
+            if (summary.UsedMcpServers.Count > 0)
+            {
+                sb.AppendLine($"        <div><dt>MCP servers used</dt><dd>{HtmlEncode(string.Join(", ", summary.UsedMcpServers))}</dd></div>");
+            }
+            else if (summary.ConfiguredMcpServers.Count > 0)
+            {
+                sb.AppendLine($"        <div><dt>MCP servers configured</dt><dd>{HtmlEncode(string.Join(", ", summary.ConfiguredMcpServers))}</dd></div>");
+            }
+            if (!string.IsNullOrWhiteSpace(summary.MonitoringMcp))
+            {
+                sb.AppendLine($"        <div><dt>Monitoring MCP</dt><dd>{HtmlEncode(summary.MonitoringMcp!)}</dd></div>");
+            }
+            if (!string.IsNullOrWhiteSpace(summary.TicketingMcp))
+            {
+                sb.AppendLine($"        <div><dt>Ticketing MCP</dt><dd>{HtmlEncode(summary.TicketingMcp!)}</dd></div>");
+            }
+            if (summary.ApprovedMcpServersForSession.Count > 0)
+            {
+                sb.AppendLine($"        <div><dt>MCP approved (session)</dt><dd>{HtmlEncode(string.Join(", ", summary.ApprovedMcpServersForSession))}</dd></div>");
+            }
+            if (summary.PersistedApprovedMcpServers.Count > 0)
+            {
+                sb.AppendLine($"        <div><dt>MCP approved (persisted)</dt><dd>{HtmlEncode(string.Join(", ", summary.PersistedApprovedMcpServers))}</dd></div>");
+            }
+            if (summary.UsedSkills.Count > 0)
+            {
+                sb.AppendLine($"        <div><dt>Skills used</dt><dd>{HtmlEncode(string.Join(", ", summary.UsedSkills))}</dd></div>");
+            }
+            sb.AppendLine("      </dl>");
+            sb.AppendLine("    </div>");
+        }
+
+        // ── TOC sidebar ──
+        if (prompts.Count > 1)
+        {
+            sb.AppendLine("    <nav class=\"toc\" aria-label=\"Table of contents\">");
+            sb.AppendLine("      <h3>Prompts</h3>");
+            sb.AppendLine("      <ol>");
+            for (var t = 0; t < prompts.Count; t++)
+            {
+                var label = TrimForToc(prompts[t].Prompt);
+                sb.AppendLine($"        <li><a href=\"#prompt-{t + 1}\">{HtmlEncode(label)}</a></li>");
+            }
+            sb.AppendLine("      </ol>");
+            sb.AppendLine("    </nav>");
+        }
+
         // ── Summary statistics cards ──
         sb.AppendLine("    <div class=\"summary-row\">");
         sb.AppendLine($"      <div class=\"summary-card sc-green\"><div class=\"sc-val\">{safeCount}</div><div class=\"sc-lbl\">Safe (Auto)</div></div>");
@@ -287,7 +461,7 @@ internal static class ReportHtmlBuilder
 
             sb.AppendLine("      <div class=\"timeline-item\">");
             sb.AppendLine("        <div class=\"timeline-dot\"></div>");
-            sb.AppendLine("        <details class=\"prompt-card\">");
+            sb.AppendLine($"        <details class=\"prompt-card\" id=\"prompt-{i + 1}\" open>");
             sb.AppendLine("          <summary class=\"prompt-header\">");
             sb.AppendLine($"            <div class=\"prompt-badge\">{i + 1}</div>");
             sb.AppendLine("            <div class=\"prompt-info\">");
@@ -310,38 +484,80 @@ internal static class ReportHtmlBuilder
                 foreach (var action in prompt.Actions)
                 {
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                    var isMcp = string.Equals(action.Source, "MCP", StringComparison.OrdinalIgnoreCase);
 
                     sb.AppendLine("            <div class=\"action-card\">");
                     sb.AppendLine("              <div class=\"action-header\">");
                     sb.AppendLine($"                <span class=\"action-time\">{HtmlEncode(actionTime)}</span>");
-                    sb.AppendLine($"                <span class=\"source-chip\">{HtmlEncode(action.Source)}</span>");
-                    sb.AppendLine($"                <span class=\"approval-chip approval-{HtmlEncode(action.SafetyApproval)}\">{HtmlEncode(action.SafetyApproval)}</span>");
-                    if (!string.IsNullOrWhiteSpace(action.Target))
+                    if (isMcp)
                     {
-                        sb.AppendLine($"                <span class=\"action-target\">{HtmlEncode(action.Target)}</span>");
+                        sb.AppendLine($"                <span class=\"mcp-chip\">&#128268; MCP &middot; {HtmlEncode(action.Target)}</span>");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                <span class=\"source-chip\">{HtmlEncode(action.Source)}</span>");
+                        if (!string.IsNullOrWhiteSpace(action.Target))
+                        {
+                            sb.AppendLine($"                <span class=\"action-target\">{HtmlEncode(action.Target)}</span>");
+                        }
+                    }
+                    sb.AppendLine($"                <span class=\"approval-chip approval-{HtmlEncode(action.SafetyApproval)}\">{HtmlEncode(action.SafetyApproval)}</span>");
+                    if (action.Success == false)
+                    {
+                        sb.AppendLine("                <span class=\"approval-chip approval-Failed\">Failed</span>");
                     }
                     sb.AppendLine("              </div>");
 
-                    // Command section
-                    sb.AppendLine("              <details class=\"inner-section\" open>");
-                    sb.AppendLine("                <summary>Command</summary>");
-                    sb.AppendLine("                <div class=\"inner-content\">");
-                    sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"code-block\">{RenderCommandHtmlWithLineNumbers(action.Command)}</pre></div>");
-                    sb.AppendLine("                </div>");
-                    sb.AppendLine("              </details>");
+                    if (isMcp)
+                    {
+                        // Tool call (server / tool name without args)
+                        sb.AppendLine("              <details class=\"inner-section\" open>");
+                        sb.AppendLine("                <summary>Tool call</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Command)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
 
-                    // Output section
-                    sb.AppendLine("              <details class=\"inner-section\">");
-                    sb.AppendLine("                <summary>Output</summary>");
-                    sb.AppendLine("                <div class=\"inner-content\">");
-                    sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Output)}</pre></div>");
-                    sb.AppendLine("                </div>");
-                    sb.AppendLine("              </details>");
+                        if (!string.IsNullOrWhiteSpace(action.Arguments))
+                        {
+                            sb.AppendLine("              <details class=\"inner-section\">");
+                            sb.AppendLine("                <summary>Arguments</summary>");
+                            sb.AppendLine("                <div class=\"inner-content\">");
+                            sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Arguments!)}</pre></div>");
+                            sb.AppendLine("                </div>");
+                            sb.AppendLine("              </details>");
+                        }
+
+                        sb.AppendLine("              <details class=\"inner-section\">");
+                        sb.AppendLine("                <summary>Output</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        var outputText = string.IsNullOrWhiteSpace(action.Output) ? "(no output captured)" : action.Output;
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(outputText)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
+                    }
+                    else
+                    {
+                        // PowerShell command + output
+                        sb.AppendLine("              <details class=\"inner-section\" open>");
+                        sb.AppendLine("                <summary>Command</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"code-block\">{RenderCommandHtmlWithLineNumbers(action.Command)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
+
+                        sb.AppendLine("              <details class=\"inner-section\">");
+                        sb.AppendLine("                <summary>Output</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Output)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
+                    }
                     sb.AppendLine("            </div>");
                 }
             }
 
-            // Agent reply chat bubble
+            // Agent reply chat bubble (markdown rendered)
             sb.AppendLine("            <div class=\"reply-bubble\">");
             sb.AppendLine("              <div class=\"reply-header\">");
             sb.AppendLine("                <div class=\"reply-avatar\">");
@@ -355,8 +571,23 @@ internal static class ReportHtmlBuilder
             }
             else
             {
-                sb.AppendLine($"              <div class=\"reply-text\">{HtmlEncode(prompt.AgentReply)}</div>");
+                // Stash raw markdown in a script tag to avoid HTML escaping issues, render via marked+DOMPurify on load.
+                sb.AppendLine($"              <script type=\"text/markdown\" class=\"reply-md-source\" data-target=\"reply-md-{i + 1}\">{EscapeForScriptBlock(prompt.AgentReply)}</script>");
+                sb.AppendLine($"              <div class=\"reply-markdown\" id=\"reply-md-{i + 1}\" data-md-render>{HtmlEncode(prompt.AgentReply)}</div>");
+                sb.AppendLine("              <div class=\"reply-actions\">");
+                sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-md=\"reply-md-{i + 1}\">&#128203; Copy markdown</button>");
+                sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-html=\"reply-md-{i + 1}\">&#10063; Copy rendered</button>");
+                sb.AppendLine("              </div>");
             }
+
+            // Per-prompt status bar (model + tokens + tools)
+            if (prompt.StatusBar != null)
+            {
+                sb.AppendLine("            <div class=\"statusbar\">");
+                AppendStatusBarChips(sb, prompt.StatusBar);
+                sb.AppendLine("            </div>");
+            }
+
             sb.AppendLine("            </div>");
 
             sb.AppendLine("          </div>");
@@ -371,19 +602,29 @@ internal static class ReportHtmlBuilder
 
         sb.AppendLine("  </div>");
 
-        // ── JavaScript: copy-to-clipboard ──
+        // ── Embedded marked.js (markdown parser) ──
+        sb.AppendLine("  <script>");
+        sb.Append(LoadEmbeddedScript("Assets.report.marked.min.js"));
+        sb.AppendLine();
+        sb.AppendLine("  </script>");
+
+        // ── Embedded DOMPurify (HTML sanitiser) ──
+        sb.AppendLine("  <script>");
+        sb.Append(LoadEmbeddedScript("Assets.report.purify.min.js"));
+        sb.AppendLine();
+        sb.AppendLine("  </script>");
+
+        // ── Main report script ──
         sb.AppendLine("  <script>");
         sb.AppendLine("    function copyCode(btn) {");
         sb.AppendLine("      var pre = btn.parentElement.querySelector('pre');");
         sb.AppendLine("      if (!pre) return;");
-        sb.AppendLine("      var text = pre.textContent || pre.innerText;");
+        sb.AppendLine("      copyText(pre.textContent || pre.innerText, btn);");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function copyText(text, btn) {");
         sb.AppendLine("      if (navigator.clipboard && navigator.clipboard.writeText) {");
-        sb.AppendLine("        navigator.clipboard.writeText(text).then(function() { showCopied(btn); }, function() {");
-        sb.AppendLine("          fallbackCopy(text, btn);");
-        sb.AppendLine("        });");
-        sb.AppendLine("      } else {");
-        sb.AppendLine("        fallbackCopy(text, btn);");
-        sb.AppendLine("      }");
+        sb.AppendLine("        navigator.clipboard.writeText(text).then(function() { showCopied(btn); }, function() { fallbackCopy(text, btn); });");
+        sb.AppendLine("      } else { fallbackCopy(text, btn); }");
         sb.AppendLine("    }");
         sb.AppendLine("    function fallbackCopy(text, btn) {");
         sb.AppendLine("      var ta = document.createElement('textarea');");
@@ -397,6 +638,93 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("      btn.textContent = '\\u2713 Copied'; btn.classList.add('copied');");
         sb.AppendLine("      setTimeout(function() { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);");
         sb.AppendLine("    }");
+        sb.AppendLine("    function getRawMarkdownFor(targetId) {");
+        sb.AppendLine("      var src = document.querySelector('script.reply-md-source[data-target=\"' + targetId + '\"]');");
+        sb.AppendLine("      return src ? src.textContent : '';");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function renderAllMarkdown() {");
+        sb.AppendLine("      if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') return;");
+        sb.AppendLine("      try { marked.setOptions({ gfm: true, breaks: false }); } catch(e) {}");
+        sb.AppendLine("      document.querySelectorAll('[data-md-render]').forEach(function(el) {");
+        sb.AppendLine("        var raw = getRawMarkdownFor(el.id);");
+        sb.AppendLine("        if (!raw) return;");
+        sb.AppendLine("        try {");
+        sb.AppendLine("          var html = marked.parse(raw);");
+        sb.AppendLine("          el.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });");
+        sb.AppendLine("        } catch(e) { /* leave plain text fallback in place */ }");
+        sb.AppendLine("      });");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function buildSessionMarkdown() {");
+        sb.AppendLine("      var lines = ['# TroubleScout Session Report', ''];");
+        sb.AppendLine("      var prompts = document.querySelectorAll('details.prompt-card');");
+        sb.AppendLine("      prompts.forEach(function(card, idx) {");
+        sb.AppendLine("        var promptText = card.querySelector('.prompt-text');");
+        sb.AppendLine("        lines.push('## Prompt ' + (idx + 1));");
+        sb.AppendLine("        lines.push('');");
+        sb.AppendLine("        if (promptText) lines.push('> ' + promptText.textContent.trim());");
+        sb.AppendLine("        lines.push('');");
+        sb.AppendLine("        var actions = card.querySelectorAll('.action-card');");
+        sb.AppendLine("        if (actions.length) {");
+        sb.AppendLine("          lines.push('### Actions');");
+        sb.AppendLine("          lines.push('');");
+        sb.AppendLine("          actions.forEach(function(a) {");
+        sb.AppendLine("            var pre = a.querySelectorAll('pre');");
+        sb.AppendLine("            if (pre.length > 0) {");
+        sb.AppendLine("              lines.push('```');");
+        sb.AppendLine("              lines.push(pre[0].textContent.trim());");
+        sb.AppendLine("              lines.push('```');");
+        sb.AppendLine("              lines.push('');");
+        sb.AppendLine("            }");
+        sb.AppendLine("          });");
+        sb.AppendLine("        }");
+        sb.AppendLine("        var src = card.querySelector('script.reply-md-source');");
+        sb.AppendLine("        if (src) {");
+        sb.AppendLine("          lines.push('### Reply');");
+        sb.AppendLine("          lines.push('');");
+        sb.AppendLine("          lines.push(src.textContent);");
+        sb.AppendLine("          lines.push('');");
+        sb.AppendLine("        }");
+        sb.AppendLine("      });");
+        sb.AppendLine("      return lines.join('\\n');");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function exportMarkdown() {");
+        sb.AppendLine("      var md = buildSessionMarkdown();");
+        sb.AppendLine("      var blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });");
+        sb.AppendLine("      var url = URL.createObjectURL(blob);");
+        sb.AppendLine("      var a = document.createElement('a');");
+        sb.AppendLine("      a.href = url;");
+        sb.AppendLine("      a.download = 'troublescout-session-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.md';");
+        sb.AppendLine("      document.body.appendChild(a); a.click(); document.body.removeChild(a);");
+        sb.AppendLine("      setTimeout(function() { URL.revokeObjectURL(url); }, 1000);");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function applyTheme(theme) {");
+        sb.AppendLine("      document.documentElement.setAttribute('data-theme', theme);");
+        sb.AppendLine("      try { localStorage.setItem('troublescout-report-theme', theme); } catch(e) {}");
+        sb.AppendLine("    }");
+        sb.AppendLine("    function initReport() {");
+        sb.AppendLine("      var stored = null;");
+        sb.AppendLine("      try { stored = localStorage.getItem('troublescout-report-theme'); } catch(e) {}");
+        sb.AppendLine("      if (stored === 'light' || stored === 'dark') applyTheme(stored);");
+        sb.AppendLine("      else applyTheme((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');");
+        sb.AppendLine("      var tt = document.getElementById('theme-toggle-btn');");
+        sb.AppendLine("      if (tt) tt.addEventListener('click', function() {");
+        sb.AppendLine("        var cur = document.documentElement.getAttribute('data-theme');");
+        sb.AppendLine("        applyTheme(cur === 'light' ? 'dark' : 'light');");
+        sb.AppendLine("      });");
+        sb.AppendLine("      var ex = document.getElementById('export-md-btn');");
+        sb.AppendLine("      if (ex) ex.addEventListener('click', exportMarkdown);");
+        sb.AppendLine("      document.querySelectorAll('[data-copy-md]').forEach(function(btn) {");
+        sb.AppendLine("        btn.addEventListener('click', function() { copyText(getRawMarkdownFor(btn.getAttribute('data-copy-md')), btn); });");
+        sb.AppendLine("      });");
+        sb.AppendLine("      document.querySelectorAll('[data-copy-html]').forEach(function(btn) {");
+        sb.AppendLine("        btn.addEventListener('click', function() {");
+        sb.AppendLine("          var el = document.getElementById(btn.getAttribute('data-copy-html'));");
+        sb.AppendLine("          copyText(el ? (el.innerText || el.textContent || '') : '', btn);");
+        sb.AppendLine("        });");
+        sb.AppendLine("      });");
+        sb.AppendLine("      renderAllMarkdown();");
+        sb.AppendLine("    }");
+        sb.AppendLine("    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initReport); else initReport();");
         sb.AppendLine("  </script>");
 
         sb.AppendLine("</body>");
@@ -489,6 +817,124 @@ internal static class ReportHtmlBuilder
             sb.Append("<span class=\"code-line\">").Append(line).AppendLine("</span>");
         }
         return sb.ToString();
+    }
+
+    private static void AppendStatusBarChips(StringBuilder sb, TroubleScout.UI.StatusBarInfo info)
+    {
+        if (!string.IsNullOrWhiteSpace(info.Model))
+        {
+            sb.AppendLine($"              <span class=\"sb-chip sb-model\" title=\"Model\">&#129504; <strong>{HtmlEncode(info.Model!)}</strong></span>");
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.Provider))
+        {
+            sb.AppendLine($"              <span class=\"sb-chip\" title=\"Provider\">{HtmlEncode(info.Provider!)}</span>");
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.ReasoningEffort))
+        {
+            sb.AppendLine($"              <span class=\"sb-chip\" title=\"Reasoning effort\">&#128173; {HtmlEncode(info.ReasoningEffort!)}</span>");
+        }
+
+        if (info.InputTokens.HasValue || info.OutputTokens.HasValue)
+        {
+            var tokensText = $"{FormatTokenCount(info.InputTokens)} in / {FormatTokenCount(info.OutputTokens)} out";
+            sb.AppendLine($"              <span class=\"sb-chip sb-tokens\" title=\"Tokens this turn\">&#128203; {HtmlEncode(tokensText)}</span>");
+        }
+
+        if (info.ToolInvocations > 0)
+        {
+            sb.AppendLine($"              <span class=\"sb-chip sb-tools\" title=\"Tool invocations\">&#128295; Tools: <strong>{info.ToolInvocations}</strong></span>");
+        }
+
+        if (info.SessionInputTokens.HasValue || info.SessionOutputTokens.HasValue)
+        {
+            var sessionText = $"Session: {FormatLongTokenCount(info.SessionInputTokens)} in / {FormatLongTokenCount(info.SessionOutputTokens)} out";
+            sb.AppendLine($"              <span class=\"sb-chip\" title=\"Session totals\">{HtmlEncode(sessionText)}</span>");
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.SessionCostEstimate))
+        {
+            sb.AppendLine($"              <span class=\"sb-chip\" title=\"Premium request estimate\">&#11088; {HtmlEncode(info.SessionCostEstimate!)}</span>");
+        }
+    }
+
+    private static string FormatTokenCount(int? value)
+    {
+        if (!value.HasValue)
+        {
+            return "?";
+        }
+
+        return FormatTokenCountCore(value.Value);
+    }
+
+    private static string FormatLongTokenCount(long? value)
+    {
+        if (!value.HasValue)
+        {
+            return "?";
+        }
+
+        return FormatTokenCountCore(value.Value);
+    }
+
+    private static string FormatTokenCountCore(long v)
+    {
+        if (v >= 1000)
+        {
+            return (v / 1000d).ToString("0.#", CultureInfo.InvariantCulture) + "k";
+        }
+
+        return v.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string TrimForToc(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "(empty)";
+        }
+
+        var firstLine = text.Split('\n', 2)[0].Trim();
+        const int max = 64;
+        return firstLine.Length <= max ? firstLine : firstLine.Substring(0, max - 1) + "\u2026";
+    }
+
+    private static string EscapeForScriptBlock(string raw)
+    {
+        // Inside a non-executable <script type="text/markdown"> block we must only escape "</" sequences
+        // (which would otherwise terminate the script element). Everything else passes through verbatim
+        // so the markdown survives unchanged.
+        return raw.Replace("</", "<\\/");
+    }
+
+    private static string LoadEmbeddedScript(string resourceSuffix)
+    {
+        try
+        {
+            var assembly = typeof(ReportHtmlBuilder).Assembly;
+            var fullName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(name => name.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+
+            if (fullName == null)
+            {
+                return $"/* embedded resource '{resourceSuffix}' not found */";
+            }
+
+            using var stream = assembly.GetManifestResourceStream(fullName);
+            if (stream == null)
+            {
+                return $"/* embedded resource '{resourceSuffix}' could not be opened */";
+            }
+
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            return $"/* failed to load embedded resource '{resourceSuffix}': {ex.Message} */";
+        }
     }
 
 }

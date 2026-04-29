@@ -24,6 +24,14 @@ public enum UrlApprovalResult
     Deny
 }
 
+public enum McpApprovalResult
+{
+    ApproveOnce,
+    ApproveServerForSession,
+    ApproveServerPersist,
+    Deny
+}
+
 public enum PostAnalysisAction
 {
     ContinueInvestigating,
@@ -79,6 +87,7 @@ public static class ConsoleUI
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
     internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
+    internal static Func<string, string, string?, string?, McpApprovalResult>? McpApprovalPromptOverride { get; set; }
     internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
     internal static Func<PostAnalysisAction>? PostAnalysisActionPromptOverride { get; set; }
     private static readonly object _terminalStateLock = new();
@@ -530,6 +539,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
         commandTable.AddRow("[cyan]/mcp-role[/] [grey][[<monitoring|ticketing> <server|none> | clear <monitoring|ticketing|all>]][/]", "Configure monitoring and ticketing MCP role mappings; no args opens interactive mode");
+        commandTable.AddRow("[cyan]/mcp-approvals[/] [grey][[list | clear all | clear <server>]][/]", "List or clear active and persisted MCP approvals");
         commandTable.AddRow("[cyan]/model[/]", "Choose another AI model and session handoff mode");
         commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
         commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
@@ -1202,6 +1212,98 @@ public static class ConsoleUI
             }
 
             return UrlApprovalResult.Deny;
+        }
+        finally
+        {
+            LiveThinkingIndicator.ResumeAfterApproval();
+        }
+    }
+
+    /// <summary>
+    /// Display an MCP tool approval prompt with server-scoped and (optionally) persistent options.
+    /// </summary>
+    /// <param name="serverName">Name of the MCP server.</param>
+    /// <param name="toolName">Name of the MCP tool being invoked.</param>
+    /// <param name="argumentsPreview">Pretty-printed arguments (JSON or key=value form). Optional.</param>
+    /// <param name="role">When set (e.g. "monitoring" or "ticketing"), the persistent option is offered.</param>
+    public static McpApprovalResult PromptMcpApproval(
+        string serverName,
+        string toolName,
+        string? argumentsPreview,
+        string? role)
+    {
+        LiveThinkingIndicator.PauseForApproval();
+        try
+        {
+            if (McpApprovalPromptOverride != null)
+            {
+                return McpApprovalPromptOverride(serverName, toolName, argumentsPreview, role);
+            }
+
+            AnsiConsole.WriteLine();
+
+            var rows = new List<IRenderable>
+            {
+                new Markup($"[yellow]MCP server:[/] [white]{Markup.Escape(serverName)}[/]"),
+                new Markup($"[yellow]Tool:[/] [white]{Markup.Escape(toolName)}[/]")
+            };
+
+            if (!string.IsNullOrWhiteSpace(role))
+            {
+                rows.Add(new Markup($"[yellow]Role:[/] [white]{Markup.Escape(role)}[/]"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(argumentsPreview))
+            {
+                rows.Add(new Markup(""));
+                rows.Add(new Markup("[grey]Arguments:[/]"));
+                rows.Add(new Markup($"[white]{Markup.Escape(argumentsPreview)}[/]"));
+            }
+
+            rows.Add(new Markup(""));
+            rows.Add(new Markup("[grey]MCP tools run in the MCP server process; approving lets the AI invoke them on your behalf.[/]"));
+
+            var panel = new Panel(new Rows(rows))
+                .Header("[bold yellow] MCP Approval Required [/]")
+                .Border(BoxBorder.Heavy)
+                .BorderColor(Color.Yellow);
+
+            AnsiConsole.Write(panel);
+
+            var hasRole = !string.IsNullOrWhiteSpace(role);
+            var choices = new List<string>
+            {
+                "✅ Yes, run this once",
+                $"🛡️ Yes, allow all tools from '{serverName}' for this session"
+            };
+            if (hasRole)
+            {
+                choices.Add($"📌 Yes, always allow '{serverName}' (saved to settings)");
+            }
+            choices.Add("❌ No, skip");
+
+            var choice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .HighlightStyle(new Style(Color.Cyan1))
+                    .AddChoices(choices));
+
+            if (choice.Contains("always", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpApprovalResult.ApproveServerPersist;
+            }
+
+            if (choice.Contains("for this session", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpApprovalResult.ApproveServerForSession;
+            }
+
+            if (choice.StartsWith("✅", StringComparison.Ordinal) || choice.Contains("run this once", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpApprovalResult.ApproveOnce;
+            }
+
+            return McpApprovalResult.Deny;
         }
         finally
         {

@@ -12,9 +12,9 @@
          always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
          downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
-    <Version>1.12.0</Version>
-    <AssemblyVersion>1.12.0.0</AssemblyVersion>
-    <FileVersion>1.12.0.0</FileVersion>
+    <Version>1.13.0</Version>
+    <AssemblyVersion>1.13.0.0</AssemblyVersion>
+    <FileVersion>1.13.0.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -38,6 +38,11 @@
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
     <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\report\marked.min.js" />
+    <EmbeddedResource Include="Assets\report\purify.min.js" />
   </ItemGroup>
 
 </Project>
