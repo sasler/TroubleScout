@@ -1271,39 +1271,37 @@ public static class ConsoleUI
             AnsiConsole.Write(panel);
 
             var hasRole = !string.IsNullOrWhiteSpace(role);
-            var choices = new List<string>
+            const string KeyOnce = "once";
+            const string KeySession = "session";
+            const string KeyPersist = "persist";
+            const string KeyDeny = "deny";
+
+            var labels = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                "✅ Yes, run this once",
-                $"🛡️ Yes, allow all tools from '{serverName}' for this session"
+                [KeyOnce] = "✅ Yes, run this once",
+                [KeySession] = $"🛡️ Yes, allow all tools from '{serverName}' for this session"
             };
             if (hasRole)
             {
-                choices.Add($"📌 Yes, always allow '{serverName}' (saved to settings)");
+                labels[KeyPersist] = $"📌 Yes, always allow '{serverName}' (saved to settings)";
             }
-            choices.Add("❌ No, skip");
+            labels[KeyDeny] = "❌ No, skip";
+
+            var labelToKey = labels.ToDictionary(kv => kv.Value, kv => kv.Key, StringComparer.Ordinal);
 
             var choice = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title("[yellow]What would you like to do?[/]")
                     .HighlightStyle(new Style(Color.Cyan1))
-                    .AddChoices(choices));
+                    .AddChoices(labels.Values));
 
-            if (choice.Contains("always", StringComparison.OrdinalIgnoreCase))
+            return labelToKey.TryGetValue(choice, out var key) ? key switch
             {
-                return McpApprovalResult.ApproveServerPersist;
-            }
-
-            if (choice.Contains("for this session", StringComparison.OrdinalIgnoreCase))
-            {
-                return McpApprovalResult.ApproveServerForSession;
-            }
-
-            if (choice.StartsWith("✅", StringComparison.Ordinal) || choice.Contains("run this once", StringComparison.OrdinalIgnoreCase))
-            {
-                return McpApprovalResult.ApproveOnce;
-            }
-
-            return McpApprovalResult.Deny;
+                KeyOnce => McpApprovalResult.ApproveOnce,
+                KeySession => McpApprovalResult.ApproveServerForSession,
+                KeyPersist => McpApprovalResult.ApproveServerPersist,
+                _ => McpApprovalResult.Deny
+            } : McpApprovalResult.Deny;
         }
         finally
         {

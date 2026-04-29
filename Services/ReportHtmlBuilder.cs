@@ -511,7 +511,7 @@ internal static class ReportHtmlBuilder
                     if (isMcp)
                     {
                         // Tool call (server / tool name without args)
-                        sb.AppendLine("              <details class=\"inner-section\" open>");
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Tool call\" open>");
                         sb.AppendLine("                <summary>Tool call</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
                         sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Command)}</pre></div>");
@@ -520,7 +520,7 @@ internal static class ReportHtmlBuilder
 
                         if (!string.IsNullOrWhiteSpace(action.Arguments))
                         {
-                            sb.AppendLine("              <details class=\"inner-section\">");
+                            sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Arguments\">");
                             sb.AppendLine("                <summary>Arguments</summary>");
                             sb.AppendLine("                <div class=\"inner-content\">");
                             sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Arguments!)}</pre></div>");
@@ -528,7 +528,7 @@ internal static class ReportHtmlBuilder
                             sb.AppendLine("              </details>");
                         }
 
-                        sb.AppendLine("              <details class=\"inner-section\">");
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Output\">");
                         sb.AppendLine("                <summary>Output</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
                         var outputText = string.IsNullOrWhiteSpace(action.Output) ? "(no output captured)" : action.Output;
@@ -539,14 +539,14 @@ internal static class ReportHtmlBuilder
                     else
                     {
                         // PowerShell command + output
-                        sb.AppendLine("              <details class=\"inner-section\" open>");
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Command\" open>");
                         sb.AppendLine("                <summary>Command</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
                         sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"code-block\">{RenderCommandHtmlWithLineNumbers(action.Command)}</pre></div>");
                         sb.AppendLine("                </div>");
                         sb.AppendLine("              </details>");
 
-                        sb.AppendLine("              <details class=\"inner-section\">");
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Output\">");
                         sb.AppendLine("                <summary>Output</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
                         sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Output)}</pre></div>");
@@ -668,13 +668,19 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("          lines.push('### Actions');");
         sb.AppendLine("          lines.push('');");
         sb.AppendLine("          actions.forEach(function(a) {");
-        sb.AppendLine("            var pre = a.querySelectorAll('pre');");
-        sb.AppendLine("            if (pre.length > 0) {");
+        sb.AppendLine("            var header = a.querySelector('.action-header');");
+        sb.AppendLine("            if (header) lines.push('**' + header.textContent.trim().replace(/\\s+/g,' ') + '**');");
+        sb.AppendLine("            lines.push('');");
+        sb.AppendLine("            a.querySelectorAll('details.inner-section[data-md-section]').forEach(function(sec) {");
+        sb.AppendLine("              var label = sec.getAttribute('data-md-section') || '';");
+        sb.AppendLine("              var pre = sec.querySelector('pre');");
+        sb.AppendLine("              if (!pre) return;");
+        sb.AppendLine("              if (label) lines.push('_' + label + ':_');");
         sb.AppendLine("              lines.push('```');");
-        sb.AppendLine("              lines.push(pre[0].textContent.trim());");
+        sb.AppendLine("              lines.push(pre.textContent.replace(/\\s+$/,''));");
         sb.AppendLine("              lines.push('```');");
         sb.AppendLine("              lines.push('');");
-        sb.AppendLine("            }");
+        sb.AppendLine("            });");
         sb.AppendLine("          });");
         sb.AppendLine("        }");
         sb.AppendLine("        var src = card.querySelector('script.reply-md-source');");
@@ -705,7 +711,7 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("      var stored = null;");
         sb.AppendLine("      try { stored = localStorage.getItem('troublescout-report-theme'); } catch(e) {}");
         sb.AppendLine("      if (stored === 'light' || stored === 'dark') applyTheme(stored);");
-        sb.AppendLine("      else applyTheme((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');");
+        sb.AppendLine("      else applyTheme('dark');");
         sb.AppendLine("      var tt = document.getElementById('theme-toggle-btn');");
         sb.AppendLine("      if (tt) tt.addEventListener('click', function() {");
         sb.AppendLine("        var cur = document.documentElement.getAttribute('data-theme');");

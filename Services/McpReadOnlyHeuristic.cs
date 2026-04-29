@@ -48,10 +48,8 @@ internal static class McpReadOnlyHeuristic
     /// "<server>/" or "<server>-" prefix so that "Redmine/Redmine-list_issues"
     /// and "list_issues" are both recognized.
     /// </summary>
-    /// <summary>
-    /// Substrings that mark a tool name as sensitive even when the verb looks read-only.
-    /// e.g. "get_credential", "read_secret", "fetch_token" must still go through approval.
-    /// </summary>
+    // Substrings that mark a tool name as sensitive even when the verb looks read-only.
+    // e.g. "get_credential", "read_secret", "fetch_token" must still go through approval.
     private static readonly string[] SensitiveTokens =
     [
         "credential",

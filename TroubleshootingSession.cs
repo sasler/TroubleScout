@@ -106,6 +106,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private readonly HashSet<string> _approvedUrlsForSession = new(StringComparer.OrdinalIgnoreCase);
     private bool _allowAllUrlsForSession;
     private readonly HashSet<string> _approvedMcpServersForSession = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _persistedSeededApprovals = new(StringComparer.OrdinalIgnoreCase);
     private AppSettings? _appSettings;
 
     private CopilotUsageSnapshot? _lastUsage;
@@ -1852,7 +1853,7 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
-    private void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
+    private static void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
     {
         var settings = AppSettingsStore.Load();
 
@@ -1862,42 +1863,21 @@ public class TroubleshootingSession : IAsyncDisposable
         // Prune persisted MCP approvals that no longer correspond to a mapped role.
         // Persistence is only offered for monitoring/ticketing servers, so once a
         // server is unmapped its persisted trust must not silently survive.
-        var unmappedPersisted = new List<string>();
+        // (In-memory approvals are reconciled by SeedPersistedMcpApprovals on reload.)
         if (settings.PersistedApprovedMcpServers is { Count: > 0 } persisted)
         {
             var stillMapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer)) stillMapped.Add(settings.MonitoringMcpServer);
             if (!string.IsNullOrWhiteSpace(settings.TicketingMcpServer)) stillMapped.Add(settings.TicketingMcpServer);
 
-            var pruned = new List<string>();
-            foreach (var p in persisted)
-            {
-                if (string.IsNullOrWhiteSpace(p)) continue;
-                var trimmed = p.Trim();
-                if (stillMapped.Contains(trimmed))
-                {
-                    pruned.Add(trimmed);
-                }
-                else
-                {
-                    unmappedPersisted.Add(trimmed);
-                }
-            }
-
-            if (unmappedPersisted.Count > 0)
+            var pruned = persisted.Where(p => !string.IsNullOrWhiteSpace(p) && stillMapped.Contains(p.Trim())).ToList();
+            if (pruned.Count != persisted.Count)
             {
                 settings.PersistedApprovedMcpServers = pruned;
             }
         }
 
         AppSettingsStore.Save(settings);
-
-        // Drop in-memory approvals for servers whose persisted trust we just removed,
-        // so the next MCP call from that server re-prompts the user.
-        foreach (var dropped in unmappedPersisted)
-        {
-            _approvedMcpServersForSession.Remove(dropped);
-        }
     }
 
     private void ApplySafeCommandsToAllExecutors(IReadOnlyList<string>? safeCommands)
@@ -1925,15 +1905,10 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private void SeedPersistedMcpApprovals(IEnumerable<string>? persistedApprovals)
     {
-        if (persistedApprovals == null)
-        {
-            return;
-        }
-
-        // Only honor a persisted approval if the server is still mapped to a
-        // monitoring/ticketing role. Persistence was only ever offered for
-        // those roles; once a role mapping is cleared or changed, the prior
-        // trust must not silently apply.
+        // Compute the set of approvals that *should* be seeded from persistence
+        // right now, given the current monitoring/ticketing role mappings.
+        // Persistence is only ever offered for those roles; once a role mapping
+        // is cleared or changed, the prior trust must not silently apply.
         var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer))
         {
@@ -1944,18 +1919,36 @@ public class TroubleshootingSession : IAsyncDisposable
             mapped.Add(_configuredTicketingMcpServer);
         }
 
-        foreach (var name in persistedApprovals)
+        var nextSeeded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (persistedApprovals != null)
         {
-            if (string.IsNullOrWhiteSpace(name))
+            foreach (var name in persistedApprovals)
             {
-                continue;
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                var trimmed = name.Trim();
+                if (mapped.Contains(trimmed))
+                {
+                    nextSeeded.Add(trimmed);
+                }
             }
+        }
 
-            var trimmed = name.Trim();
-            if (mapped.Contains(trimmed))
+        // Remove any previously-seeded persisted approvals that are no longer
+        // valid (settings edited, role mapping cleared, etc.). Session-scoped
+        // approvals (ApproveServerForSession) are intentionally left intact.
+        foreach (var previous in _persistedSeededApprovals)
+        {
+            if (!nextSeeded.Contains(previous))
             {
-                _approvedMcpServersForSession.Add(trimmed);
+                _approvedMcpServersForSession.Remove(previous);
             }
+        }
+
+        _persistedSeededApprovals.Clear();
+        foreach (var current in nextSeeded)
+        {
+            _approvedMcpServersForSession.Add(current);
+            _persistedSeededApprovals.Add(current);
         }
     }
 

@@ -85,16 +85,13 @@ internal sealed class ConversationHistoryTracker
 
         var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
         var argumentsPreview = FormatArgumentsForReport(toolStart.Data?.Arguments);
-        var commandText = string.IsNullOrWhiteSpace(argumentsPreview)
-            ? toolName
-            : $"{toolName} {argumentsPreview}";
 
         var toolCallId = ReadStringProperty(toolStart.Data, "ToolCallId");
 
         var entry = new ReportActionEntry(
             DateTimeOffset.Now,
             mcpServerName,
-            commandText,
+            toolName,
             string.Empty,
             "MCP",
             "MCP")
