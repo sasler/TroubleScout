@@ -2,7 +2,7 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
-## [Unreleased]
+## [v1.13.0] - 2026-04-29
 
 ### ✨ New Features
 
