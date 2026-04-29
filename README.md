@@ -161,6 +161,9 @@ TroubleScout can load MCP servers and Copilot skills through session configurati
 
 ## Interactive Commands
 
+A short reference is shown below. The full per-command documentation lives in
+[docs/slash-commands.md](docs/slash-commands.md).
+
 | Command | Description |
 | --- | --- |
 | `/help` | Show the interactive command reference. |
