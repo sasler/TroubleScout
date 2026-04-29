@@ -2330,6 +2330,45 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task PermissionHandler_Mcp_InSafeMode_SensitiveReadOnlyToolName_ShouldStillPrompt()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var originalOverride = ConsoleUI.McpApprovalPromptOverride;
+
+        try
+        {
+            string[] sensitiveTools =
+            {
+                "secrets-get_credential",
+                "vault-read_secret",
+                "auth-fetch_token",
+                "iam-get_password",
+                "config-query_api_key"
+            };
+
+            foreach (var toolName in sensitiveTools)
+            {
+                var promptCount = 0;
+                ConsoleUI.McpApprovalPromptOverride = (_, _, _, _) =>
+                {
+                    promptCount++;
+                    return McpApprovalResult.Deny;
+                };
+
+                var result = await handler(CreateMcpPermissionRequest("secrets-server", toolName, "{}"), new PermissionInvocation());
+
+                result.Kind.Should().Be(PermissionRequestResultKind.Rejected, $"sensitive tool '{toolName}' must require approval");
+                promptCount.Should().Be(1, $"sensitive tool '{toolName}' should not be auto-approved by the read-only heuristic");
+            }
+        }
+        finally
+        {
+            ConsoleUI.McpApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
     public async Task PermissionHandler_ShellReadOnlyPowerShellCommand_ShouldApproveInSafeMode()
     {
         // Arrange

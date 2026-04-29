@@ -48,6 +48,34 @@ internal static class McpReadOnlyHeuristic
     /// "<server>/" or "<server>-" prefix so that "Redmine/Redmine-list_issues"
     /// and "list_issues" are both recognized.
     /// </summary>
+    /// <summary>
+    /// Substrings that mark a tool name as sensitive even when the verb looks read-only.
+    /// e.g. "get_credential", "read_secret", "fetch_token" must still go through approval.
+    /// </summary>
+    private static readonly string[] SensitiveTokens =
+    [
+        "credential",
+        "secret",
+        "password",
+        "passwd",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "access_token",
+        "refresh_token",
+        "private_key",
+        "privatekey",
+        "ssh_key",
+        "auth_key",
+        "session_key",
+        "bearer",
+        "cookie",
+        "certificate",
+        "vault",
+        "keystore"
+    ];
+
     public static bool IsReadOnlyToolName(string? toolName)
     {
         if (string.IsNullOrWhiteSpace(toolName))
@@ -56,6 +84,14 @@ internal static class McpReadOnlyHeuristic
         }
 
         var normalized = NormalizeToolName(toolName);
+
+        foreach (var sensitive in SensitiveTokens)
+        {
+            if (normalized.Contains(sensitive, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
 
         foreach (var name in ReadOnlyExactNames)
         {

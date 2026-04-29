@@ -1852,12 +1852,52 @@ public class TroubleshootingSession : IAsyncDisposable
         AppSettingsStore.Save(settings);
     }
 
-    private static void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
+    private void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
     {
         var settings = AppSettingsStore.Load();
+
         settings.MonitoringMcpServer = string.IsNullOrWhiteSpace(monitoringMcpServer) ? null : monitoringMcpServer.Trim();
         settings.TicketingMcpServer = string.IsNullOrWhiteSpace(ticketingMcpServer) ? null : ticketingMcpServer.Trim();
+
+        // Prune persisted MCP approvals that no longer correspond to a mapped role.
+        // Persistence is only offered for monitoring/ticketing servers, so once a
+        // server is unmapped its persisted trust must not silently survive.
+        var unmappedPersisted = new List<string>();
+        if (settings.PersistedApprovedMcpServers is { Count: > 0 } persisted)
+        {
+            var stillMapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer)) stillMapped.Add(settings.MonitoringMcpServer);
+            if (!string.IsNullOrWhiteSpace(settings.TicketingMcpServer)) stillMapped.Add(settings.TicketingMcpServer);
+
+            var pruned = new List<string>();
+            foreach (var p in persisted)
+            {
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                var trimmed = p.Trim();
+                if (stillMapped.Contains(trimmed))
+                {
+                    pruned.Add(trimmed);
+                }
+                else
+                {
+                    unmappedPersisted.Add(trimmed);
+                }
+            }
+
+            if (unmappedPersisted.Count > 0)
+            {
+                settings.PersistedApprovedMcpServers = pruned;
+            }
+        }
+
         AppSettingsStore.Save(settings);
+
+        // Drop in-memory approvals for servers whose persisted trust we just removed,
+        // so the next MCP call from that server re-prompts the user.
+        foreach (var dropped in unmappedPersisted)
+        {
+            _approvedMcpServersForSession.Remove(dropped);
+        }
     }
 
     private void ApplySafeCommandsToAllExecutors(IReadOnlyList<string>? safeCommands)
@@ -1890,11 +1930,31 @@ public class TroubleshootingSession : IAsyncDisposable
             return;
         }
 
+        // Only honor a persisted approval if the server is still mapped to a
+        // monitoring/ticketing role. Persistence was only ever offered for
+        // those roles; once a role mapping is cleared or changed, the prior
+        // trust must not silently apply.
+        var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer))
+        {
+            mapped.Add(_configuredMonitoringMcpServer);
+        }
+        if (!string.IsNullOrWhiteSpace(_configuredTicketingMcpServer))
+        {
+            mapped.Add(_configuredTicketingMcpServer);
+        }
+
         foreach (var name in persistedApprovals)
         {
-            if (!string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrWhiteSpace(name))
             {
-                _approvedMcpServersForSession.Add(name.Trim());
+                continue;
+            }
+
+            var trimmed = name.Trim();
+            if (mapped.Contains(trimmed))
+            {
+                _approvedMcpServersForSession.Add(trimmed);
             }
         }
     }
