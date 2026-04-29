@@ -258,6 +258,9 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
   UI/ConsoleUI.cs         Tools/DiagnosticTools.cs   Services/PowerShellExecutor.cs
 ```
 
+For a deeper component map, request flow, and the approval pipeline, see
+[docs/architecture.md](docs/architecture.md).
+
 ## Environment Variables
 
 | Variable | Description |
