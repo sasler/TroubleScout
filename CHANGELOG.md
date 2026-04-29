@@ -2,6 +2,24 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+## [Unreleased]
+
+### ✨ New Features
+
+- 🛡️ **Per-server MCP approval** - approving any tool from an MCP server now covers every tool from that server for the rest of the session, instead of re-prompting for each new tool name.
+- 📌 **Persistent MCP approvals** - MCP servers mapped to a `monitoring` or `ticketing` role can now be marked as user-trusted; that approval is stored in `settings.json` and persists across sessions. Manage with the new `/mcp-approvals` slash command (`list`, `clear all`, `clear <name>`).
+- 🚦 **Auto-approve clearly read-only MCP tools** - tool names starting with `get_`, `list_`, `search_`, `find_`, `describe_`, `read_`, `query_`, or `inspect_` no longer trigger approval prompts in Safe mode.
+- 📝 **Markdown-rendered HTML report** - `/report` now renders assistant replies as proper Markdown (bundled `marked` + `DOMPurify`) and exposes a "Copy markdown" button next to a "Copy HTML" button. A new "Export full session as Markdown" button at the top downloads the entire transcript.
+- 🧰 **Rich MCP entries in the report** - MCP actions now show the actual server, tool, full arguments, and tool output (no more `N/A`), with error styling when the call failed.
+- 📊 **Status bar + session header in the report** - each prompt card now mirrors the terminal status bar (model, provider, reasoning, tokens, tools), and a session-wide summary header shows totals, models used, premium-request estimate, mapped MCP roles, and persisted approvals.
+- 🎨 **Light/dark theme toggle** - the report defaults to dark and now offers a manual theme toggle that persists in `localStorage`.
+- 🧭 **Floating table of contents** - the report now has a TOC sidebar on wide screens for quick navigation between prompts.
+
+### 🐛 Bug Fixes
+
+- 🔁 **Fix MCP approval re-prompt loop** - approving an MCP tool now correctly suppresses follow-up prompts for sibling tools in the same session.
+- 🩹 **Stop misleading "modify system state" warning on MCP calls** - MCP approval prompts no longer reuse the shell-mutation copy and now describe the MCP invocation explicitly.
+
 ## [v1.12.0] - 2026-04-25
 
 ### ✨ New Features

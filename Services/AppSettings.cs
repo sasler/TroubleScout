@@ -17,6 +17,7 @@ public sealed class AppSettings
     public string? SystemPromptAppend { get; set; }
     public string? MonitoringMcpServer { get; set; }
     public string? TicketingMcpServer { get; set; }
+    public List<string>? PersistedApprovedMcpServers { get; set; }
 }
 
 public static class AppSettingsStore
@@ -191,7 +192,8 @@ public static class AppSettingsStore
             SystemPromptOverrides = settings.SystemPromptOverrides,
             SystemPromptAppend = settings.SystemPromptAppend,
             MonitoringMcpServer = NormalizeOptionalValue(settings.MonitoringMcpServer),
-            TicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer)
+            TicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer),
+            PersistedApprovedMcpServers = NormalizeMcpServerList(settings.PersistedApprovedMcpServers)
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
@@ -232,6 +234,13 @@ public static class AppSettingsStore
         if (!string.Equals(settings.TicketingMcpServer, normalizedTicketingMcpServer, StringComparison.Ordinal))
         {
             settings.TicketingMcpServer = normalizedTicketingMcpServer;
+            changed = true;
+        }
+
+        var normalizedPersistedApprovals = NormalizeMcpServerList(settings.PersistedApprovedMcpServers);
+        if (!McpServerListEquals(settings.PersistedApprovedMcpServers, normalizedPersistedApprovals))
+        {
+            settings.PersistedApprovedMcpServers = normalizedPersistedApprovals;
             changed = true;
         }
 
@@ -343,5 +352,119 @@ public static class AppSettingsStore
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim();
+    }
+
+    internal static List<string>? NormalizeMcpServerList(IEnumerable<string>? values)
+    {
+        if (values == null)
+        {
+            return null;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<string>();
+        foreach (var raw in values)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            var trimmed = raw.Trim();
+            if (seen.Add(trimmed))
+            {
+                normalized.Add(trimmed);
+            }
+        }
+
+        return normalized.Count == 0 ? null : normalized;
+    }
+
+    private static bool McpServerListEquals(List<string>? a, List<string>? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a == null || b == null) return a?.Count == 0 && b == null || b?.Count == 0 && a == null;
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i], b[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static bool AddPersistedApprovedMcpServer(AppSettings settings, string serverName)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            return false;
+        }
+
+        var trimmed = serverName.Trim();
+        settings.PersistedApprovedMcpServers ??= new List<string>();
+
+        if (settings.PersistedApprovedMcpServers.Any(name => string.Equals(name, trimmed, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        settings.PersistedApprovedMcpServers.Add(trimmed);
+        Save(settings);
+        return true;
+    }
+
+    public static bool RemovePersistedApprovedMcpServer(AppSettings settings, string serverName)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+
+        if (string.IsNullOrWhiteSpace(serverName) || settings.PersistedApprovedMcpServers == null)
+        {
+            return false;
+        }
+
+        var trimmed = serverName.Trim();
+        var initial = settings.PersistedApprovedMcpServers.Count;
+        settings.PersistedApprovedMcpServers.RemoveAll(name => string.Equals(name, trimmed, StringComparison.OrdinalIgnoreCase));
+
+        if (settings.PersistedApprovedMcpServers.Count == 0)
+        {
+            settings.PersistedApprovedMcpServers = null;
+        }
+
+        if (settings.PersistedApprovedMcpServers?.Count != initial)
+        {
+            Save(settings);
+            return true;
+        }
+
+        return false;
+    }
+
+    public static int ClearPersistedApprovedMcpServers(AppSettings settings)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+
+        var count = settings.PersistedApprovedMcpServers?.Count ?? 0;
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        settings.PersistedApprovedMcpServers = null;
+        Save(settings);
+        return count;
     }
 }

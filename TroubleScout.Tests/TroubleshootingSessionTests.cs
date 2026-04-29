@@ -2236,56 +2236,135 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PermissionHandler_Mcp_InSafeMode_WhenApproved_ShouldAddSessionScopedRule()
+    public async Task PermissionHandler_Mcp_InSafeMode_WhenApproved_ShouldAddServerToSessionApprovalsAndNotEmitRule()
     {
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
         var request = CreateMcpPermissionRequest("context7", "query-docs", "{\"libraryId\":\"/github/copilot-sdk\"}");
-        var originalOverride = ConsoleUI.CommandApprovalPromptOverride;
+        var originalOverride = ConsoleUI.McpApprovalPromptOverride;
 
         try
         {
-            ConsoleUI.CommandApprovalPromptOverride = static (_, _, _, _) => ApprovalResult.Approved;
+            ConsoleUI.McpApprovalPromptOverride = static (_, _, _, _) => McpApprovalResult.ApproveServerForSession;
 
             var result = await handler(request, new PermissionInvocation());
 
             result.Kind.Should().Be(PermissionRequestResultKind.Approved);
-            result.Rules.Should().ContainSingle();
-            result.Rules![0].Should().BeOfType<PermissionDecisionApproveForSession>();
+            // No SDK-level rule is emitted; we gate via our own per-server in-memory set.
+            (result.Rules?.Count ?? 0).Should().Be(0);
 
-            var rule = (PermissionDecisionApproveForSession)result.Rules[0];
-            rule.Approval.Should().BeOfType<PermissionDecisionApproveForSessionApprovalMcp>();
+            // Subsequent call to a different tool from the same server should auto-approve without re-prompting.
+            var promptCount = 0;
+            ConsoleUI.McpApprovalPromptOverride = (_, _, _, _) =>
+            {
+                promptCount++;
+                return McpApprovalResult.Deny;
+            };
 
-            var approval = (PermissionDecisionApproveForSessionApprovalMcp)rule.Approval;
-            approval.ServerName.Should().Be("context7");
-            approval.ToolName.Should().Be("query-docs");
+            var followUp = CreateMcpPermissionRequest("context7", "resolve-id", "{}");
+            var followUpResult = await handler(followUp, new PermissionInvocation());
+
+            followUpResult.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            promptCount.Should().Be(0, "approving a server for the session should auto-approve subsequent tools from that server");
         }
         finally
         {
-            ConsoleUI.CommandApprovalPromptOverride = originalOverride;
+            ConsoleUI.McpApprovalPromptOverride = originalOverride;
         }
     }
 
     [Fact]
-    public async Task PermissionHandler_Mcp_InSafeMode_WhenToolNameMissing_ShouldNotAddSessionScopedRule()
+    public async Task PermissionHandler_Mcp_InSafeMode_ApproveOnce_ShouldApproveButNotPersistServer()
     {
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
-        var request = CreateMcpPermissionRequest("context7", null, "{}");
-        var originalOverride = ConsoleUI.CommandApprovalPromptOverride;
+        var originalOverride = ConsoleUI.McpApprovalPromptOverride;
 
         try
         {
-            ConsoleUI.CommandApprovalPromptOverride = static (_, _, _, _) => ApprovalResult.Approved;
+            var promptCount = 0;
+            ConsoleUI.McpApprovalPromptOverride = (_, _, _, _) =>
+            {
+                promptCount++;
+                return McpApprovalResult.ApproveOnce;
+            };
 
-            var result = await handler(request, new PermissionInvocation());
+            var first = await handler(CreateMcpPermissionRequest("context7", "query-docs", "{}"), new PermissionInvocation());
+            var second = await handler(CreateMcpPermissionRequest("context7", "resolve-id", "{}"), new PermissionInvocation());
 
-            result.Kind.Should().Be(PermissionRequestResultKind.Approved);
-            (result.Rules?.Count ?? 0).Should().Be(0);
+            first.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            second.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            promptCount.Should().Be(2, "ApproveOnce must re-prompt for each subsequent MCP call");
         }
         finally
         {
-            ConsoleUI.CommandApprovalPromptOverride = originalOverride;
+            ConsoleUI.McpApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Mcp_InSafeMode_ReadOnlyToolName_ShouldAutoApproveWithoutPrompt()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var originalOverride = ConsoleUI.McpApprovalPromptOverride;
+
+        try
+        {
+            var promptCount = 0;
+            ConsoleUI.McpApprovalPromptOverride = (_, _, _, _) =>
+            {
+                promptCount++;
+                return McpApprovalResult.Deny;
+            };
+
+            var result = await handler(CreateMcpPermissionRequest("Redmine", "Redmine-list_issues", "{}"), new PermissionInvocation());
+
+            result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            promptCount.Should().Be(0, "list_* tools are recognised as read-only and should auto-approve");
+        }
+        finally
+        {
+            ConsoleUI.McpApprovalPromptOverride = originalOverride;
+        }
+    }
+
+    [Fact]
+    public async Task PermissionHandler_Mcp_InSafeMode_SensitiveReadOnlyToolName_ShouldStillPrompt()
+    {
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+        var handler = config.OnPermissionRequest!;
+        var originalOverride = ConsoleUI.McpApprovalPromptOverride;
+
+        try
+        {
+            string[] sensitiveTools =
+            {
+                "secrets-get_credential",
+                "vault-read_secret",
+                "auth-fetch_token",
+                "iam-get_password",
+                "config-query_api_key"
+            };
+
+            foreach (var toolName in sensitiveTools)
+            {
+                var promptCount = 0;
+                ConsoleUI.McpApprovalPromptOverride = (_, _, _, _) =>
+                {
+                    promptCount++;
+                    return McpApprovalResult.Deny;
+                };
+
+                var result = await handler(CreateMcpPermissionRequest("secrets-server", toolName, "{}"), new PermissionInvocation());
+
+                result.Kind.Should().Be(PermissionRequestResultKind.Rejected, $"sensitive tool '{toolName}' must require approval");
+                promptCount.Should().Be(1, $"sensitive tool '{toolName}' should not be auto-approved by the read-only heuristic");
+            }
+        }
+        finally
+        {
+            ConsoleUI.McpApprovalPromptOverride = originalOverride;
         }
     }
 

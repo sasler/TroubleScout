@@ -72,7 +72,9 @@ TroubleScout should support MCP servers and skills through Copilot SDK session c
 - Track and surface:
   - configured MCP servers and skills
   - runtime-used MCP servers and skills (from session events)
-- Return session-scoped MCP approval rules after the user approves an MCP permission so repeated prompts stop for the rest of the active TroubleScout session.
+- Approve MCP permissions per **server** (not per tool). After the user approves any tool from a given MCP server, every subsequent tool call from that server is auto-approved for the rest of the session. Track the in-memory set on `TroubleshootingSession` and gate it before delegating to the SDK so the SDK does not need a per-tool rule.
+- Auto-approve clearly read-only MCP tools (`get_*`, `list_*`, `search_*`, `find_*`, `describe_*`, `read_*`, `query_*`, `inspect_*`) via `Services/McpReadOnlyHeuristic.cs` without prompting in Safe mode.
+- For MCP servers mapped to `monitoring` or `ticketing`, offer a "trust this server across sessions" choice that persists to `AppSettings.PersistedApprovedMcpServers` and is replayed on next launch. Manage with `/mcp-approvals`.
 - Never print secret values from MCP headers/env vars.
 
 ## PowerShell Safety Model
@@ -103,6 +105,7 @@ Preserve this model for all changes.
 - **Reasoning display** — `AssistantReasoningEvent` handled in `SendMessageAsync` event switch; routed to `ConsoleUI.WriteReasoningText()` (ANSI 256-colour dark grey 238, falls back to plain text when stdout is redirected).
 - **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Prompt` or `SelectionPrompt` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
 - **Three-option approval prompts** — `ConsoleUI.PromptCommandApproval` returns `ApprovalResult` (Approved/Denied). The prompt offers Yes, No, or Explain via `SelectionPrompt<string>`. Explain shows a detail panel then re-prompts with a binary Yes/No.
+- **MCP approval prompts** — `ConsoleUI.PromptMcpApproval()` returns `McpApprovalResult` (`ApproveOnce`, `ApproveServerForSession`, `ApproveServerPersist`, `Deny`). The "persist across sessions" choice is only offered for servers that are mapped to a `monitoring`/`ticketing` role, and the prompt copy is MCP-specific (no shell-mutation warning).
 - **Post-analysis action dialog** — after a turn reaches diagnosis/recommendations or after approved commands finish, `ConsoleUI.PromptPostAnalysisAction()` asks whether to continue investigating, apply the fix, or stop for now. Prompt guidance should have the agent end with `## Ready for next action` so TroubleScout can reclaim control cleanly.
 - **URL approval prompts** — `ConsoleUI.PromptUrlApproval()` provides a three-way choice: allow this URL, allow all URLs for the active session, or deny. Exact-URL approvals and allow-all state are stored only for the current TroubleScout session.
 - **`/mcp-role` slash command** — supports interactive mapping plus direct assignment (`/mcp-role monitoring zabbix`, `/mcp-role ticketing redmine`, `/mcp-role clear all`). Changes persist to `settings.json`, reload session settings immediately, and should remain visible in startup/status surfaces.
