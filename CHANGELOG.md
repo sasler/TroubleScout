@@ -2,6 +2,17 @@
 
 All notable changes to TroubleScout will be documented in this file.
 
+The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+<!--
+Add new entries here as they land. When cutting a release, rename this section to
+`## [vX.Y.Z] - YYYY-MM-DD`, bump `Version`/`AssemblyVersion`/`FileVersion` in
+`TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
+-->
+
 ## [v1.13.0] - 2026-04-29
 
 ### ✨ New Features
