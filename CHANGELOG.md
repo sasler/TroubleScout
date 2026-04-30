@@ -16,6 +16,7 @@ Add new entries here as they land. When cutting a release, rename this section t
 ### ✨ New Features
 
 - 🛡️ **`SafeMarkup` helper** - new `TroubleScout.UI.SafeMarkup` provides `Escape(value)` and `Interpolate($"[red]{value}[/]")` for emitting Spectre markup that contains user- or model-controlled text. `Interpolate` auto-escapes every interpolated argument while preserving literal markup tags, eliminating the "did I forget `Markup.Escape` here?" footgun.
+- 🔐 **`SecretRedactor` helper (not yet wired)** - new `TroubleScout.Services.SecretRedactor` masks secret-shaped values (GitHub PATs, AWS access keys, JWTs, Bearer tokens, URLs with userinfo, connection-string passwords, generic `api_key=` / `token=` / `secret=` pairs) with `***REDACTED***`. The helper is added in this release as a prerequisite for any expanded session persistence (opt-in transcript, `/replay`); it is not yet invoked by `/report` or conversation history. 24 tests cover each pattern category plus negative cases (`background_color=red`, `token=ok`, plain URLs without userinfo).
 
 ### 🐛 Bug Fixes
 
