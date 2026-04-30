@@ -13,6 +13,8 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.14.0] - 2026-04-30
+
 ### ✨ New Features
 
 - 🛡️ **`SafeMarkup` helper** - new `TroubleScout.UI.SafeMarkup` provides `Escape(value)` and `Interpolate($"[red]{value}[/]")` for emitting Spectre markup that contains user- or model-controlled text. `Interpolate` auto-escapes every interpolated argument while preserving literal markup tags, eliminating the "did I forget `Markup.Escape` here?" footgun.
@@ -22,6 +24,17 @@ Add new entries here as they land. When cutting a release, rename this section t
 
 - 🔒 **Patch GHSA-37gx-xxp4-5rgx / GHSA-w3x6-4m5h-cxqf** - pin `System.Security.Cryptography.Xml` to `9.0.15` so `dotnet run`/`dotnet build` no longer surface `NU1903` warnings about the vulnerable `9.0.10` version that `Microsoft.PowerShell.SDK 7.5.4` pulls in transitively.
 - 🧹 **Trim startup status panel** - the "MCP approved (session)" and "MCP approved (persisted)" rows no longer appear in the boot capability table; they were always empty before any approval prompt and never gained signal afterward. Both tiers are still surfaced in the HTML report.
+
+### 🧪 Tests & Tooling
+
+- ✅ **Pin AGENTS.md safety invariants with regression tests** - new `InvariantGuardsTests` and expanded `McpReadOnlyHeuristicTests` lock down per-server MCP approval scope, the read-only MCP heuristic, JEA `AddScript` protection, `IncludeSubAgentStreamingEvents = false`, the `PauseForApproval`/`ResumeAfterApproval` pairing for prompts shown while the spinner is live, and ESC cancellation propagation. Designed to catch regressions before larger refactors land.
+
+### 📝 Documentation
+
+- 📐 **`docs/architecture.md`** - promoted the AGENTS.md component diagram and key seams to a contributor-facing architecture document; linked from the README.
+- 📓 **`docs/slash-commands.md`** - first manual reference of every slash command, grouped by area; linked from the README. (Will become generator-backed once the slash-command registry refactor lands.)
+- ⚙️ **README "Configuration Reference" section** - one-stop reference for `settings.json` keys, BYOK environment variables, MCP role mapping, and persisted approvals.
+- 🧑‍💻 **CONTRIBUTING.md human workflow** - human-only build/test/smoke instructions and version-bump rule (separate from the agent-only TDD workflow in AGENTS.md).
 
 ## [v1.13.0] - 2026-04-29
 
