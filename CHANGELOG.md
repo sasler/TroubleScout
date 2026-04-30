@@ -13,6 +13,11 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+### 🐛 Bug Fixes
+
+- 🔒 **Patch GHSA-37gx-xxp4-5rgx / GHSA-w3x6-4m5h-cxqf** - pin `System.Security.Cryptography.Xml` to `9.0.15` so `dotnet run`/`dotnet build` no longer surface `NU1903` warnings about the vulnerable `9.0.10` version that `Microsoft.PowerShell.SDK 7.5.4` pulls in transitively.
+- 🧹 **Trim startup status panel** - the "MCP approved (session)" and "MCP approved (persisted)" rows no longer appear in the boot capability table; they were always empty before any approval prompt and never gained signal afterward. Both tiers are still surfaced in the HTML report.
+
 ## [v1.13.0] - 2026-04-29
 
 ### ✨ New Features

@@ -4748,8 +4748,6 @@ public class TroubleshootingSession : IAsyncDisposable
             || _runtimeMcpServers.Count > 0
             || !string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
             || !string.IsNullOrWhiteSpace(_configuredTicketingMcpServer)
-            || _approvedMcpServersForSession.Count > 0
-            || GetPersistedApprovedMcpServersSnapshot().Count > 0
             || _configuredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
             || _runtimeSkills.Count > 0
             || _configurationWarnings.Count > 0;
@@ -4763,8 +4761,11 @@ public class TroubleshootingSession : IAsyncDisposable
         AddCapabilityField(fields, "MCP used", _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
         AddCapabilityField(fields, "Monitoring MCP", _configuredMonitoringMcpServer is null ? [] : [_configuredMonitoringMcpServer]);
         AddCapabilityField(fields, "Ticketing MCP", _configuredTicketingMcpServer is null ? [] : [_configuredTicketingMcpServer]);
-        AddCapabilityField(fields, "MCP approved (session)", _approvedMcpServersForSession.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-        AddCapabilityField(fields, "MCP approved (persisted)", GetPersistedApprovedMcpServersSnapshot());
+        // Per-session and persisted MCP approvals are intentionally NOT shown in the
+        // startup status panel: the status panel is only visible before any approval
+        // prompt happens, monitoring/ticketing servers are auto-approved by role, and
+        // the list is noisy without adding signal. The HTML report still surfaces both
+        // tiers under "MCP approved (session)" / "MCP approved (persisted)".
         AddCapabilityField(fields, "Skills configured", _configuredSkills);
         AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
 
