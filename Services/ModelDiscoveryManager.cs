@@ -29,6 +29,10 @@ internal sealed class ModelDiscoveryManager
     private readonly Dictionary<string, ModelSource> _modelSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ByokPriceInfo> _byokPricing = new(StringComparer.OrdinalIgnoreCase);
 
+    private List<ModelInfo>? _cachedMergedModelList;
+    private string? _cachedMergedModelListKey;
+    private readonly object _mergedModelListCacheLock = new();
+
     internal List<ModelInfo> AvailableModels
     {
         get => _availableModels;
@@ -99,32 +103,73 @@ internal sealed class ModelDiscoveryManager
             return [];
         }
 
-        var models = await copilotClient.ListModelsAsync();
-
-        var existingIds = new HashSet<string>(
-            models.Where(model => !string.IsNullOrWhiteSpace(model.Id)).Select(model => model.Id),
-            StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(cliPath))
+        var cacheKey = cliPath ?? string.Empty;
+        return await GetMergedModelListAsync(cacheKey, async () =>
         {
-            var cliModelIds = await tryGetCliModelIdsAsync(cliPath);
-            foreach (var cliModelId in cliModelIds)
-            {
-                if (existingIds.Contains(cliModelId))
-                {
-                    continue;
-                }
+            var models = await copilotClient.ListModelsAsync();
 
-                models.Add(new ModelInfo
+            var existingIds = new HashSet<string>(
+                models.Where(model => !string.IsNullOrWhiteSpace(model.Id)).Select(model => model.Id),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (!string.IsNullOrWhiteSpace(cliPath))
+            {
+                var cliModelIds = await tryGetCliModelIdsAsync(cliPath);
+                foreach (var cliModelId in cliModelIds)
                 {
-                    Id = cliModelId,
-                    Name = ToModelDisplayName(cliModelId)
-                });
-                existingIds.Add(cliModelId);
+                    if (existingIds.Contains(cliModelId))
+                    {
+                        continue;
+                    }
+
+                    models.Add(new ModelInfo
+                    {
+                        Id = cliModelId,
+                        Name = ToModelDisplayName(cliModelId)
+                    });
+                    existingIds.Add(cliModelId);
+                }
+            }
+
+            return models.ToList();
+        });
+    }
+
+    internal async Task<List<ModelInfo>> GetMergedModelListAsync(
+        string cacheKey,
+        Func<Task<List<ModelInfo>>> fetchMergedListAsync)
+    {
+        ArgumentNullException.ThrowIfNull(cacheKey);
+        ArgumentNullException.ThrowIfNull(fetchMergedListAsync);
+
+        lock (_mergedModelListCacheLock)
+        {
+            if (_cachedMergedModelList != null
+                && string.Equals(_cachedMergedModelListKey, cacheKey, StringComparison.Ordinal))
+            {
+                return [.. _cachedMergedModelList];
             }
         }
 
-        return models.ToList();
+        var fetched = await fetchMergedListAsync();
+        var snapshot = fetched is null ? new List<ModelInfo>() : [.. fetched];
+
+        lock (_mergedModelListCacheLock)
+        {
+            _cachedMergedModelList = [.. snapshot];
+            _cachedMergedModelListKey = cacheKey;
+        }
+
+        return snapshot;
+    }
+
+    internal void InvalidateMergedModelListCache()
+    {
+        lock (_mergedModelListCacheLock)
+        {
+            _cachedMergedModelList = null;
+            _cachedMergedModelListKey = null;
+        }
     }
 
     internal async Task<List<ModelInfo>> TryGetGitHubProviderModelsAsync(
