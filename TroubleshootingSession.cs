@@ -2449,6 +2449,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
+                _modelDiscovery.InvalidateMergedModelListCache();
                 var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
 
                 if (sessionReloadSucceeded)
@@ -2483,6 +2484,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/login")
             {
+                _modelDiscovery.InvalidateMergedModelListCache();
                 var loginSucceeded = await ConsoleUI.RunWithSpinnerAsync("Running Copilot login...", async updateStatus =>
                 {
                     return await LoginAndCreateGitHubSessionAsync(updateStatus);
@@ -2509,6 +2511,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     // Also update in-memory state so a subsequent /model switch doesn't re-save BYOK=true
                     _useByokOpenAi = false;
                     _byokOpenAiApiKey = null;
+                    _modelDiscovery.InvalidateMergedModelListCache();
                     ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
                     ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
                     ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
@@ -2615,6 +2618,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 if (byokReady)
                 {
+                    _modelDiscovery.InvalidateMergedModelListCache();
                     ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
                 }
 
