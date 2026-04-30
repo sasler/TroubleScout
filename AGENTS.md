@@ -32,7 +32,10 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 - Keep changes focused and minimal.
 - Follow existing patterns and naming.
 - Do not introduce unrelated refactors.
-- Escape user-controlled text in Spectre markup with `Markup.Escape(...)`.
+- Escape user-controlled text in Spectre markup with `Markup.Escape(...)`, or
+  prefer `TroubleScout.UI.SafeMarkup.Interpolate($"[red]{value}[/]")` for new
+  call sites — it auto-escapes every interpolated value while preserving
+  literal markup tags.
 - Prefer ASCII-safe output where possible.
 
 ## Copilot SDK Patterns (Required)

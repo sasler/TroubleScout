@@ -12,9 +12,9 @@
          always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
          downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
-    <Version>1.13.0</Version>
-    <AssemblyVersion>1.13.0.0</AssemblyVersion>
-    <FileVersion>1.13.0.0</FileVersion>
+    <Version>1.14.0</Version>
+    <AssemblyVersion>1.14.0.0</AssemblyVersion>
+    <FileVersion>1.14.0.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -38,6 +38,10 @@
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
     <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
+    <!-- Microsoft.PowerShell.SDK 7.5.4 transitively pulls in System.Security.Cryptography.Xml 9.0.10,
+         which has GHSA-37gx-xxp4-5rgx and GHSA-w3x6-4m5h-cxqf advisories. Pin a patched version
+         until the upstream PowerShell SDK refreshes its dependency. -->
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.15" />
   </ItemGroup>
 
   <ItemGroup>

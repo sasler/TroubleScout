@@ -2433,7 +2433,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/status")
             {
-                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
+                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(includeMcpApprovals: true), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                 continue;
             }
 
@@ -4704,7 +4704,7 @@ public class TroubleshootingSession : IAsyncDisposable
             : null;
     }
 
-    public IReadOnlyList<(string Label, string Value)> GetStatusFields()
+    public IReadOnlyList<(string Label, string Value)> GetStatusFields(bool includeMcpApprovals = false)
     {
         var fields = new List<(string Label, string Value)>();
 
@@ -4748,8 +4748,6 @@ public class TroubleshootingSession : IAsyncDisposable
             || _runtimeMcpServers.Count > 0
             || !string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
             || !string.IsNullOrWhiteSpace(_configuredTicketingMcpServer)
-            || _approvedMcpServersForSession.Count > 0
-            || GetPersistedApprovedMcpServersSnapshot().Count > 0
             || _configuredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
             || _runtimeSkills.Count > 0
             || _configurationWarnings.Count > 0;
@@ -4763,8 +4761,18 @@ public class TroubleshootingSession : IAsyncDisposable
         AddCapabilityField(fields, "MCP used", _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
         AddCapabilityField(fields, "Monitoring MCP", _configuredMonitoringMcpServer is null ? [] : [_configuredMonitoringMcpServer]);
         AddCapabilityField(fields, "Ticketing MCP", _configuredTicketingMcpServer is null ? [] : [_configuredTicketingMcpServer]);
-        AddCapabilityField(fields, "MCP approved (session)", _approvedMcpServersForSession.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-        AddCapabilityField(fields, "MCP approved (persisted)", GetPersistedApprovedMcpServersSnapshot());
+        // Per-session and persisted MCP approvals are intentionally omitted from
+        // the startup status panel and the post-action panel: at startup persisted
+        // approvals are stale-looking (carried over from prior sessions) and the
+        // session list is empty, while monitoring/ticketing servers are auto-
+        // approved by role anyway. They remain available on demand via /status,
+        // which passes includeMcpApprovals: true here, and continue to surface in
+        // the HTML report under "MCP approved (session/persisted)".
+        if (includeMcpApprovals)
+        {
+            AddCapabilityField(fields, "MCP approved (session)", _approvedMcpServersForSession.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+            AddCapabilityField(fields, "MCP approved (persisted)", GetPersistedApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+        }
         AddCapabilityField(fields, "Skills configured", _configuredSkills);
         AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
 

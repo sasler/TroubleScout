@@ -179,6 +179,36 @@ dotnet test --verbosity normal
 dotnet test TroubleScout.Tests/TroubleScout.Tests.csproj
 ```
 
+### Smoke Test Before Opening a PR
+
+After any non-trivial change, run a quick end-to-end check against a local
+target so regressions in startup, the Copilot session, or the TUI surface
+before review:
+
+```powershell
+dotnet run -- --server localhost --prompt "how is this computer doing?"
+```
+
+For changes that touch JEA execution, also exercise the startup CLI path with
+a JEA endpoint that is valid in your environment:
+
+```powershell
+dotnet run -- --jea <server> <configurationName>
+```
+
+### Version Bump and Changelog
+
+Before opening a PR, bump the app version and document the change:
+
+1. In `TroubleScout.csproj`, bump `Version`, `AssemblyVersion`, and
+   `FileVersion` together (semver: patch for bug fixes, minor for new
+   functionality, major for breaking changes).
+2. In `CHANGELOG.md`, add an entry under the existing `## [Unreleased]`
+   section using the project's emoji conventions.
+
+The release workflow renames `[Unreleased]` to the new version when a
+maintainer cuts the release; see [RELEASE-PROCESS.md](RELEASE-PROCESS.md).
+
 ### Writing Tests
 
 - Place tests in the `TroubleScout.Tests` project

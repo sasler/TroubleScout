@@ -161,6 +161,9 @@ TroubleScout can load MCP servers and Copilot skills through session configurati
 
 ## Interactive Commands
 
+A short reference is shown below. The full per-command documentation lives in
+[docs/slash-commands.md](docs/slash-commands.md).
+
 | Command | Description |
 | --- | --- |
 | `/help` | Show the interactive command reference. |
@@ -258,9 +261,47 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
   UI/ConsoleUI.cs         Tools/DiagnosticTools.cs   Services/PowerShellExecutor.cs
 ```
 
+For a deeper component map, request flow, and the approval pipeline, see
+[docs/architecture.md](docs/architecture.md).
+
 ## Environment Variables
 
 | Variable | Description |
 | --- | --- |
 | `COPILOT_CLI_PATH` | Custom path to the Copilot CLI executable. |
 | `OPENAI_API_KEY` | API key for OpenAI-compatible BYOK mode. |
+
+## Configuration Reference
+
+TroubleScout stores per-user settings in `%APPDATA%\TroubleScout\settings.json`.
+The file is created with defaults on first run and is also editable from inside
+the app with `/settings`, which reloads after you save.
+
+### `settings.json` keys
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `LastModel` | string | Last model selected in `/model`; restored on startup. |
+| `ReasoningEffort` | string | Active reasoning effort (`auto`, `low`, `medium`, `high`) for models that support it. |
+| `UseByokOpenAi` | bool | When true, start in BYOK mode instead of GitHub Copilot. |
+| `ByokOpenAiBaseUrl` | string | Override OpenAI-compatible endpoint URL. |
+| `ByokOpenAiApiKey` | string | Plain API key (only when DPAPI encryption is unavailable). Avoid hand-editing. |
+| `ByokOpenAiApiKeyEncrypted` | string | DPAPI-encrypted API key, set automatically by `/byok`. |
+| `SafeCommands` | string[] | PowerShell command patterns that auto-execute in Safe mode (defaults: `Get-*`, `Select-*`, `Sort-*`, `Where-*`, `Measure-*`, `Test-*`, `ConvertTo-*`, `ConvertFrom-*`, `Compare-*`, `Find-*`, `Format-*`, ...). Replace, don't append. |
+| `SystemPromptOverrides` | object<string, string> | Replace specific system-prompt sections by key. |
+| `SystemPromptAppend` | string | Free-form text appended to the end of the system prompt. |
+| `MonitoringMcpServer` | string | MCP server mapped to the `monitoring` role. Manage with `/mcp-role`. |
+| `TicketingMcpServer` | string | MCP server mapped to the `ticketing` role. Manage with `/mcp-role`. |
+| `PersistedApprovedMcpServers` | string[] | MCP servers approved across sessions. Only servers with a monitoring/ticketing role mapping can be persisted. Manage with `/mcp-approvals`. |
+
+### MCP and skills paths
+
+| Path | Default | Override |
+| --- | --- | --- |
+| MCP config | `%USERPROFILE%\.copilot\mcp-config.json` | `--mcp-config <path>` |
+| Skills directory | `%USERPROFILE%\.copilot\skills` | `--skills-dir <path>` (additive) |
+| Disabled skills | n/a | `--disable-skill <name>` (repeatable) |
+
+See [docs/slash-commands.md](docs/slash-commands.md) for `/mcp-role`,
+`/mcp-approvals`, and `/byok` syntax, and
+[docs/architecture.md](docs/architecture.md) for the approval pipeline.
