@@ -47,14 +47,24 @@ public static class MessagePersistence
             return SaveMessageResult.NoMessageAvailable;
         }
 
-        var fullPath = Path.GetFullPath(path);
+        string fullPath;
+        string? parent;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+            parent = Path.GetDirectoryName(fullPath);
+        }
+        catch (Exception ex)
+        {
+            errorDetail = ex.Message;
+            return SaveMessageResult.WriteFailed;
+        }
 
         if (Directory.Exists(fullPath))
         {
             return SaveMessageResult.PathIsDirectory;
         }
 
-        var parent = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(parent) && !Directory.Exists(parent))
         {
             errorDetail = parent;

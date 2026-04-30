@@ -86,13 +86,21 @@ public static class ConsoleUI
         static () => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WT_SESSION"));
     internal static Func<int> ConsoleWindowWidthResolver { get; set; } = static () =>
     {
-        try { return Console.WindowWidth; }
+        try
+        {
+            var width = Console.WindowWidth;
+            // Non-interactive / redirected output (CI, piped) frequently reports
+            // 0 or a negative value. Treat those as "unknown" and fall back to a
+            // generous default so the full status bar still renders. Width-aware
+            // elision only kicks in when we have a real positive measurement.
+            return width > 0 ? width : 120;
+        }
         catch { return 120; }
     };
 
     /// <summary>
     /// The active theme for app chrome (banner, panels, status bar). One of
-    /// "dark", "light", "mono". Default is "dark". Mono strips Spectre color
+    /// "dark" and "mono". Default is "dark". Mono strips Spectre color
     /// tags from chrome surfaces; it does NOT retint Markdown response
     /// rendering, reasoning ANSI, or the live spinner.
     /// </summary>
@@ -572,7 +580,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
         commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
         commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
-        commandTable.AddRow("[cyan]/theme[/] [grey]<dark|light|mono>[/]", "Set app chrome theme (panels, status bar). Does not affect Markdown responses.");
+        commandTable.AddRow("[cyan]/theme[/] [grey]<dark|mono>[/]", "Set app chrome theme (panels, status bar). Does not affect Markdown responses.");
         commandTable.AddRow("[cyan]/save[/] [grey]<path>[/]", "Save the last assistant response (Markdown) to a file");
         commandTable.AddRow("[cyan]/copy[/]", "Copy the last assistant response to the clipboard");
         commandTable.AddRow("[cyan]/exit[/], [cyan]/quit[/], [cyan]exit[/], [cyan]quit[/]", "Leave the interactive session");

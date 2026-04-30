@@ -84,6 +84,18 @@ public class MessagePersistenceTests : IDisposable
     }
 
     [Fact]
+    public void Save_HandlesInvalidPathGracefully()
+    {
+        // Path containing NUL or other GetFullPath-rejected characters must
+        // surface as WriteFailed (with a populated detail) instead of throwing
+        // out of the slash dispatcher.
+        var bogus = "no-such\0path/out.md";
+        var result = MessagePersistence.Save(bogus, "content", false, out var detail);
+        Assert.Equal(SaveMessageResult.WriteFailed, result);
+        Assert.False(string.IsNullOrEmpty(detail));
+    }
+
+    [Fact]
     public void Copy_PassesContentToClipboardWriter()
     {
         string? captured = null;

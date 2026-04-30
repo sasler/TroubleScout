@@ -42,8 +42,26 @@ public class ThemeTests
     }
 
     [Fact]
-    public void Theme_RoundTrips_LightValueThroughDisk()
+    public void Theme_RoundTrips_MonoValueThroughDisk()
     {
+        var path = IsolatedSettingsPath();
+        using var _ = WithSettingsPath(path);
+
+        var settings = AppSettingsStore.Load();
+        settings.Theme = "mono";
+        AppSettingsStore.Save(settings);
+
+        var reloaded = AppSettingsStore.Load();
+        Assert.Equal("mono", reloaded.Theme);
+    }
+
+    [Fact]
+    public void Theme_LightIsNotYetSupported_FallsBackToDark()
+    {
+        // "light" was advertised in earlier drafts but is currently a no-op
+        // that's identical to "dark". Until a real palette/renderer ships,
+        // it's deliberately not in the supported list and should normalize
+        // to the default rather than silently masquerading as a real theme.
         var path = IsolatedSettingsPath();
         using var _ = WithSettingsPath(path);
 
@@ -52,7 +70,7 @@ public class ThemeTests
         AppSettingsStore.Save(settings);
 
         var reloaded = AppSettingsStore.Load();
-        Assert.Equal("light", reloaded.Theme);
+        Assert.Equal("dark", reloaded.Theme);
     }
 
     [Fact]

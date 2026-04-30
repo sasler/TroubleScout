@@ -363,7 +363,7 @@ public static class AppSettingsStore
             : value.Trim();
     }
 
-    internal static readonly string[] SupportedThemes = new[] { "dark", "light", "mono" };
+    internal static readonly string[] SupportedThemes = new[] { "dark", "mono" };
 
     internal static string NormalizeTheme(string? value)
     {

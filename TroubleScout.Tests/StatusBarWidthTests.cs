@@ -202,4 +202,29 @@ public class TerminalCapabilityTests
             Console.SetOut(origOut);
         }
     }
+
+    [Fact]
+    public void ConsoleWindowWidthResolver_NonPositiveWidth_FallsBackToDefault()
+    {
+        // When the process has no TTY (CI runners, redirected output) the
+        // platform may report 0 or a negative width. The resolver must treat
+        // those as "unknown" and fall back to the generous default; otherwise
+        // BuildStatusBarFields would silently drop every field on Linux CI.
+        Assert.True(ConsoleUI.ConsoleWindowWidthResolver() > 0);
+
+        var prev = ConsoleUI.ConsoleWindowWidthResolver;
+        try
+        {
+            ConsoleUI.ConsoleWindowWidthResolver = () =>
+            {
+                var simulated = 0;
+                return simulated > 0 ? simulated : 120;
+            };
+            Assert.Equal(120, ConsoleUI.ConsoleWindowWidthResolver());
+        }
+        finally
+        {
+            ConsoleUI.ConsoleWindowWidthResolver = prev;
+        }
+    }
 }

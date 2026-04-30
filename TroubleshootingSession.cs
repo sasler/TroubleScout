@@ -2490,6 +2490,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
+                ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(AppSettingsStore.Load().Theme);
                 _modelDiscovery.InvalidateMergedModelListCache();
                 var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
 
@@ -2690,7 +2691,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 if (parts.Length < 2)
                 {
                     ConsoleUI.ShowInfo($"Current theme: {ConsoleUI.CurrentTheme}");
-                    ConsoleUI.ShowInfo("Usage: /theme <dark|light|mono>. Theme applies to app chrome (panels, status bar) only; it does not retint Markdown responses, reasoning, or the spinner.");
+                    ConsoleUI.ShowInfo("Usage: /theme <dark|mono>. Theme applies to app chrome (panels, status bar) only; it does not retint Markdown responses, reasoning, or the spinner.");
                 }
                 else
                 {
@@ -2698,7 +2699,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     var normalized = AppSettingsStore.NormalizeTheme(requested);
                     if (!string.Equals(requested, normalized, StringComparison.Ordinal))
                     {
-                        ConsoleUI.ShowWarning($"Unknown theme '{parts[1]}'. Falling back to '{normalized}'. Supported: dark, light, mono.");
+                        ConsoleUI.ShowWarning($"Unknown theme '{parts[1]}'. Falling back to '{normalized}'. Supported: dark, mono.");
                     }
 
                     ConsoleUI.CurrentTheme = normalized;
