@@ -145,6 +145,7 @@ public class TroubleshootingSession : IAsyncDisposable
         "/capabilities",
         "/history",
         "/report",
+        "/theme",
         "/login",
         "/byok",
         "/exit",
@@ -227,6 +228,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _appSettings = settings;
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
+        ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(settings.Theme);
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
         SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
@@ -2643,6 +2645,32 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            if (IsSlashCommandInvocation(lowerInput, "/theme"))
+            {
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                {
+                    ConsoleUI.ShowInfo($"Current theme: {ConsoleUI.CurrentTheme}");
+                    ConsoleUI.ShowInfo("Usage: /theme <dark|light|mono>. Theme applies to app chrome (panels, status bar) only; it does not retint Markdown responses, reasoning, or the spinner.");
+                }
+                else
+                {
+                    var requested = parts[1].Trim().ToLowerInvariant();
+                    var normalized = AppSettingsStore.NormalizeTheme(requested);
+                    if (!string.Equals(requested, normalized, StringComparison.Ordinal))
+                    {
+                        ConsoleUI.ShowWarning($"Unknown theme '{parts[1]}'. Falling back to '{normalized}'. Supported: dark, light, mono.");
+                    }
+
+                    ConsoleUI.CurrentTheme = normalized;
+                    var settings = AppSettingsStore.Load();
+                    settings.Theme = normalized;
+                    AppSettingsStore.Save(settings);
+                    ConsoleUI.ShowSuccess($"Theme set to '{normalized}'.");
+                }
+
+                continue;
+            }
             if (firstToken == "/capabilities")
             {
                 ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);

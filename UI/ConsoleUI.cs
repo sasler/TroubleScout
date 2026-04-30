@@ -89,6 +89,17 @@ public static class ConsoleUI
         try { return Console.WindowWidth; }
         catch { return 120; }
     };
+
+    /// <summary>
+    /// The active theme for app chrome (banner, panels, status bar). One of
+    /// "dark", "light", "mono". Default is "dark". Mono strips Spectre color
+    /// tags from chrome surfaces; it does NOT retint Markdown response
+    /// rendering, reasoning ANSI, or the live spinner.
+    /// </summary>
+    public static string CurrentTheme { get; set; } = "dark";
+
+    internal static bool IsMonochromeTheme()
+        => string.Equals(CurrentTheme, "mono", StringComparison.OrdinalIgnoreCase);
     internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
     internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
@@ -560,6 +571,7 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
         commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
         commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
+        commandTable.AddRow("[cyan]/theme[/] [grey]<dark|light|mono>[/]", "Set app chrome theme (panels, status bar). Does not affect Markdown responses.");
         commandTable.AddRow("[cyan]/exit[/], [cyan]/quit[/], [cyan]exit[/], [cyan]quit[/]", "Leave the interactive session");
 
         var helpPanel = new Panel(new Rows(
@@ -1178,7 +1190,47 @@ public static class ConsoleUI
         var selected = SelectFieldsForWidth(BuildStatusBarFields(info), width);
         if (selected.Count == 0) return string.Empty;
         var statusLine = string.Join("[grey] | [/]", selected.Select(f => f.Markup));
-        return $"[dim]───[/] {statusLine} [dim]───[/]";
+        var line = $"[dim]───[/] {statusLine} [dim]───[/]";
+        return IsMonochromeTheme() ? StripSpectreColorTags(line) : line;
+    }
+
+    /// <summary>
+    /// Internal: drop Spectre style tags from a markup string so monochrome
+    /// theme renders as plain text. Closing tags ([/]) are also stripped.
+    /// Markup.Escape output ("[[" / "]]") is preserved.
+    /// </summary>
+    internal static string StripSpectreColorTags(string markup)
+    {
+        if (string.IsNullOrEmpty(markup)) return markup;
+        var sb = new StringBuilder(markup.Length);
+        for (int i = 0; i < markup.Length; i++)
+        {
+            // Preserve escaped brackets
+            if (i + 1 < markup.Length && markup[i] == '[' && markup[i + 1] == '[')
+            {
+                sb.Append("[[");
+                i++;
+                continue;
+            }
+            if (i + 1 < markup.Length && markup[i] == ']' && markup[i + 1] == ']')
+            {
+                sb.Append("]]");
+                i++;
+                continue;
+            }
+            if (markup[i] == '[')
+            {
+                var close = markup.IndexOf(']', i + 1);
+                if (close > i)
+                {
+                    // Drop the entire tag (open or close).
+                    i = close;
+                    continue;
+                }
+            }
+            sb.Append(markup[i]);
+        }
+        return sb.ToString();
     }
 
     /// <summary>

@@ -18,6 +18,7 @@ public sealed class AppSettings
     public string? MonitoringMcpServer { get; set; }
     public string? TicketingMcpServer { get; set; }
     public List<string>? PersistedApprovedMcpServers { get; set; }
+    public string? Theme { get; set; }
 }
 
 public static class AppSettingsStore
@@ -193,7 +194,8 @@ public static class AppSettingsStore
             SystemPromptAppend = settings.SystemPromptAppend,
             MonitoringMcpServer = NormalizeOptionalValue(settings.MonitoringMcpServer),
             TicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer),
-            PersistedApprovedMcpServers = NormalizeMcpServerList(settings.PersistedApprovedMcpServers)
+            PersistedApprovedMcpServers = NormalizeMcpServerList(settings.PersistedApprovedMcpServers),
+            Theme = NormalizeTheme(settings.Theme)
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
@@ -241,6 +243,13 @@ public static class AppSettingsStore
         if (!McpServerListEquals(settings.PersistedApprovedMcpServers, normalizedPersistedApprovals))
         {
             settings.PersistedApprovedMcpServers = normalizedPersistedApprovals;
+            changed = true;
+        }
+
+        var normalizedTheme = NormalizeTheme(settings.Theme);
+        if (!string.Equals(settings.Theme, normalizedTheme, StringComparison.Ordinal))
+        {
+            settings.Theme = normalizedTheme;
             changed = true;
         }
 
@@ -352,6 +361,19 @@ public static class AppSettingsStore
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim();
+    }
+
+    internal static readonly string[] SupportedThemes = new[] { "dark", "light", "mono" };
+
+    internal static string NormalizeTheme(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "dark";
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return SupportedThemes.Contains(normalized) ? normalized : "dark";
     }
 
     internal static List<string>? NormalizeMcpServerList(IEnumerable<string>? values)
