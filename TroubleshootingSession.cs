@@ -134,6 +134,7 @@ public class TroubleshootingSession : IAsyncDisposable
     [
         "/help",
         "/status",
+        "/stats",
         "/clear",
         "/settings",
         "/mcp-role",
@@ -1271,6 +1272,10 @@ public class TroubleshootingSession : IAsyncDisposable
             return false;
         }
 
+        var turnStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var toolCountAtEntry = System.Threading.Volatile.Read(ref _toolInvocationCount);
+        var turnOutcome = TurnOutcome.Failed;
+
         IDisposable? subscription = null;
         LiveThinkingIndicator? thinkingIndicator = null;
         CancellationTokenSource? watchdogCts = null;
@@ -1529,6 +1534,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 thinkingIndicator.Dispose();
                 thinkingIndicator = null;
                 ConsoleUI.ShowCancelled();
+                turnOutcome = TurnOutcome.Cancelled;
                 return false;
             }
 
@@ -1553,16 +1559,22 @@ public class TroubleshootingSession : IAsyncDisposable
                 && showPostAnalysisActionPrompt
                 && ShouldOfferPostAnalysisActionPrompt(responseBuffer.ToString(), forcePostAnalysisActionPrompt))
             {
+                turnOutcome = TurnOutcome.Success;
                 return await HandlePostAnalysisActionAsync(cancellationToken);
             }
 
-            return !hasError && !wasCancelled;
+            var success = !hasError && !wasCancelled;
+            turnOutcome = wasCancelled ? TurnOutcome.Cancelled
+                : hasError ? TurnOutcome.Failed
+                : TurnOutcome.Success;
+            return success;
         }
         catch (OperationCanceledException)
         {
             watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowCancelled();
+            turnOutcome = TurnOutcome.Cancelled;
             return false;
         }
         catch (Exception ex)
@@ -1570,6 +1582,7 @@ public class TroubleshootingSession : IAsyncDisposable
             watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
+            turnOutcome = TurnOutcome.Failed;
             return false;
         }
         finally
@@ -1578,6 +1591,11 @@ public class TroubleshootingSession : IAsyncDisposable
             watchdogCts?.Dispose();
             subscription?.Dispose();
             thinkingIndicator?.Dispose();
+
+            turnStopwatch.Stop();
+            var toolDelta = System.Threading.Volatile.Read(ref _toolInvocationCount) - toolCountAtEntry;
+            if (toolDelta < 0) toolDelta = 0;
+            _sessionUsageTracker.RecordCompletedTurn(turnStopwatch.Elapsed, toolDelta, turnOutcome);
         }
     }
 
@@ -2440,6 +2458,23 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/status")
             {
                 ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(includeMcpApprovals: true), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
+                continue;
+            }
+
+            if (firstToken == "/stats")
+            {
+                ConsoleUI.ShowStatsPanel(
+                    completedTurns: _sessionUsageTracker.CompletedTurns,
+                    failedTurns: _sessionUsageTracker.FailedTurns,
+                    cancelledTurns: _sessionUsageTracker.CancelledTurns,
+                    totalInputTokens: _sessionUsageTracker.TotalInputTokens,
+                    totalOutputTokens: _sessionUsageTracker.TotalOutputTokens,
+                    p50Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.5),
+                    p95Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.95),
+                    totalToolCalls: _sessionUsageTracker.TotalToolCalls,
+                    p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
+                    p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
+                    costEstimate: _sessionUsageTracker.GetCostEstimateDisplay());
                 continue;
             }
 

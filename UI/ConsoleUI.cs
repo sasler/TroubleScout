@@ -556,6 +556,7 @@ public static class ConsoleUI
 
         commandTable.AddRow("[cyan]/help[/]", "Show this full command reference");
         commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
+        commandTable.AddRow("[cyan]/stats[/]", "Show session statistics (turn count, tokens, latency p50/p95, tool counts)");
         commandTable.AddRow("[cyan]/clear[/]", "Start new session");
         commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
         commandTable.AddRow("[cyan]/mcp-role[/] [grey][[<monitoring|ticketing> <server|none> | clear <monitoring|ticketing|all>]][/]", "Configure monitoring and ticketing MCP role mappings; no args opens interactive mode");
@@ -1693,6 +1694,53 @@ public static class ConsoleUI
     public static void ShowSuccess(string message)
     {
         AnsiConsole.MarkupLine($"[green]✓[/] {Markup.Escape(message)}");
+    }
+
+    /// <summary>
+    /// Render a session statistics table covering completed turn count,
+    /// outcome breakdown, token totals, p50/p95 latency, and tool-call stats.
+    /// </summary>
+    public static void ShowStatsPanel(
+        int completedTurns,
+        int failedTurns,
+        int cancelledTurns,
+        long totalInputTokens,
+        long totalOutputTokens,
+        TimeSpan? p50Latency,
+        TimeSpan? p95Latency,
+        int totalToolCalls,
+        double? p50ToolsPerTurn,
+        double? p95ToolsPerTurn,
+        string? costEstimate)
+    {
+        var table = new Table().Border(TableBorder.Rounded).Title("[bold]Session Statistics[/]");
+        table.AddColumn("Metric");
+        table.AddColumn("Value");
+
+        table.AddRow("Completed turns", completedTurns.ToString());
+        if (failedTurns > 0) table.AddRow("Failed turns", failedTurns.ToString());
+        if (cancelledTurns > 0) table.AddRow("Cancelled turns", cancelledTurns.ToString());
+
+        var totalTokens = totalInputTokens + totalOutputTokens;
+        table.AddRow("Tokens (in / out / total)", $"{totalInputTokens:N0} / {totalOutputTokens:N0} / {totalTokens:N0}");
+
+        if (p50Latency.HasValue) table.AddRow("Latency p50", FormatDuration(p50Latency.Value));
+        if (p95Latency.HasValue) table.AddRow("Latency p95", FormatDuration(p95Latency.Value));
+
+        table.AddRow("Total tool calls", totalToolCalls.ToString());
+        if (p50ToolsPerTurn.HasValue) table.AddRow("Tools/turn p50", p50ToolsPerTurn.Value.ToString("0.##"));
+        if (p95ToolsPerTurn.HasValue) table.AddRow("Tools/turn p95", p95ToolsPerTurn.Value.ToString("0.##"));
+
+        if (!string.IsNullOrEmpty(costEstimate)) table.AddRow("Cost estimate", costEstimate);
+
+        AnsiConsole.Write(table);
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalSeconds < 1) return $"{duration.TotalMilliseconds:0} ms";
+        if (duration.TotalSeconds < 60) return $"{duration.TotalSeconds:0.#} s";
+        return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
     }
 
     /// <summary>
