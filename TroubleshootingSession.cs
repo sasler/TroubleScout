@@ -94,6 +94,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string _sessionId = "n/a";
     private int _sessionCounter;
     private int _toolInvocationCount;
+    private string? _lastAssistantMessage;
     private bool _isGitHubCopilotAuthenticated;
     private IReadOnlyList<string>? _configuredSafeCommands;
     private IReadOnlyDictionary<string, string>? _configuredSystemPromptOverrides;
@@ -133,6 +134,7 @@ public class TroubleshootingSession : IAsyncDisposable
     [
         "/help",
         "/status",
+        "/stats",
         "/clear",
         "/settings",
         "/mcp-role",
@@ -145,6 +147,9 @@ public class TroubleshootingSession : IAsyncDisposable
         "/capabilities",
         "/history",
         "/report",
+        "/theme",
+        "/save",
+        "/copy",
         "/login",
         "/byok",
         "/exit",
@@ -227,6 +232,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _appSettings = settings;
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
+        ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(settings.Theme);
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
         SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
@@ -1266,6 +1272,10 @@ public class TroubleshootingSession : IAsyncDisposable
             return false;
         }
 
+        var turnStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var toolCountAtEntry = System.Threading.Volatile.Read(ref _toolInvocationCount);
+        var turnOutcome = TurnOutcome.Failed;
+
         IDisposable? subscription = null;
         LiveThinkingIndicator? thinkingIndicator = null;
         CancellationTokenSource? watchdogCts = null;
@@ -1524,10 +1534,12 @@ public class TroubleshootingSession : IAsyncDisposable
                 thinkingIndicator.Dispose();
                 thinkingIndicator = null;
                 ConsoleUI.ShowCancelled();
+                turnOutcome = TurnOutcome.Cancelled;
                 return false;
             }
 
             SetPromptReply(promptIndex, responseBuffer.ToString());
+            _lastAssistantMessage = responseBuffer.ToString();
             
             // Dispose thinking indicator before processing approvals
             thinkingIndicator.Dispose();
@@ -1547,16 +1559,22 @@ public class TroubleshootingSession : IAsyncDisposable
                 && showPostAnalysisActionPrompt
                 && ShouldOfferPostAnalysisActionPrompt(responseBuffer.ToString(), forcePostAnalysisActionPrompt))
             {
+                turnOutcome = TurnOutcome.Success;
                 return await HandlePostAnalysisActionAsync(cancellationToken);
             }
 
-            return !hasError && !wasCancelled;
+            var success = !hasError && !wasCancelled;
+            turnOutcome = wasCancelled ? TurnOutcome.Cancelled
+                : hasError ? TurnOutcome.Failed
+                : TurnOutcome.Success;
+            return success;
         }
         catch (OperationCanceledException)
         {
             watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowCancelled();
+            turnOutcome = TurnOutcome.Cancelled;
             return false;
         }
         catch (Exception ex)
@@ -1564,6 +1582,7 @@ public class TroubleshootingSession : IAsyncDisposable
             watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
+            turnOutcome = TurnOutcome.Failed;
             return false;
         }
         finally
@@ -1572,6 +1591,11 @@ public class TroubleshootingSession : IAsyncDisposable
             watchdogCts?.Dispose();
             subscription?.Dispose();
             thinkingIndicator?.Dispose();
+
+            turnStopwatch.Stop();
+            var toolDelta = System.Threading.Volatile.Read(ref _toolInvocationCount) - toolCountAtEntry;
+            if (toolDelta < 0) toolDelta = 0;
+            _sessionUsageTracker.RecordCompletedTurn(turnStopwatch.Elapsed, toolDelta, turnOutcome);
         }
     }
 
@@ -2437,6 +2461,23 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            if (firstToken == "/stats")
+            {
+                ConsoleUI.ShowStatsPanel(
+                    completedTurns: _sessionUsageTracker.CompletedTurns,
+                    failedTurns: _sessionUsageTracker.FailedTurns,
+                    cancelledTurns: _sessionUsageTracker.CancelledTurns,
+                    totalInputTokens: _sessionUsageTracker.TotalInputTokens,
+                    totalOutputTokens: _sessionUsageTracker.TotalOutputTokens,
+                    p50Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.5),
+                    p95Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.95),
+                    totalToolCalls: _sessionUsageTracker.TotalToolCalls,
+                    p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
+                    p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
+                    costEstimate: _sessionUsageTracker.GetCostEstimateDisplay());
+                continue;
+            }
+
             if (firstToken == "/settings")
             {
                 // Ensure the settings file exists before launching the editor on first use.
@@ -2449,6 +2490,8 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
 
                 ReloadSafeCommandsFromSettings();
+                ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(AppSettingsStore.Load().Theme);
+                _modelDiscovery.InvalidateMergedModelListCache();
                 var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
 
                 if (sessionReloadSucceeded)
@@ -2483,6 +2526,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
             if (firstToken == "/login")
             {
+                _modelDiscovery.InvalidateMergedModelListCache();
                 var loginSucceeded = await ConsoleUI.RunWithSpinnerAsync("Running Copilot login...", async updateStatus =>
                 {
                     return await LoginAndCreateGitHubSessionAsync(updateStatus);
@@ -2509,6 +2553,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     // Also update in-memory state so a subsequent /model switch doesn't re-save BYOK=true
                     _useByokOpenAi = false;
                     _byokOpenAiApiKey = null;
+                    _modelDiscovery.InvalidateMergedModelListCache();
                     ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
                     ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
                     ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
@@ -2615,6 +2660,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 if (byokReady)
                 {
+                    _modelDiscovery.InvalidateMergedModelListCache();
                     ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
                 }
 
@@ -2639,6 +2685,102 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
+            if (IsSlashCommandInvocation(lowerInput, "/theme"))
+            {
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                {
+                    ConsoleUI.ShowInfo($"Current theme: {ConsoleUI.CurrentTheme}");
+                    ConsoleUI.ShowInfo("Usage: /theme <dark|mono>. Theme applies to app chrome (panels, status bar) only; it does not retint Markdown responses, reasoning, or the spinner.");
+                }
+                else
+                {
+                    var requested = parts[1].Trim().ToLowerInvariant();
+                    var normalized = AppSettingsStore.NormalizeTheme(requested);
+                    if (!string.Equals(requested, normalized, StringComparison.Ordinal))
+                    {
+                        ConsoleUI.ShowWarning($"Unknown theme '{parts[1]}'. Falling back to '{normalized}'. Supported: dark, mono.");
+                    }
+
+                    ConsoleUI.CurrentTheme = normalized;
+                    var settings = AppSettingsStore.Load();
+                    settings.Theme = normalized;
+                    AppSettingsStore.Save(settings);
+                    ConsoleUI.ShowSuccess($"Theme set to '{normalized}'.");
+                }
+
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/save"))
+            {
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+                {
+                    ConsoleUI.ShowInfo("Usage: /save <path>  — writes the last assistant message (Markdown) to disk.");
+                    continue;
+                }
+
+                var targetPath = parts[1].Trim().Trim('"');
+                var content = _lastAssistantMessage;
+                var firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: false, out var detail);
+
+                if (firstResult == Services.SaveMessageResult.FileAlreadyExists)
+                {
+                    var confirm = AnsiConsole.Confirm($"File '{targetPath}' already exists. Overwrite?", defaultValue: false);
+                    if (!confirm)
+                    {
+                        ConsoleUI.ShowInfo("Save cancelled.");
+                        continue;
+                    }
+                    firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: true, out detail);
+                }
+
+                switch (firstResult)
+                {
+                    case Services.SaveMessageResult.Success:
+                        ConsoleUI.ShowSuccess($"Saved last response to '{targetPath}'.");
+                        break;
+                    case Services.SaveMessageResult.NoMessageAvailable:
+                        ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
+                        break;
+                    case Services.SaveMessageResult.PathMissing:
+                        ConsoleUI.ShowWarning("Usage: /save <path>");
+                        break;
+                    case Services.SaveMessageResult.PathIsDirectory:
+                        ConsoleUI.ShowWarning($"'{targetPath}' is a directory. Provide a file path.");
+                        break;
+                    case Services.SaveMessageResult.ParentDirectoryMissing:
+                        ConsoleUI.ShowWarning($"Parent directory does not exist: {detail}. Create it first; /save will not.");
+                        break;
+                    case Services.SaveMessageResult.WriteFailed:
+                        ConsoleUI.ShowError("Save failed", detail ?? "unknown error");
+                        break;
+                }
+
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/copy"))
+            {
+                var content = _lastAssistantMessage;
+                if (string.IsNullOrEmpty(content))
+                {
+                    ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
+                    continue;
+                }
+
+                var ok = Services.MessagePersistence.Copy(content, out var detail);
+                if (ok)
+                {
+                    ConsoleUI.ShowSuccess("Last response copied to clipboard.");
+                }
+                else
+                {
+                    ConsoleUI.ShowError("Copy failed", string.IsNullOrEmpty(detail) ? "Clipboard not available." : detail);
+                }
+                continue;
+            }
             if (firstToken == "/capabilities")
             {
                 ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
