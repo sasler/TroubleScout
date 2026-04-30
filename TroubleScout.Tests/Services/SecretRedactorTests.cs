@@ -117,11 +117,22 @@ public class SecretRedactorTests
     [InlineData("Server=db;Pwd=hunter2;Database=foo;", "hunter2")]
     [InlineData("AccountKey=abcd1234efgh==;", "abcd1234efgh==")]
     [InlineData("SharedAccessKey=verysecretvalue;", "verysecretvalue")]
+    [InlineData("Server=db;Password=\"hunter2\";Database=foo;", "hunter2")]
+    [InlineData("Server=db;Pwd='hunter2';Database=foo;", "hunter2")]
+    [InlineData("Password=\"value with spaces and ; semicolon\"", "value with spaces and ; semicolon")]
     public void Redact_ConnectionStringSecrets_AreRedacted(string input, string secret)
     {
         var redacted = SecretRedactor.Redact(input);
         redacted.Should().NotContain(secret);
         redacted.Should().Contain(M);
+    }
+
+    [Fact]
+    public void Redact_QuotedConnectionStringSecret_PreservesSurroundingQuotes()
+    {
+        var redacted = SecretRedactor.Redact("Server=db;Password=\"hunter2\";Database=foo;");
+
+        redacted.Should().Be($"Server=db;Password=\"{M}\";Database=foo;");
     }
 
     // -------- Generic key=value --------

@@ -15,7 +15,8 @@ view; this is the full reference.
 - `[arg]` — optional argument.
 - `a|b` — choose one literal value.
 - Arguments separated by whitespace unless noted otherwise.
-- Commands are case-sensitive and start with `/`.
+- Commands start with `/`; the command token is case-insensitive (the
+  dispatcher lower-cases the first token before matching).
 
 ## Session
 
@@ -123,7 +124,7 @@ Clear saved BYOK settings for this profile.
 Show configured and runtime-used MCP servers and skills. Also visible in
 `/status`.
 
-### `/mcp-role [monitoring|ticketing <server|none>] | [clear monitoring|ticketing|all]`
+### `/mcp-role monitoring|ticketing <server|none> | clear <monitoring|ticketing|all>`
 
 Configure monitoring and ticketing MCP role mappings. With no arguments,
 opens an interactive prompt to assign or clear roles. Role mappings

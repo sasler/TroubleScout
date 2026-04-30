@@ -1,3 +1,4 @@
+using System.Globalization;
 using Spectre.Console;
 
 namespace TroubleScout.UI;
@@ -17,7 +18,8 @@ namespace TroubleScout.UI;
 ///
 /// Prefer <see cref="Interpolate(FormattableString)"/> for new code:
 /// it accepts a C# interpolated string and auto-escapes every interpolated
-/// value while leaving literal markup tags intact.
+/// value while leaving literal markup tags intact and preserving standard
+/// composite-format semantics (format specifiers and alignment).
 /// </summary>
 internal static class SafeMarkup
 {
@@ -34,7 +36,9 @@ internal static class SafeMarkup
     /// <summary>
     /// Builds a Spectre markup string from a C# interpolated string,
     /// escaping every interpolated value while preserving literal markup
-    /// tags (e.g. <c>[red]</c>, <c>[/]</c>) in the format itself.
+    /// tags (e.g. <c>[red]</c>, <c>[/]</c>) in the format itself, and
+    /// honoring standard composite formatting semantics (format specifiers
+    /// like <c>{count:D4}</c> and alignment like <c>{value,10}</c>).
     ///
     /// <example>
     /// <code>
@@ -51,20 +55,40 @@ internal static class SafeMarkup
     {
         if (template is null) return string.Empty;
 
-        var args = template.GetArguments();
-        if (args.Length == 0)
+        if (template.ArgumentCount == 0)
         {
             // Format string has no interpolated values; return as-is.
             return template.Format;
         }
 
-        var escaped = new object?[args.Length];
-        for (var i = 0; i < args.Length; i++)
-        {
-            var raw = args[i]?.ToString();
-            escaped[i] = string.IsNullOrEmpty(raw) ? string.Empty : Markup.Escape(raw);
-        }
+        // Delegate to string.Format with a custom format provider that applies
+        // the original format specifier first and then Markup.Escape. Alignment
+        // (e.g. {value,10}) is handled by the composite formatter itself: it
+        // pads the post-formatter return value, which is what we want — the
+        // padding does not need escaping.
+        return string.Format(EscapingFormatProvider.Instance, template.Format, template.GetArguments());
+    }
 
-        return string.Format(template.Format, escaped);
+    private sealed class EscapingFormatProvider : IFormatProvider, ICustomFormatter
+    {
+        public static readonly EscapingFormatProvider Instance = new();
+
+        public object? GetFormat(Type? formatType)
+            => formatType == typeof(ICustomFormatter) ? this : null;
+
+        public string Format(string? format, object? arg, IFormatProvider? formatProvider)
+        {
+            string? rendered;
+            if (arg is IFormattable formattable)
+            {
+                rendered = formattable.ToString(format, CultureInfo.CurrentCulture);
+            }
+            else
+            {
+                rendered = arg?.ToString();
+            }
+
+            return string.IsNullOrEmpty(rendered) ? string.Empty : Markup.Escape(rendered);
+        }
     }
 }

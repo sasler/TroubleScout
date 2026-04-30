@@ -78,6 +78,34 @@ public class SafeMarkupTests
     }
 
     [Fact]
+    public void Interpolate_PreservesFormatSpecifiersAndAlignment()
+    {
+        var count = 42;
+        var value = 7;
+        FormattableString template = $"[white]{count:D4}[/] [grey]{value,10}[/]";
+
+        SafeMarkup.Interpolate(template).Should().Be("[white]0042[/] [grey]         7[/]");
+    }
+
+    [Fact]
+    public void Interpolate_AppliesFormatThenEscapesResultingMarkupChars()
+    {
+        // A custom IFormattable returns markup-shaped text after applying its
+        // format specifier. Interpolate must escape the post-format string,
+        // not the raw object.
+        var hostile = new FormattableHostile();
+        FormattableString template = $"[bold]{hostile:wrap}[/]";
+
+        SafeMarkup.Interpolate(template).Should().Be("[bold][[hostile]][/]");
+    }
+
+    private sealed class FormattableHostile : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? formatProvider)
+            => format == "wrap" ? "[hostile]" : "hostile";
+    }
+
+    [Fact]
     public void Interpolate_ResultParsesAsValidSpectreMarkup()
     {
         // Round-trip check: feed the SafeMarkup output back into the Spectre

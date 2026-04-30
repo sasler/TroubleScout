@@ -52,7 +52,14 @@ internal static class SecretRedactor
     // Connection-string style key=value pairs that name a sensitive field.
     // Captures things like Password=secret;, Pwd=secret;, AccountKey=...;.
     private static readonly Regex ConnectionStringSecretPattern = new(
-        @"(?<key>(?:password|pwd|accountkey|sharedaccesskey|sharedsecret|secret))\s*=\s*(?<value>[^;""\r\n]+)",
+        @"(?<key>(?:password|pwd|accountkey|sharedaccesskey|sharedsecret|secret))\s*=\s*(?<value>[^;""'\r\n]+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Same as above but for quoted values: Password="hunter2", Pwd='secret'.
+    // Common in app config and JSON-ish connection strings; the unquoted
+    // pattern can't catch these because quotes are excluded from its value.
+    private static readonly Regex ConnectionStringQuotedSecretPattern = new(
+        @"(?<key>(?:password|pwd|accountkey|sharedaccesskey|sharedsecret|secret))\s*=\s*(?<quote>[""'])(?<value>(?:(?!\k<quote>)[^\r\n])+)\k<quote>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // Generic key=value / key: value pairs whose KEY contains a secret-suggesting
@@ -84,6 +91,14 @@ internal static class SecretRedactor
         result = BearerPattern.Replace(result, "Bearer " + Mask);
         result = UrlUserInfoPattern.Replace(result, m =>
             $"{m.Groups["scheme"].Value}{m.Groups["user"].Value}:{Mask}@");
+        // Apply the quoted variant first; otherwise the unquoted pattern would
+        // greedily consume the inner content of `Password="hunter2"` up to the
+        // closing quote, leaving stray quote characters behind.
+        result = ConnectionStringQuotedSecretPattern.Replace(result, m =>
+        {
+            var quote = m.Groups["quote"].Value;
+            return $"{m.Groups["key"].Value}={quote}{Mask}{quote}";
+        });
         result = ConnectionStringSecretPattern.Replace(result, m =>
             $"{m.Groups["key"].Value}={Mask}");
         result = KeyValueSecretPattern.Replace(result, m =>
@@ -108,6 +123,7 @@ internal static class SecretRedactor
             || JwtPattern.IsMatch(input)
             || BearerPattern.IsMatch(input)
             || UrlUserInfoPattern.IsMatch(input)
+            || ConnectionStringQuotedSecretPattern.IsMatch(input)
             || ConnectionStringSecretPattern.IsMatch(input)
             || KeyValueSecretPattern.IsMatch(input);
     }
