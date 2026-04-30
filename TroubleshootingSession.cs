@@ -94,6 +94,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string _sessionId = "n/a";
     private int _sessionCounter;
     private int _toolInvocationCount;
+    private string? _lastAssistantMessage;
     private bool _isGitHubCopilotAuthenticated;
     private IReadOnlyList<string>? _configuredSafeCommands;
     private IReadOnlyDictionary<string, string>? _configuredSystemPromptOverrides;
@@ -146,6 +147,8 @@ public class TroubleshootingSession : IAsyncDisposable
         "/history",
         "/report",
         "/theme",
+        "/save",
+        "/copy",
         "/login",
         "/byok",
         "/exit",
@@ -1530,6 +1533,7 @@ public class TroubleshootingSession : IAsyncDisposable
             }
 
             SetPromptReply(promptIndex, responseBuffer.ToString());
+            _lastAssistantMessage = responseBuffer.ToString();
             
             // Dispose thinking indicator before processing approvals
             thinkingIndicator.Dispose();
@@ -2669,6 +2673,76 @@ public class TroubleshootingSession : IAsyncDisposable
                     ConsoleUI.ShowSuccess($"Theme set to '{normalized}'.");
                 }
 
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/save"))
+            {
+                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+                {
+                    ConsoleUI.ShowInfo("Usage: /save <path>  — writes the last assistant message (Markdown) to disk.");
+                    continue;
+                }
+
+                var targetPath = parts[1].Trim().Trim('"');
+                var content = _lastAssistantMessage;
+                var firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: false, out var detail);
+
+                if (firstResult == Services.SaveMessageResult.FileAlreadyExists)
+                {
+                    var confirm = AnsiConsole.Confirm($"File '{targetPath}' already exists. Overwrite?", defaultValue: false);
+                    if (!confirm)
+                    {
+                        ConsoleUI.ShowInfo("Save cancelled.");
+                        continue;
+                    }
+                    firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: true, out detail);
+                }
+
+                switch (firstResult)
+                {
+                    case Services.SaveMessageResult.Success:
+                        ConsoleUI.ShowSuccess($"Saved last response to '{targetPath}'.");
+                        break;
+                    case Services.SaveMessageResult.NoMessageAvailable:
+                        ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
+                        break;
+                    case Services.SaveMessageResult.PathMissing:
+                        ConsoleUI.ShowWarning("Usage: /save <path>");
+                        break;
+                    case Services.SaveMessageResult.PathIsDirectory:
+                        ConsoleUI.ShowWarning($"'{targetPath}' is a directory. Provide a file path.");
+                        break;
+                    case Services.SaveMessageResult.ParentDirectoryMissing:
+                        ConsoleUI.ShowWarning($"Parent directory does not exist: {detail}. Create it first; /save will not.");
+                        break;
+                    case Services.SaveMessageResult.WriteFailed:
+                        ConsoleUI.ShowError("Save failed", detail ?? "unknown error");
+                        break;
+                }
+
+                continue;
+            }
+
+            if (IsSlashCommandInvocation(lowerInput, "/copy"))
+            {
+                var content = _lastAssistantMessage;
+                if (string.IsNullOrEmpty(content))
+                {
+                    ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
+                    continue;
+                }
+
+                var ok = Services.MessagePersistence.Copy(content, out var detail);
+                if (ok)
+                {
+                    ConsoleUI.ShowSuccess("Last response copied to clipboard.");
+                }
+                else
+                {
+                    ConsoleUI.ShowError("Copy failed", string.IsNullOrEmpty(detail) ? "Clipboard not available." : detail);
+                }
                 continue;
             }
             if (firstToken == "/capabilities")

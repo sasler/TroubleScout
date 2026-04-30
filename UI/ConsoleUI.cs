@@ -572,6 +572,8 @@ public static class ConsoleUI
         commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
         commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
         commandTable.AddRow("[cyan]/theme[/] [grey]<dark|light|mono>[/]", "Set app chrome theme (panels, status bar). Does not affect Markdown responses.");
+        commandTable.AddRow("[cyan]/save[/] [grey]<path>[/]", "Save the last assistant response (Markdown) to a file");
+        commandTable.AddRow("[cyan]/copy[/]", "Copy the last assistant response to the clipboard");
         commandTable.AddRow("[cyan]/exit[/], [cyan]/quit[/], [cyan]exit[/], [cyan]quit[/]", "Leave the interactive session");
 
         var helpPanel = new Panel(new Rows(
