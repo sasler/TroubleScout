@@ -13,6 +13,28 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.15.0] - 2026-04-30
+
+### ✨ New Features
+
+- 🎨 **`/theme` slash command** - choose between `dark` (default), `light`, and `mono`. Theme is persisted in `settings.json` (`Theme`) and applies to **app chrome only** (panels, status bar). It deliberately does NOT retint Markdown response rendering, reasoning ANSI text, or the live spinner — those would require a palette/renderer abstraction that is intentionally out of scope for this release.
+- 💾 **`/save <path>` slash command** - writes the last assistant response (Markdown source) to disk. Strict by design: refuses directory targets, refuses to create parent directories, and prompts before overwriting an existing file.
+- 📋 **`/copy` slash command** - copies the last assistant response to the local clipboard via a dedicated short-lived local PowerShell pipeline. Deliberately does NOT route through the active session executor, which is bound to the remote target server / JEA endpoint.
+- 📊 **`/stats` slash command** - shows a session statistics table covering completed turn count, failed/cancelled turn breakdown, total token usage, p50/p95 latency, total tool-call count, and p50/p95 tool calls per turn.
+
+### 🚀 Performance
+
+- ⚡ **Cached `/model` discovery** - the merged GitHub-models list is now cached on `ModelDiscoveryManager` for the lifetime of the session and explicitly invalidated on `/login`, `/byok` (configure or `clear`), and `/settings` reload. Repeated `/model` invocations no longer re-issue the discovery request.
+
+### 🐛 Bug Fixes
+
+- 📐 **Narrow-terminal hardening** - the post-response status bar now uses structured fields with explicit priorities, computes width math against plain text (not Spectre markup), and progressively drops fields as the terminal narrows: `< 40 cols` suppresses entirely, `40-59 cols` keeps tokens only, and `>= 60 cols` adds session, cost, model, tools, reasoning, provider in priority order. The terminal-title OSC sequence is now gated behind the same Windows-Terminal-or-redirected check that `SetWindowsTerminalProgress` already uses.
+
+### 🧰 Internal
+
+- ✅ **Stats instrumentation** - `SessionUsageTracker` now records per-turn elapsed time, tool-call delta, and outcome (success / failed / cancelled) in addition to token usage, with sorted-list quantile helpers backing `/stats`. SendMessageAsync owns its own Stopwatch so tracker recording survives cancellation and exception paths via `finally`.
+- 🛡️ **24 new regression tests** - covering the model-list cache, narrow-terminal status-bar fields, theme persistence and mono-mode tag stripping, save/copy helpers, and stats quantiles. Total suite now 603 tests.
+
 ## [v1.14.0] - 2026-04-30
 
 ### ✨ New Features
