@@ -72,6 +72,15 @@ internal static class SecretRedactor
         + @"credential|passphrase)[A-Za-z0-9_\-]*?)\s*[:=]\s*(?<quote>[""']?)(?<value>[^""'\r\n,;]{4,})\k<quote>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // JSON-ish quoted property names: "api_key":"secret" or 'token': 'secret'.
+    private static readonly Regex QuotedKeyValueSecretPattern = new(
+        @"(?<prefix>(?<keyQuote>[""'])(?<key>[A-Za-z0-9_\-]*?(?:api[_\-]?key|apikey|access[_\-]?key|access[_\-]?token|"
+        + @"refresh[_\-]?token|private[_\-]?key|privatekey|ssh[_\-]?key|auth[_\-]?key|"
+        + @"session[_\-]?key|secret[_\-]?key|client[_\-]?secret|secret|token|"
+        + @"credential|passphrase)[A-Za-z0-9_\-]*?)\k<keyQuote>\s*:\s*(?<valueQuote>[""']))"
+        + @"(?<value>[^""'\r\n]{4,})\k<valueQuote>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     /// <summary>
     /// Returns a copy of <paramref name="input"/> with secret-shaped substrings
     /// replaced by <see cref="Mask"/>. Returns the input unchanged when null,
@@ -101,6 +110,8 @@ internal static class SecretRedactor
         });
         result = ConnectionStringSecretPattern.Replace(result, m =>
             $"{m.Groups["key"].Value}={Mask}");
+        result = QuotedKeyValueSecretPattern.Replace(result, m =>
+            $"{m.Groups["prefix"].Value}{Mask}{m.Groups["valueQuote"].Value}");
         result = KeyValueSecretPattern.Replace(result, m =>
         {
             var quote = m.Groups["quote"].Value;
@@ -125,6 +136,7 @@ internal static class SecretRedactor
             || UrlUserInfoPattern.IsMatch(input)
             || ConnectionStringQuotedSecretPattern.IsMatch(input)
             || ConnectionStringSecretPattern.IsMatch(input)
+            || QuotedKeyValueSecretPattern.IsMatch(input)
             || KeyValueSecretPattern.IsMatch(input);
     }
 }

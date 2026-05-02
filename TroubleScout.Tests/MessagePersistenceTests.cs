@@ -31,6 +31,20 @@ public class MessagePersistenceTests : IDisposable
     }
 
     [Fact]
+    public void Save_RedactsSecretShapedContent_BeforeWritingFile()
+    {
+        var path = Path.Combine(_tempDir, "out.md");
+        const string secret = "abcdef1234567890";
+
+        var result = MessagePersistence.Save(path, $"api_key={secret}", allowOverwrite: false, out _);
+
+        Assert.Equal(SaveMessageResult.Success, result);
+        var saved = File.ReadAllText(path);
+        Assert.DoesNotContain(secret, saved);
+        Assert.Contains(SecretRedactor.Mask, saved);
+    }
+
+    [Fact]
     public void Save_RejectsMissingPath()
     {
         var result = MessagePersistence.Save("", "content", false, out _);
@@ -106,6 +120,22 @@ public class MessagePersistenceTests : IDisposable
         Assert.True(ok);
         Assert.Null(detail);
         Assert.Equal("payload-text", captured);
+    }
+
+    [Fact]
+    public void Copy_RedactsSecretShapedContent_BeforeClipboardWriter()
+    {
+        string? captured = null;
+        MessagePersistence.ClipboardWriter = c => { captured = c; return true; };
+        const string secret = "abcdef1234567890";
+
+        var ok = MessagePersistence.Copy($"token={secret}", out var detail);
+
+        Assert.True(ok);
+        Assert.Null(detail);
+        Assert.NotNull(captured);
+        Assert.DoesNotContain(secret, captured);
+        Assert.Contains(SecretRedactor.Mask, captured);
     }
 
     [Fact]

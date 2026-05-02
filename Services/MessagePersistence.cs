@@ -78,7 +78,7 @@ public static class MessagePersistence
 
         try
         {
-            File.WriteAllText(fullPath, content);
+            File.WriteAllText(fullPath, SecretRedactor.Redact(content));
             return SaveMessageResult.Success;
         }
         catch (Exception ex)
@@ -128,7 +128,7 @@ public static class MessagePersistence
 
         try
         {
-            return ClipboardWriter(content);
+            return ClipboardWriter(SecretRedactor.Redact(content));
         }
         catch (Exception ex)
         {

@@ -48,6 +48,9 @@ internal static class ReportHtmlBuilder
 
     internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts, ReportSessionSummary? summary)
     {
+        prompts = RedactPrompts(prompts);
+        summary = RedactSummary(summary);
+
         var totalActions = prompts.Sum(prompt => prompt.Actions.Count);
         var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
 
@@ -737,6 +740,76 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("</html>");
 
         return sb.ToString();
+    }
+
+    private static IReadOnlyList<ReportPromptEntry> RedactPrompts(IReadOnlyList<ReportPromptEntry> prompts)
+    {
+        return prompts.Select(prompt => new ReportPromptEntry(
+            prompt.Timestamp,
+            SecretRedactor.Redact(prompt.Prompt),
+            prompt.Actions.Select(RedactAction).ToList(),
+            SecretRedactor.Redact(prompt.AgentReply))
+        {
+            StatusBar = RedactStatusBar(prompt.StatusBar)
+        }).ToList();
+    }
+
+    private static ReportActionEntry RedactAction(ReportActionEntry action)
+    {
+        return new ReportActionEntry(
+            action.Timestamp,
+            SecretRedactor.Redact(action.Target),
+            SecretRedactor.Redact(action.Command),
+            SecretRedactor.Redact(action.Output),
+            SecretRedactor.Redact(action.SafetyApproval),
+            SecretRedactor.Redact(action.Source))
+        {
+            Arguments = SecretRedactor.Redact(action.Arguments),
+            Success = action.Success,
+            ToolCallId = SecretRedactor.Redact(action.ToolCallId)
+        };
+    }
+
+    private static ReportSessionSummary? RedactSummary(ReportSessionSummary? summary)
+    {
+        if (summary == null)
+        {
+            return null;
+        }
+
+        return new ReportSessionSummary(
+            SecretRedactor.Redact(summary.CurrentModel),
+            SecretRedactor.Redact(summary.CurrentProvider),
+            RedactList(summary.ModelsUsed),
+            RedactList(summary.ConfiguredMcpServers),
+            RedactList(summary.UsedMcpServers),
+            SecretRedactor.Redact(summary.MonitoringMcp),
+            SecretRedactor.Redact(summary.TicketingMcp),
+            RedactList(summary.ApprovedMcpServersForSession),
+            RedactList(summary.PersistedApprovedMcpServers),
+            RedactList(summary.ConfiguredSkills),
+            RedactList(summary.UsedSkills),
+            SecretRedactor.Redact(summary.ExecutionMode),
+            SecretRedactor.Redact(summary.TargetServer));
+    }
+
+    private static IReadOnlyList<string> RedactList(IReadOnlyList<string> values) =>
+        values.Select(SecretRedactor.Redact).ToArray();
+
+    private static TroubleScout.UI.StatusBarInfo? RedactStatusBar(TroubleScout.UI.StatusBarInfo? statusBar)
+    {
+        if (statusBar == null)
+        {
+            return null;
+        }
+
+        return statusBar with
+        {
+            Model = SecretRedactor.Redact(statusBar.Model),
+            Provider = SecretRedactor.Redact(statusBar.Provider),
+            ReasoningEffort = SecretRedactor.Redact(statusBar.ReasoningEffort),
+            SessionCostEstimate = SecretRedactor.Redact(statusBar.SessionCostEstimate)
+        };
     }
 
     internal static string HtmlEncode(string value)
