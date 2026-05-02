@@ -134,11 +134,11 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
         entryType.Should().NotBeNull();
         sourceType.Should().NotBeNull();
-        var byokValue = Enum.Parse(sourceType, "Byok");
+        var byokValue = Enum.Parse(sourceType!, "Byok");
         var entry = Activator.CreateInstance(entryType!, "gpt-4.1", "GPT-4.1", byokValue)!;
 
         var method = typeof(TroubleshootingSession)
-            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType], null);
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType!], null);
         method.Should().NotBeNull();
 
         // Act
@@ -209,6 +209,20 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         commands.Should().Contain("/model");
         commands.Should().Contain("/mode");
         commands.Should().Contain("/reasoning");
+    }
+
+    [Fact]
+    public void SlashCommands_ShouldComeFromRegistrySuggestions()
+    {
+        var field = typeof(TroubleshootingSession).GetField("SlashCommands", BindingFlags.Static | BindingFlags.NonPublic);
+        var commands = field?.GetValue(null) as string[];
+        var registryCommands = SlashCommandRegistry.SlashCommands;
+
+        commands.Should().NotBeNull();
+        commands.Should().Equal(registryCommands);
+        SlashCommandRegistry.Commands.Should().Contain(command =>
+            command.Usage.StartsWith("/save", StringComparison.Ordinal)
+            && command.Summary.Contains("Save", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -872,6 +886,70 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildReportHtml_ShouldRedactSecretsAcrossPersistedReportContent()
+    {
+        const string secret = "abcdef1234567890";
+        var promptEntry = new ReportPromptEntry(
+            DateTimeOffset.Now,
+            $"Investigate api_key={secret}",
+            [
+                new ReportActionEntry(
+                    DateTimeOffset.Now,
+                    "localhost",
+                    $"Get-Item Env:TOKEN | Write-Output token={secret}",
+                    $"Authorization: Bearer {secret}",
+                    "SafeAuto",
+                    "PowerShell"),
+                new ReportActionEntry(
+                    DateTimeOffset.Now,
+                    "zabbix",
+                    "get_host",
+                    $"Password=\"{secret}\"",
+                    "MCP",
+                    "MCP")
+                {
+                    Arguments = $"{{\"api_key\":\"{secret}\"}}"
+                }
+            ],
+            $"Use token={secret} to reproduce.");
+
+        var html = ReportHtmlBuilder.BuildReportHtml([promptEntry]);
+
+        html.Should().NotContain(secret);
+        html.Should().Contain(SecretRedactor.Mask);
+    }
+
+    [Fact]
+    public void GetRecordedPromptSnapshot_ShouldRedactStatusBarFields()
+    {
+        const string secret = "abcdef1234567890";
+        var tracker = new ConversationHistoryTracker();
+        var promptIndex = tracker.RecordPrompt("status check");
+        tracker.SetPromptReply(promptIndex, "done");
+        tracker.SetPromptStatusBar(promptIndex, new StatusBarInfo(
+            Model: $"model token={secret}",
+            Provider: $"provider api_key={secret}",
+            InputTokens: 1,
+            OutputTokens: 2,
+            TotalTokens: 3,
+            ToolInvocations: 0,
+            SessionId: "session")
+        {
+            ReasoningEffort = $"reasoning access_token={secret}",
+            SessionCostEstimate = $"cost client_secret={secret}"
+        });
+
+        var snapshot = tracker.GetRecordedPromptSnapshot();
+
+        var statusBar = snapshot.Single().StatusBar;
+        statusBar.Should().NotBeNull();
+        statusBar!.Model.Should().NotContain(secret);
+        statusBar.Provider.Should().NotContain(secret);
+        statusBar.ReasoningEffort.Should().NotContain(secret);
+        statusBar.SessionCostEstimate.Should().NotContain(secret);
+    }
+
+    [Fact]
     public void BuildSecondOpinionPrompt_ShouldIncludePriorConversationAndActions()
     {
         // Act
@@ -965,6 +1043,43 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         prompt.Should().Contain($"## Turn 3{Environment.NewLine}");
         prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
         prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
+    }
+
+    [Fact]
+    public void BuildSecondOpinionPrompt_ShouldRedactSecretsAcrossReplayContext()
+    {
+        const string secret = "abcdef1234567890";
+        var prompt = SecondOpinionService.BuildSecondOpinionPrompt(
+            "gpt-4.1",
+            "claude-sonnet-4.6",
+            [
+                new ReportPromptEntry(
+                    DateTimeOffset.UtcNow,
+                    $"The app emitted api_key={secret}",
+                    [
+                        new ReportActionEntry(
+                            DateTimeOffset.UtcNow,
+                            "redmine",
+                            "get_issue",
+                            $"Bearer {secret}",
+                            "MCP",
+                            "MCP")
+                        {
+                            Arguments = $"{{\"token\":\"{secret}\"}}"
+                        }
+                    ],
+                    $"Prior answer mentioned token={secret}.")
+            ],
+            8,
+            24_000,
+            2_000,
+            3_000,
+            800,
+            3_000);
+
+        prompt.Should().NotContain(secret);
+        prompt.Should().Contain(SecretRedactor.Mask);
+        prompt.Should().Contain("Arguments:");
     }
 
     [Fact]
@@ -1928,12 +2043,13 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
             var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
             var config = InvokeBuildSessionConfig(session, "gpt-4.1");
+            var customAgents = config.CustomAgents!;
 
-            var monitoringAgent = config.CustomAgents!.Single(agent => agent.Name == "monitoring-investigator");
+            var monitoringAgent = customAgents.Single(agent => agent.Name == "monitoring-investigator");
             monitoringAgent.McpServers.Should().NotBeNull();
             monitoringAgent.McpServers!.Keys.Should().Equal("zabbix");
 
-            var ticketingAgent = config.CustomAgents.Single(agent => agent.Name == "ticket-investigator");
+            var ticketingAgent = customAgents.Single(agent => agent.Name == "ticket-investigator");
             ticketingAgent.McpServers.Should().NotBeNull();
             ticketingAgent.McpServers!.Keys.Should().Equal("redmine");
         });
@@ -2751,8 +2867,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         {
             Kind = "mcp",
             ServerName = serverName,
-            ToolName = toolName,
-            ToolTitle = toolName,
+            ToolName = toolName ?? string.Empty,
+            ToolTitle = toolName ?? string.Empty,
             Args = args,
             ReadOnly = true
         };
@@ -2836,7 +2952,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic);
         var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
         sourceType.Should().NotBeNull();
-        var source = Enum.Parse(sourceType, sourceName);
+        var source = Enum.Parse(sourceType!, sourceName);
 
         method.Should().NotBeNull("GetModelRateLabel should exist on TroubleshootingSession");
         return (string)method!.Invoke(session, [model, source])!;

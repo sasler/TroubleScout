@@ -130,31 +130,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ["close_server_session"]     = "Closing Server Session",
         };
 
-    private static readonly string[] SlashCommands =
-    [
-        "/help",
-        "/status",
-        "/stats",
-        "/clear",
-        "/settings",
-        "/mcp-role",
-        "/mcp-approvals",
-        "/model",
-        "/reasoning",
-        "/mode",
-        "/server",
-        "/jea",
-        "/capabilities",
-        "/history",
-        "/report",
-        "/theme",
-        "/save",
-        "/copy",
-        "/login",
-        "/byok",
-        "/exit",
-        "/quit"
-    ];
+    private static readonly string[] SlashCommands = SlashCommandRegistry.SlashCommands;
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
     {
@@ -3427,7 +3403,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.html");
         var summary = BuildReportSessionSummary();
-        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary);
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary, contentAlreadyRedacted: true);
         File.WriteAllText(reportPath, html, Encoding.UTF8);
 
         try

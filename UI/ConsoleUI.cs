@@ -562,28 +562,12 @@ public static class ConsoleUI
             .AddColumn(new TableColumn("[bold cyan]Command[/]").NoWrap())
             .AddColumn(new TableColumn("[bold cyan]Description[/]"));
 
-        commandTable.AddRow("[cyan]/help[/]", "Show this full command reference");
-        commandTable.AddRow("[cyan]/status[/]", "Show connection, model, mode, and session details");
-        commandTable.AddRow("[cyan]/stats[/]", "Show session statistics (turn count, tokens, latency p50/p95, tool counts)");
-        commandTable.AddRow("[cyan]/clear[/]", "Start new session");
-        commandTable.AddRow("[cyan]/settings[/]", "Open settings.json and reload settings after editing");
-        commandTable.AddRow("[cyan]/mcp-role[/] [grey][[<monitoring|ticketing> <server|none> | clear <monitoring|ticketing|all>]][/]", "Configure monitoring and ticketing MCP role mappings; no args opens interactive mode");
-        commandTable.AddRow("[cyan]/mcp-approvals[/] [grey][[list | clear all | clear <server>]][/]", "List or clear active and persisted MCP approvals");
-        commandTable.AddRow("[cyan]/model[/]", "Choose another AI model and session handoff mode");
-        commandTable.AddRow("[cyan]/reasoning[/] [grey][[auto|<effort>]][/]", "Set reasoning effort for the current model");
-        commandTable.AddRow("[cyan]/mode[/] [grey]<safe|yolo>[/]", "Set PowerShell execution mode");
-        commandTable.AddRow("[cyan]/server[/] [grey]<server1>[[,server2,...]][/]", "Connect to one or more servers: /server srv1[[,srv2,...]]");
-        commandTable.AddRow("[cyan]/jea[/] [grey][[server]] [[configurationName]][/]", "Connect to a JEA constrained endpoint");
-        commandTable.AddRow("[cyan]/login[/]", "Run GitHub Copilot login inside TroubleScout");
-        commandTable.AddRow("[cyan]/byok[/] [grey]<env|api-key> [[base-url]] [[model]][/]", "Enable OpenAI-compatible BYOK without GitHub auth");
-        commandTable.AddRow("[cyan]/byok clear[/]", "Clear saved BYOK settings for this profile");
-        commandTable.AddRow("[cyan]/capabilities[/]", "Show configured and used MCP servers/skills");
-        commandTable.AddRow("[cyan]/history[/]", "Show PowerShell command history for this session");
-        commandTable.AddRow("[cyan]/report[/]", "Generate and open HTML session report");
-        commandTable.AddRow("[cyan]/theme[/] [grey]<dark|mono>[/]", "Set app chrome theme (panels, status bar). Does not affect Markdown responses.");
-        commandTable.AddRow("[cyan]/save[/] [grey]<path>[/]", "Save the last assistant response (Markdown) to a file");
-        commandTable.AddRow("[cyan]/copy[/]", "Copy the last assistant response to the clipboard");
-        commandTable.AddRow("[cyan]/exit[/], [cyan]/quit[/], [cyan]exit[/], [cyan]quit[/]", "Leave the interactive session");
+        foreach (var command in SlashCommandRegistry.Commands)
+        {
+            commandTable.AddRow(
+                $"[cyan]{Markup.Escape(command.Usage)}[/]",
+                Markup.Escape(command.Summary));
+        }
 
         var helpPanel = new Panel(new Rows(
             new Markup("[grey]Interactive command reference[/]"),

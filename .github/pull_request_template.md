@@ -58,7 +58,7 @@ Closes #
 
 - [ ] Branch name follows convention: `{type}/{description}` (e.g., `feature/add-tool`, `fix/bug-name`)
 - [ ] All commits have emoji prefix or conventional commit format
-- [ ] PR title starts with emoji or conventional commit type
+- [ ] PR title starts with a gitmoji-style emoji
 - [ ] All CI checks are passing
 - [ ] Branch is up-to-date with main
 

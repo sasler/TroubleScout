@@ -195,14 +195,46 @@ internal sealed class ConversationHistoryTracker
             return _reportPrompts
                 .Select(prompt => new ReportPromptEntry(
                     prompt.Timestamp,
-                    prompt.Prompt,
-                    prompt.Actions.ToList(),
-                    prompt.AgentReply)
+                    SecretRedactor.Redact(prompt.Prompt),
+                    prompt.Actions.Select(RedactAction).ToList(),
+                    SecretRedactor.Redact(prompt.AgentReply))
                 {
-                    StatusBar = prompt.StatusBar
+                    StatusBar = RedactStatusBar(prompt.StatusBar)
                 })
                 .ToList();
         }
+    }
+
+    private static StatusBarInfo? RedactStatusBar(StatusBarInfo? statusBar)
+    {
+        if (statusBar == null)
+        {
+            return null;
+        }
+
+        return statusBar with
+        {
+            Model = SecretRedactor.Redact(statusBar.Model),
+            Provider = SecretRedactor.Redact(statusBar.Provider),
+            ReasoningEffort = SecretRedactor.Redact(statusBar.ReasoningEffort),
+            SessionCostEstimate = SecretRedactor.Redact(statusBar.SessionCostEstimate)
+        };
+    }
+
+    private static ReportActionEntry RedactAction(ReportActionEntry action)
+    {
+        return new ReportActionEntry(
+            action.Timestamp,
+            SecretRedactor.Redact(action.Target),
+            SecretRedactor.Redact(action.Command),
+            SecretRedactor.Redact(action.Output),
+            SecretRedactor.Redact(action.SafetyApproval),
+            SecretRedactor.Redact(action.Source))
+        {
+            Arguments = SecretRedactor.Redact(action.Arguments),
+            Success = action.Success,
+            ToolCallId = SecretRedactor.Redact(action.ToolCallId)
+        };
     }
 
     private void AppendActionToCurrentPrompt(ReportActionEntry actionEntry)

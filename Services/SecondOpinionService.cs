@@ -107,7 +107,7 @@ internal static class SecondOpinionService
         sb.AppendLine();
         sb.AppendLine($"## Turn {turnNumber}");
         sb.AppendLine("### User");
-        sb.AppendLine(TrimSecondOpinionText(prompt.Prompt, maxUserPromptChars));
+        sb.AppendLine(RedactAndTrim(prompt.Prompt, maxUserPromptChars));
 
         if (prompt.Actions.Count > 0)
         {
@@ -115,16 +115,24 @@ internal static class SecondOpinionService
             sb.AppendLine("### Tool actions");
             foreach (var action in prompt.Actions)
             {
-                sb.AppendLine($"- Source: {action.Source}");
-                sb.AppendLine($"  Target: {action.Target}");
-                sb.AppendLine($"  Approval: {action.SafetyApproval}");
-                sb.AppendLine($"  Command: {TrimSecondOpinionText(action.Command, maxCommandChars)}");
+                sb.AppendLine($"- Source: {SecretRedactor.Redact(action.Source)}");
+                sb.AppendLine($"  Target: {SecretRedactor.Redact(action.Target)}");
+                sb.AppendLine($"  Approval: {SecretRedactor.Redact(action.SafetyApproval)}");
+                sb.AppendLine($"  Command: {RedactAndTrim(action.Command, maxCommandChars)}");
+
+                if (!string.IsNullOrWhiteSpace(action.Arguments))
+                {
+                    sb.AppendLine("  Arguments:");
+                    sb.AppendLine(IndentMultilineText(
+                        RedactAndTrim(action.Arguments, maxToolOutputChars),
+                        "    "));
+                }
 
                 if (!string.IsNullOrWhiteSpace(action.Output))
                 {
                     sb.AppendLine("  Output:");
                     sb.AppendLine(IndentMultilineText(
-                        TrimSecondOpinionText(action.Output, maxToolOutputChars),
+                        RedactAndTrim(action.Output, maxToolOutputChars),
                         "    "));
                 }
             }
@@ -134,11 +142,14 @@ internal static class SecondOpinionService
         {
             sb.AppendLine();
             sb.AppendLine("### Assistant");
-            sb.AppendLine(TrimSecondOpinionText(prompt.AgentReply, maxReplyChars));
+            sb.AppendLine(RedactAndTrim(prompt.AgentReply, maxReplyChars));
         }
 
         return sb.ToString();
     }
+
+    private static string RedactAndTrim(string? text, int maxChars) =>
+        TrimSecondOpinionText(SecretRedactor.Redact(text), maxChars);
 
     internal static string IndentMultilineText(string text, string indent)
     {

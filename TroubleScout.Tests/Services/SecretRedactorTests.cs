@@ -166,6 +166,17 @@ public class SecretRedactorTests
     }
 
     [Theory]
+    [InlineData("{\"api_key\":\"abcdef1234567890\"}")]
+    [InlineData("{'token': 'abcdef1234567890'}")]
+    public void Redact_JsonStyleQuotedSecretKeys_MasksValue(string input)
+    {
+        var redacted = SecretRedactor.Redact(input);
+
+        redacted.Should().NotContain("abcdef1234567890");
+        redacted.Should().Contain(M);
+    }
+
+    [Theory]
     [InlineData("background_color=red")]
     [InlineData("port=8080")]
     [InlineData("hostname=db01")]
