@@ -38,6 +38,23 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
   literal markup tags.
 - Prefer ASCII-safe output where possible.
 
+## Shared GitHub/Copilot Instructions
+
+- Codex should treat this file as the primary instruction source, but also
+  inspect relevant repository GitHub assets when the task touches PRs, review
+  comments, CI, releases, or Copilot-specific workflows:
+  - `.github/pull_request_template.md`
+  - `.github/prompts/*.prompt.md`
+  - `.github/instructions/*.instructions.md` when present
+  - `.github/workflows/*.yml` for CI/release behavior
+  - `.github/skills/*/SKILL.md` when a task explicitly references those skills
+- When the user asks to implement reviewer feedback, follow
+  `.github/prompts/ImplementReviewersSuggestions.prompt.md` in addition to the
+  GitHub Workflow Rules below.
+- Pull request titles must start with a gitmoji-style emoji, for example
+  `🔐 Redact persisted session data`. This applies to PRs opened from Codex,
+  GitHub Copilot, the GitHub UI, or the Codex app Branch details panel.
+
 ## Copilot SDK Patterns (Required)
 
 ### Event handling and completion
@@ -159,6 +176,7 @@ All coding tasks must follow this workflow for each logical unit of work:
   - `fix/<short-desc>` for bug fixes
 - Before opening a PR, always bump app version in `TroubleScout.csproj` (`Version`, `AssemblyVersion`, `FileVersion`) and update `CHANGELOG.md`.
 - Commit subject must start with an emoji.
+- PR title must start with a gitmoji-style emoji.
 - Do not force-push.
 
 ## Release Packaging Rules

@@ -920,6 +920,36 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void GetRecordedPromptSnapshot_ShouldRedactStatusBarFields()
+    {
+        const string secret = "abcdef1234567890";
+        var tracker = new ConversationHistoryTracker();
+        var promptIndex = tracker.RecordPrompt("status check");
+        tracker.SetPromptReply(promptIndex, "done");
+        tracker.SetPromptStatusBar(promptIndex, new StatusBarInfo(
+            Model: $"model token={secret}",
+            Provider: $"provider api_key={secret}",
+            InputTokens: 1,
+            OutputTokens: 2,
+            TotalTokens: 3,
+            ToolInvocations: 0,
+            SessionId: "session")
+        {
+            ReasoningEffort = $"reasoning access_token={secret}",
+            SessionCostEstimate = $"cost client_secret={secret}"
+        });
+
+        var snapshot = tracker.GetRecordedPromptSnapshot();
+
+        var statusBar = snapshot.Single().StatusBar;
+        statusBar.Should().NotBeNull();
+        statusBar!.Model.Should().NotContain(secret);
+        statusBar.Provider.Should().NotContain(secret);
+        statusBar.ReasoningEffort.Should().NotContain(secret);
+        statusBar.SessionCostEstimate.Should().NotContain(secret);
+    }
+
+    [Fact]
     public void BuildSecondOpinionPrompt_ShouldIncludePriorConversationAndActions()
     {
         // Act

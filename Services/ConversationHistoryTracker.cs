@@ -199,10 +199,26 @@ internal sealed class ConversationHistoryTracker
                     prompt.Actions.Select(RedactAction).ToList(),
                     SecretRedactor.Redact(prompt.AgentReply))
                 {
-                    StatusBar = prompt.StatusBar
+                    StatusBar = RedactStatusBar(prompt.StatusBar)
                 })
                 .ToList();
         }
+    }
+
+    private static StatusBarInfo? RedactStatusBar(StatusBarInfo? statusBar)
+    {
+        if (statusBar == null)
+        {
+            return null;
+        }
+
+        return statusBar with
+        {
+            Model = SecretRedactor.Redact(statusBar.Model),
+            Provider = SecretRedactor.Redact(statusBar.Provider),
+            ReasoningEffort = SecretRedactor.Redact(statusBar.ReasoningEffort),
+            SessionCostEstimate = SecretRedactor.Redact(statusBar.SessionCostEstimate)
+        };
     }
 
     private static ReportActionEntry RedactAction(ReportActionEntry action)

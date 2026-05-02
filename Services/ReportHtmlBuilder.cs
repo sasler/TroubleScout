@@ -46,10 +46,16 @@ internal static class ReportHtmlBuilder
     internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts) =>
         BuildReportHtml(prompts, summary: null);
 
-    internal static string BuildReportHtml(IReadOnlyList<ReportPromptEntry> prompts, ReportSessionSummary? summary)
+    internal static string BuildReportHtml(
+        IReadOnlyList<ReportPromptEntry> prompts,
+        ReportSessionSummary? summary,
+        bool contentAlreadyRedacted = false)
     {
-        prompts = RedactPrompts(prompts);
-        summary = RedactSummary(summary);
+        if (!contentAlreadyRedacted)
+        {
+            prompts = RedactPrompts(prompts);
+            summary = RedactSummary(summary);
+        }
 
         var totalActions = prompts.Sum(prompt => prompt.Actions.Count);
         var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);

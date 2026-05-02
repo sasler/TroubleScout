@@ -13,6 +13,8 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.16.0] - 2026-05-02
+
 ### Security
 
 - 🔐 **Redact secrets in persisted session surfaces** - `/report`, report Markdown export/copy sources, second-opinion replay context, `/save`, and `/copy` now pass persisted content through `SecretRedactor`. User prompts, assistant replies, PowerShell command/output text, MCP arguments/output, and report summary strings are scrubbed before they leave the live terminal stream.
@@ -20,6 +22,7 @@ Add new entries here as they land. When cutting a release, rename this section t
 ### Internal
 
 - 🧭 **Start slash-command registry refactor** - slash-command suggestions and `/help` now share `SlashCommandRegistry` metadata, laying groundwork for generated docs and safer dispatcher extraction.
+- 🤖 **Bridge Codex and GitHub Copilot repo instructions** - `AGENTS.md` now points Codex at relevant `.github` prompts/templates/workflows, a shared `.github/instructions/repository.instructions.md` file gives GitHub Copilot the same PR/review expectations, and the PR template now requires gitmoji-style PR titles.
 - ✅ **Warning-clean build** - cleaned nullable warnings in `TroubleshootingSessionTests` so `dotnet build` completes with 0 warnings.
 
 ## [v1.15.0] - 2026-04-30

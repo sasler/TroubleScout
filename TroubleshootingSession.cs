@@ -3403,7 +3403,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.html");
         var summary = BuildReportSessionSummary();
-        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary);
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary, contentAlreadyRedacted: true);
         File.WriteAllText(reportPath, html, Encoding.UTF8);
 
         try
