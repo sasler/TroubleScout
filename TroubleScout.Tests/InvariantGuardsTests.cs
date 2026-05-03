@@ -222,7 +222,7 @@ public class InvariantGuardsTests
 
         var changelog = ReadRepoFile("CHANGELOG.md");
         changelog.Should().MatchRegex(
-            $@"(?m)^## \[v{Regex.Escape(version!)}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
+            $@"(?m)^## \[v{Regex.Escape(version!)}\] - \d{{4}}-\d{{2}}-\d{{2}}\r?$",
             "the GitHub release workflow requires a matching versioned CHANGELOG.md section.");
     }
 
