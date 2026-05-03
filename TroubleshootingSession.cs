@@ -130,7 +130,7 @@ public class TroubleshootingSession : IAsyncDisposable
             ["close_server_session"]     = "Closing Server Session",
         };
 
-    private static readonly string[] SlashCommands = SlashCommandRegistry.SlashCommands;
+    private static readonly string[] SlashCommands = SlashCommandDispatcher.SlashCommands;
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
     {
@@ -257,6 +257,53 @@ public class TroubleshootingSession : IAsyncDisposable
         new(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
             (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName));
+
+    private SlashCommandDispatcher CreateSlashCommandDispatcher() =>
+        new(new SlashCommandHandlers
+        {
+            ShowHelp = ConsoleUI.ShowHelp,
+            ShowStatus = includeMcpApprovals => ConsoleUI.ShowStatusPanel(
+                EffectiveTargetServer,
+                EffectiveConnectionMode,
+                _copilotSession != null,
+                SelectedModel,
+                _executionMode,
+                GetStatusFields(includeMcpApprovals: includeMcpApprovals),
+                GetAdditionalTargetsForDisplay(),
+                DefaultSessionTarget),
+            ShowStats = () => ConsoleUI.ShowStatsPanel(
+                completedTurns: _sessionUsageTracker.CompletedTurns,
+                failedTurns: _sessionUsageTracker.FailedTurns,
+                cancelledTurns: _sessionUsageTracker.CancelledTurns,
+                totalInputTokens: _sessionUsageTracker.TotalInputTokens,
+                totalOutputTokens: _sessionUsageTracker.TotalOutputTokens,
+                p50Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.5),
+                p95Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.95),
+                totalToolCalls: _sessionUsageTracker.TotalToolCalls,
+                p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
+                p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
+                costEstimate: _sessionUsageTracker.GetCostEstimateDisplay()),
+            ShowHistory = () => ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory()),
+            GetExecutionMode = () => _executionMode,
+            SetExecutionMode = SetExecutionMode,
+            SetConsoleExecutionMode = ConsoleUI.SetExecutionMode,
+            GetTheme = () => ConsoleUI.CurrentTheme,
+            SetTheme = theme => ConsoleUI.CurrentTheme = theme,
+            PersistTheme = PersistThemeSetting,
+            GetLastAssistantMessage = () => _lastAssistantMessage,
+            ConfirmOverwrite = targetPath => AnsiConsole.Confirm($"File '{targetPath}' already exists. Overwrite?", defaultValue: false),
+            ShowInfo = ConsoleUI.ShowInfo,
+            ShowWarning = ConsoleUI.ShowWarning,
+            ShowSuccess = ConsoleUI.ShowSuccess,
+            ShowError = ConsoleUI.ShowError
+        });
+
+    private static void PersistThemeSetting(string theme)
+    {
+        var settings = AppSettingsStore.Load();
+        settings.Theme = theme;
+        AppSettingsStore.Save(settings);
+    }
 
     private readonly string? _requestedModel;
     private bool _useByokOpenAi
@@ -2391,6 +2438,7 @@ public class TroubleshootingSession : IAsyncDisposable
     public async Task RunInteractiveLoopAsync()
     {
         ConsoleUI.SetExecutionMode(_executionMode);
+        var slashCommandDispatcher = CreateSlashCommandDispatcher();
 
         while (true)
         {
@@ -2405,11 +2453,16 @@ public class TroubleshootingSession : IAsyncDisposable
             // Handle commands
             var lowerInput = input.ToLowerInvariant();
             var firstToken = GetFirstInputToken(lowerInput);
-            
-            if (firstToken is "/exit" or "/quit" || IsBareExitCommand(lowerInput))
+
+            var slashCommandResult = slashCommandDispatcher.Dispatch(input);
+            if (slashCommandResult.Handled)
             {
-                ConsoleUI.ShowInfo("Ending session. Goodbye!");
-                break;
+                if (slashCommandResult.ExitRequested)
+                {
+                    break;
+                }
+
+                continue;
             }
 
             if (firstToken == "/clear")
@@ -2428,29 +2481,6 @@ public class TroubleshootingSession : IAsyncDisposable
                     ConsoleUI.ShowWarning("Could not start a new session.");
                 }
 
-                continue;
-            }
-
-            if (firstToken == "/status")
-            {
-                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(includeMcpApprovals: true), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-                continue;
-            }
-
-            if (firstToken == "/stats")
-            {
-                ConsoleUI.ShowStatsPanel(
-                    completedTurns: _sessionUsageTracker.CompletedTurns,
-                    failedTurns: _sessionUsageTracker.FailedTurns,
-                    cancelledTurns: _sessionUsageTracker.CancelledTurns,
-                    totalInputTokens: _sessionUsageTracker.TotalInputTokens,
-                    totalOutputTokens: _sessionUsageTracker.TotalOutputTokens,
-                    p50Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.5),
-                    p95Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.95),
-                    totalToolCalls: _sessionUsageTracker.TotalToolCalls,
-                    p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
-                    p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
-                    costEstimate: _sessionUsageTracker.GetCostEstimateDisplay());
                 continue;
             }
 
@@ -2643,146 +2673,9 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (firstToken == "/help")
-            {
-                ConsoleUI.ShowHelp();
-                continue;
-            }
-
-            if (firstToken == "/history")
-            {
-                ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory());
-                continue;
-            }
-
             if (firstToken == "/report")
             {
                 GenerateAndOpenReport();
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/theme"))
-            {
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2)
-                {
-                    ConsoleUI.ShowInfo($"Current theme: {ConsoleUI.CurrentTheme}");
-                    ConsoleUI.ShowInfo("Usage: /theme <dark|mono>. Theme applies to app chrome (panels, status bar) only; it does not retint Markdown responses, reasoning, or the spinner.");
-                }
-                else
-                {
-                    var requested = parts[1].Trim().ToLowerInvariant();
-                    var normalized = AppSettingsStore.NormalizeTheme(requested);
-                    if (!string.Equals(requested, normalized, StringComparison.Ordinal))
-                    {
-                        ConsoleUI.ShowWarning($"Unknown theme '{parts[1]}'. Falling back to '{normalized}'. Supported: dark, mono.");
-                    }
-
-                    ConsoleUI.CurrentTheme = normalized;
-                    var settings = AppSettingsStore.Load();
-                    settings.Theme = normalized;
-                    AppSettingsStore.Save(settings);
-                    ConsoleUI.ShowSuccess($"Theme set to '{normalized}'.");
-                }
-
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/save"))
-            {
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
-                {
-                    ConsoleUI.ShowInfo("Usage: /save <path>  — writes the last assistant message (Markdown) to disk.");
-                    continue;
-                }
-
-                var targetPath = parts[1].Trim().Trim('"');
-                var content = _lastAssistantMessage;
-                var firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: false, out var detail);
-
-                if (firstResult == Services.SaveMessageResult.FileAlreadyExists)
-                {
-                    var confirm = AnsiConsole.Confirm($"File '{targetPath}' already exists. Overwrite?", defaultValue: false);
-                    if (!confirm)
-                    {
-                        ConsoleUI.ShowInfo("Save cancelled.");
-                        continue;
-                    }
-                    firstResult = Services.MessagePersistence.Save(targetPath, content, allowOverwrite: true, out detail);
-                }
-
-                switch (firstResult)
-                {
-                    case Services.SaveMessageResult.Success:
-                        ConsoleUI.ShowSuccess($"Saved last response to '{targetPath}'.");
-                        break;
-                    case Services.SaveMessageResult.NoMessageAvailable:
-                        ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
-                        break;
-                    case Services.SaveMessageResult.PathMissing:
-                        ConsoleUI.ShowWarning("Usage: /save <path>");
-                        break;
-                    case Services.SaveMessageResult.PathIsDirectory:
-                        ConsoleUI.ShowWarning($"'{targetPath}' is a directory. Provide a file path.");
-                        break;
-                    case Services.SaveMessageResult.ParentDirectoryMissing:
-                        ConsoleUI.ShowWarning($"Parent directory does not exist: {detail}. Create it first; /save will not.");
-                        break;
-                    case Services.SaveMessageResult.WriteFailed:
-                        ConsoleUI.ShowError("Save failed", detail ?? "unknown error");
-                        break;
-                }
-
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/copy"))
-            {
-                var content = _lastAssistantMessage;
-                if (string.IsNullOrEmpty(content))
-                {
-                    ConsoleUI.ShowWarning("No assistant message captured yet — ask something first.");
-                    continue;
-                }
-
-                var ok = Services.MessagePersistence.Copy(content, out var detail);
-                if (ok)
-                {
-                    ConsoleUI.ShowSuccess("Last response copied to clipboard.");
-                }
-                else
-                {
-                    ConsoleUI.ShowError("Copy failed", string.IsNullOrEmpty(detail) ? "Clipboard not available." : detail);
-                }
-                continue;
-            }
-            if (firstToken == "/capabilities")
-            {
-                ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/mode"))
-            {
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2)
-                {
-                    ConsoleUI.ShowInfo($"Current mode: {_executionMode.ToCliValue()}");
-                    ConsoleUI.ShowInfo("Usage: /mode <safe|yolo>");
-                }
-                else if (!ExecutionModeParser.TryParse(parts[1], out var requestedMode))
-                {
-                    ConsoleUI.ShowWarning("Invalid mode. Use: safe or yolo.");
-                }
-                else
-                {
-                    SetExecutionMode(requestedMode);
-                    ConsoleUI.SetExecutionMode(_executionMode);
-                    ConsoleUI.ShowSuccess($"Execution mode set to: {_executionMode.ToCliValue()}");
-                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-                }
-
                 continue;
             }
 
@@ -3179,26 +3072,10 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private static string GetFirstInputToken(string input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return string.Empty;
-        }
-
-        var separatorIndex = input.IndexOf(' ');
-        return separatorIndex >= 0 ? input[..separatorIndex] : input;
-    }
+        => SlashCommandDispatcher.GetFirstToken(input);
 
     private static bool IsSlashCommandInvocation(string input, string command)
-    {
-        if (string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(command))
-        {
-            return false;
-        }
-
-        return input.Equals(command, StringComparison.Ordinal)
-            || input.StartsWith(command + " ", StringComparison.Ordinal);
-    }
+        => SlashCommandDispatcher.IsInvocation(input, command);
 
     private async Task<bool> ResetConversationAsync(Action<string>? updateStatus = null)
     {
@@ -3333,15 +3210,7 @@ public class TroubleshootingSession : IAsyncDisposable
         => await _byokProviderManager.IsGitHubAuthenticatedAsync(_copilotClient);
 
     private static bool IsBareExitCommand(string input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return false;
-        }
-
-        return input.Equals("exit", StringComparison.Ordinal)
-            || input.Equals("quit", StringComparison.Ordinal);
-    }
+        => SlashCommandDispatcher.IsBareExitCommand(input);
 
     private int RecordPrompt(string prompt) => _historyTracker.RecordPrompt(prompt);
 
