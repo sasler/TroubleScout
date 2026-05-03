@@ -13,6 +13,8 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.16.1] - 2026-05-03
+
 ### Internal
 
 - 🧭 **Extract slash-command dispatch** - simple interactive commands now flow through `SlashCommandDispatcher`, keeping registry-backed suggestions/help aligned while moving low-risk command behavior out of `TroubleshootingSession.RunInteractiveLoopAsync`. Added dispatcher tests for command matching, fallthrough, exit handling, `/mode`, `/theme`, `/save`, and `/copy`.
