@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using FluentAssertions;
 using TroubleScout;
 using Xunit;
@@ -202,6 +203,27 @@ public class InvariantGuardsTests
             "MCP approvals; do not rename without a migration.");
         prop!.PropertyType.Should().Be(typeof(List<string>),
             "PersistedApprovedMcpServers must remain a nullable list of server names.");
+    }
+
+    [Fact]
+    public void ProjectVersion_HasMatchingChangelogReleaseSection()
+    {
+        // The release workflow extracts notes from a versioned CHANGELOG.md
+        // section. A tag push fails late if the project version was bumped but
+        // the changelog entry is still under [Unreleased].
+        var projectPath = Path.Combine(RepoRootPath.Value, "TroubleScout.csproj");
+        var project = XDocument.Load(projectPath);
+        var version = project
+            .Descendants("Version")
+            .Select(element => element.Value.Trim())
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+        version.Should().NotBeNullOrWhiteSpace("TroubleScout.csproj must declare a release version.");
+
+        var changelog = ReadRepoFile("CHANGELOG.md");
+        changelog.Should().MatchRegex(
+            $@"(?m)^## \[v{Regex.Escape(version!)}\] - \d{{4}}-\d{{2}}-\d{{2}}\r?$",
+            "the GitHub release workflow requires a matching versioned CHANGELOG.md section.");
     }
 
     private static IEnumerable<Type> SafeGetTypes(Assembly assembly)
