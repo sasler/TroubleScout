@@ -1,6 +1,5 @@
 using FluentAssertions;
 using TroubleScout.Services;
-using TroubleScout.UI;
 using Xunit;
 
 namespace TroubleScout.Tests.Services;
