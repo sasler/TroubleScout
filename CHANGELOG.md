@@ -13,6 +13,16 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.16.2] - 2026-05-09
+
+### Documentation
+
+- 🧭 **Generate slash-command reference from the registry** - `SlashCommandRegistry` now carries the category, usage, summary, details, and examples needed to render `docs/slash-commands.md`, and a drift test fails when the checked-in reference no longer matches the registry-generated Markdown.
+
+### Security
+
+- 🔒 **Patch Nerdbank.MessagePack advisory** - pin `Nerdbank.MessagePack` to `1.1.62` to avoid the vulnerable transitive `1.0.2` pulled in through the Copilot/JSON-RPC dependency chain.
+
 ## [v1.16.1] - 2026-05-03
 
 ### Internal
