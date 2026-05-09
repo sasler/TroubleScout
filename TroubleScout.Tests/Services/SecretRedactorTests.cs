@@ -177,6 +177,19 @@ public class SecretRedactorTests
     }
 
     [Theory]
+    [InlineData("Invoke-Thing -Token abcdef1234567890")]
+    [InlineData("tool --api-key abcdef1234567890")]
+    [InlineData("cmd /client-secret abcdef1234567890")]
+    [InlineData("Invoke-Thing -Password \"abcdef1234567890\"")]
+    public void Redact_SecretCommandParameters_MasksValue(string input)
+    {
+        var redacted = SecretRedactor.Redact(input);
+
+        redacted.Should().NotContain("abcdef1234567890");
+        redacted.Should().Contain(M);
+    }
+
+    [Theory]
     [InlineData("background_color=red")]
     [InlineData("port=8080")]
     [InlineData("hostname=db01")]

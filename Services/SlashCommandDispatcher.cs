@@ -20,7 +20,12 @@ internal sealed class SlashCommandHandlers
     internal Action<string> SetTheme { get; init; } = static _ => { };
     internal Action<string> PersistTheme { get; init; } = static _ => { };
     internal Func<string?> GetLastAssistantMessage { get; init; } = static () => null;
+    internal Func<List<ReportPromptEntry>> GetRecordedPrompts { get; init; } = static () => [];
+    internal Func<ReportSessionSummary?> GetReportSessionSummary { get; init; } = static () => null;
+    internal Action<IReadOnlyList<ReportPromptEntry>> ReplaceRecordedPrompts { get; init; } = static _ => { };
+    internal Func<bool> HasRecordedHistory { get; init; } = static () => false;
     internal Func<string, bool> ConfirmOverwrite { get; init; } = static _ => false;
+    internal Func<bool> ConfirmTranscriptLoadReplace { get; init; } = static () => false;
     internal Action<string> ShowInfo { get; init; } = static _ => { };
     internal Action<string> ShowWarning { get; init; } = static _ => { };
     internal Action<string> ShowSuccess { get; init; } = static _ => { };
@@ -100,6 +105,12 @@ internal sealed class SlashCommandDispatcher
         if (IsInvocation(lowerInput, "/save"))
         {
             HandleSaveCommand(trimmedInput);
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(lowerInput, "/transcript"))
+        {
+            HandleTranscriptCommand(trimmedInput);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -207,6 +218,150 @@ internal sealed class SlashCommandDispatcher
         }
 
         ShowSaveResult(result, targetPath, detail);
+    }
+
+    private void HandleTranscriptCommand(string input)
+    {
+        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            ShowTranscriptUsage();
+            return;
+        }
+
+        var verb = parts[1].Trim().ToLowerInvariant();
+        if (verb is not ("save" or "load"))
+        {
+            _handlers.ShowWarning("Invalid transcript action. Use: save or load.");
+            ShowTranscriptUsage();
+            return;
+        }
+
+        if (parts.Length < 3 || string.IsNullOrWhiteSpace(parts[2]))
+        {
+            ShowTranscriptUsage();
+            return;
+        }
+
+        var targetPath = parts[2].Trim().Trim('"');
+        if (verb == "save")
+        {
+            HandleTranscriptSave(targetPath);
+        }
+        else
+        {
+            HandleTranscriptLoad(targetPath);
+        }
+    }
+
+    private void ShowTranscriptUsage()
+    {
+        _handlers.ShowInfo("Usage: /transcript save <path>  — writes the current redacted session transcript to disk.");
+        _handlers.ShowInfo("Usage: /transcript load <path>  — loads a redacted transcript into the current session history.");
+    }
+
+    private void HandleTranscriptSave(string targetPath)
+    {
+        var result = SessionTranscriptService.Save(
+            targetPath,
+            _handlers.GetRecordedPrompts(),
+            _handlers.GetReportSessionSummary(),
+            allowOverwrite: false,
+            out var detail);
+
+        if (result == SessionTranscriptSaveResult.FileAlreadyExists)
+        {
+            if (!_handlers.ConfirmOverwrite(targetPath))
+            {
+                _handlers.ShowInfo("Transcript save cancelled.");
+                return;
+            }
+
+            result = SessionTranscriptService.Save(
+                targetPath,
+                _handlers.GetRecordedPrompts(),
+                _handlers.GetReportSessionSummary(),
+                allowOverwrite: true,
+                out detail);
+        }
+
+        ShowTranscriptSaveResult(result, targetPath, detail);
+    }
+
+    private void HandleTranscriptLoad(string targetPath)
+    {
+        var result = SessionTranscriptService.Load(targetPath, out var transcript, out var detail);
+        if (result != SessionTranscriptLoadResult.Success)
+        {
+            ShowTranscriptLoadResult(result, targetPath, detail, promptCount: 0);
+            return;
+        }
+
+        if (_handlers.HasRecordedHistory() && !_handlers.ConfirmTranscriptLoadReplace())
+        {
+            _handlers.ShowInfo("Transcript load cancelled.");
+            return;
+        }
+
+        _handlers.ReplaceRecordedPrompts(transcript!.Prompts);
+        ShowTranscriptLoadResult(result, targetPath, detail, transcript.Prompts.Count);
+    }
+
+    private void ShowTranscriptSaveResult(SessionTranscriptSaveResult result, string targetPath, string? detail)
+    {
+        switch (result)
+        {
+            case SessionTranscriptSaveResult.Success:
+                _handlers.ShowSuccess($"Saved redacted transcript to '{targetPath}'.");
+                break;
+            case SessionTranscriptSaveResult.NoHistory:
+                _handlers.ShowWarning("No session history captured yet — ask something first.");
+                break;
+            case SessionTranscriptSaveResult.PathMissing:
+                ShowTranscriptUsage();
+                break;
+            case SessionTranscriptSaveResult.PathIsDirectory:
+                _handlers.ShowWarning($"'{targetPath}' is a directory. Provide a file path.");
+                break;
+            case SessionTranscriptSaveResult.ParentDirectoryMissing:
+                _handlers.ShowWarning($"Parent directory does not exist: {detail}. Create it first; /transcript will not.");
+                break;
+            case SessionTranscriptSaveResult.WriteFailed:
+                _handlers.ShowError("Transcript save failed", detail ?? "unknown error");
+                break;
+        }
+    }
+
+    private void ShowTranscriptLoadResult(SessionTranscriptLoadResult result, string targetPath, string? detail, int promptCount)
+    {
+        switch (result)
+        {
+            case SessionTranscriptLoadResult.Success:
+                _handlers.ShowSuccess($"Loaded {promptCount} transcript prompt(s) from '{targetPath}'.");
+                _handlers.ShowInfo("Loaded history is now available to /report and /model second-opinion context.");
+                break;
+            case SessionTranscriptLoadResult.PathMissing:
+                ShowTranscriptUsage();
+                break;
+            case SessionTranscriptLoadResult.FileNotFound:
+                _handlers.ShowWarning($"Transcript file not found: {targetPath}");
+                break;
+            case SessionTranscriptLoadResult.PathIsDirectory:
+                _handlers.ShowWarning($"'{targetPath}' is a directory. Provide a transcript file path.");
+                break;
+            case SessionTranscriptLoadResult.MalformedJson:
+                _handlers.ShowError("Transcript load failed", detail ?? "The file is not valid transcript JSON.");
+                break;
+            case SessionTranscriptLoadResult.UnsupportedSchemaVersion:
+                _handlers.ShowError("Transcript load failed", detail ?? "Unsupported transcript schema version.");
+                break;
+            case SessionTranscriptLoadResult.EmptyTranscript:
+                _handlers.ShowWarning("Transcript does not contain any prompt entries.");
+                break;
+            case SessionTranscriptLoadResult.ReadFailed:
+                _handlers.ShowError("Transcript load failed", detail ?? "unknown error");
+                break;
+        }
     }
 
     private void ShowSaveResult(SaveMessageResult result, string targetPath, string? detail)

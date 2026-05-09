@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.0] - 2026-05-09
+
+### Features
+
+- 📝 **Opt-in transcript export and import** - `/transcript save <path>` writes a redacted, versioned session transcript JSON file, and `/transcript load <path>` imports validated transcript history so `/report` and `/model` second-opinion context can reuse it. Transcript persistence remains explicit and is never automatic.
+
 ## [v1.16.2] - 2026-05-09
 
 ### Documentation

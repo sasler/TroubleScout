@@ -171,4 +171,113 @@ public class SlashCommandDispatcherTests
         result.Handled.Should().BeTrue();
         warnings.Should().Contain(message => message.Contains("No assistant message captured yet", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Dispatch_WithTranscriptSave_ShouldWriteCurrentHistory()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var path = Path.Combine(tempDir, "session.json");
+        var successes = new List<string>();
+        try
+        {
+            var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+            {
+                GetRecordedPrompts = () =>
+                [
+                    new ReportPromptEntry(DateTimeOffset.UtcNow, "Check services", [], "Looks healthy.")
+                ],
+                GetReportSessionSummary = () => null,
+                ShowSuccess = successes.Add
+            });
+
+            var result = dispatcher.Dispatch($"/transcript save \"{path}\"");
+
+            result.Handled.Should().BeTrue();
+            File.Exists(path).Should().BeTrue();
+            successes.Should().Contain(message => message.Contains("Saved redacted transcript", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Dispatch_WithTranscriptLoadAndExistingHistoryDenied_ShouldNotReplaceHistory()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var path = Path.Combine(tempDir, "session.json");
+        try
+        {
+            SessionTranscriptService.Save(
+                path,
+                [new ReportPromptEntry(DateTimeOffset.UtcNow, "Imported prompt", [], "Imported reply")],
+                summary: null,
+                allowOverwrite: false,
+                out _).Should().Be(SessionTranscriptSaveResult.Success);
+
+            var replaceCalls = 0;
+            var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+            {
+                HasRecordedHistory = () => true,
+                ConfirmTranscriptLoadReplace = () => false,
+                ReplaceRecordedPrompts = _ => replaceCalls++
+            });
+
+            var result = dispatcher.Dispatch($"/transcript load \"{path}\"");
+
+            result.Handled.Should().BeTrue();
+            replaceCalls.Should().Be(0);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Dispatch_WithTranscriptLoad_ShouldReplaceHistoryWithImportedPrompts()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var path = Path.Combine(tempDir, "session.json");
+        try
+        {
+            SessionTranscriptService.Save(
+                path,
+                [new ReportPromptEntry(DateTimeOffset.UtcNow, "Imported prompt", [], "Imported reply")],
+                summary: null,
+                allowOverwrite: false,
+                out _).Should().Be(SessionTranscriptSaveResult.Success);
+
+            IReadOnlyList<ReportPromptEntry>? imported = null;
+            var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+            {
+                HasRecordedHistory = () => false,
+                ReplaceRecordedPrompts = prompts => imported = prompts
+            });
+
+            var result = dispatcher.Dispatch($"/transcript load \"{path}\"");
+
+            result.Handled.Should().BeTrue();
+            imported.Should().NotBeNull();
+            imported!.Should().ContainSingle();
+            imported![0].Prompt.Should().Be("Imported prompt");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
 }

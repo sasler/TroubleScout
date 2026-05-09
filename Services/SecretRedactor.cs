@@ -81,6 +81,16 @@ internal static class SecretRedactor
         + @"(?<value>[^""'\r\n]{4,})\k<valueQuote>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // PowerShell/CLI parameter shape: -Token value, --api-key value,
+    // /client-secret value. This catches command transcripts where the secret
+    // value is passed as a separate argument instead of key=value.
+    private static readonly Regex SecretParameterPattern = new(
+        @"(?<prefix>(?:--?|/)(?:api[_\-]?key|apikey|access[_\-]?key|access[_\-]?token|"
+        + @"refresh[_\-]?token|private[_\-]?key|privatekey|ssh[_\-]?key|auth[_\-]?key|"
+        + @"session[_\-]?key|secret[_\-]?key|client[_\-]?secret|secret|token|"
+        + @"credential|passphrase|password|pwd)\s+)(?<quote>[""']?)(?<value>[^""'\s,;]{4,})\k<quote>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     /// <summary>
     /// Returns a copy of <paramref name="input"/> with secret-shaped substrings
     /// replaced by <see cref="Mask"/>. Returns the input unchanged when null,
@@ -112,6 +122,11 @@ internal static class SecretRedactor
             $"{m.Groups["key"].Value}={Mask}");
         result = QuotedKeyValueSecretPattern.Replace(result, m =>
             $"{m.Groups["prefix"].Value}{Mask}{m.Groups["valueQuote"].Value}");
+        result = SecretParameterPattern.Replace(result, m =>
+        {
+            var quote = m.Groups["quote"].Value;
+            return $"{m.Groups["prefix"].Value}{quote}{Mask}{quote}";
+        });
         result = KeyValueSecretPattern.Replace(result, m =>
         {
             var quote = m.Groups["quote"].Value;
@@ -137,6 +152,7 @@ internal static class SecretRedactor
             || ConnectionStringQuotedSecretPattern.IsMatch(input)
             || ConnectionStringSecretPattern.IsMatch(input)
             || QuotedKeyValueSecretPattern.IsMatch(input)
+            || SecretParameterPattern.IsMatch(input)
             || KeyValueSecretPattern.IsMatch(input);
     }
 }

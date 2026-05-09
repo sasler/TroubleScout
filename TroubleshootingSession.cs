@@ -291,7 +291,12 @@ public class TroubleshootingSession : IAsyncDisposable
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = PersistThemeSetting,
             GetLastAssistantMessage = () => _lastAssistantMessage,
-            ConfirmOverwrite = targetPath => AnsiConsole.Confirm($"File '{targetPath}' already exists. Overwrite?", defaultValue: false),
+            GetRecordedPrompts = GetRecordedPromptSnapshot,
+            GetReportSessionSummary = BuildReportSessionSummary,
+            ReplaceRecordedPrompts = ReplaceRecordedConversationHistory,
+            HasRecordedHistory = HasRecordedConversationHistory,
+            ConfirmOverwrite = targetPath => AnsiConsole.Confirm(SafeMarkup.Interpolate($"File '{targetPath}' already exists. Overwrite?"), defaultValue: false),
+            ConfirmTranscriptLoadReplace = () => AnsiConsole.Confirm("Loading this transcript will replace the current recorded session history. Continue?", defaultValue: false),
             ShowInfo = ConsoleUI.ShowInfo,
             ShowWarning = ConsoleUI.ShowWarning,
             ShowSuccess = ConsoleUI.ShowSuccess,
@@ -3221,6 +3226,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private void RecordMcpToolAction(ToolExecutionStartEvent toolStart) => _historyTracker.RecordMcpToolAction(toolStart);
 
     private void ClearRecordedConversationHistory() => _historyTracker.ClearRecordedConversationHistory();
+
+    private void ReplaceRecordedConversationHistory(IReadOnlyList<ReportPromptEntry> prompts) => _historyTracker.ReplaceRecordedConversationHistory(prompts);
 
     private bool HasRecordedConversationHistory() => _historyTracker.HasRecordedConversationHistory();
 

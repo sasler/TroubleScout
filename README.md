@@ -34,6 +34,7 @@ If you just want to get started, jump to [Installation](#installation).
 - **Multi-server sessions**: Start with several servers at once or add more during the session.
 - **JEA support**: Connect to constrained PowerShell remoting endpoints with [Just Enough Administration](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview).
 - **HTML report**: Generate a session report with `/report` when you want a shareable troubleshooting summary.
+- **Opt-in transcripts**: Save and load redacted session transcript JSON files with `/transcript` when you want replayable context.
 - **Interactive terminal UI**: Streamed responses, session status, prompt history, and cancellation are built into the console experience.
 - **Model and provider flexibility**: Use GitHub Copilot by default or switch to OpenAI-compatible BYOK mode if needed.
 - **Reasoning visibility**: Supported reasoning models can show their thinking output and let you adjust reasoning effort.
@@ -182,6 +183,7 @@ A short reference is shown below. The full per-command documentation lives in
 | `/capabilities` | Show configured and used MCP servers and skills. |
 | `/history` | Show PowerShell command history. |
 | `/report` | Generate and open the HTML session report. |
+| `/transcript save or load <path>` | Save or load a redacted transcript for report and second-opinion context. |
 | `/exit` or `/quit` | End the session. |
 
 ## Command-Line Reference

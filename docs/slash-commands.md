@@ -46,6 +46,25 @@ Generate a self-contained HTML report of the current session and open it in the 
 
 The report mirrors the terminal status bar per prompt and includes a session-wide summary.
 
+### `/transcript save|load <path>`
+
+Save or load a redacted session transcript JSON file.
+
+- `save` writes the current recorded prompts, assistant replies, tool actions, status bars, and session summary metadata to a versioned JSON file.
+
+- `load` validates a transcript file and replaces the current recorded history after confirmation when history already exists.
+
+Loaded transcripts are immediately available to `/report` and `/model` second-opinion context.
+
+Transcript persistence is always explicit; TroubleScout does not automatically write transcript files.
+
+Examples:
+
+```text
+/transcript save C:\Temp\troublescout-session.json
+/transcript load C:\Temp\troublescout-session.json
+```
+
 ### `/exit, /quit, exit, quit`
 
 Leave the interactive session.
