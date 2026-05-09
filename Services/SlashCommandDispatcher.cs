@@ -326,6 +326,9 @@ internal sealed class SlashCommandDispatcher
             case SessionTranscriptSaveResult.ParentDirectoryMissing:
                 _handlers.ShowWarning($"Parent directory does not exist: {detail}. Create it first; /transcript will not.");
                 break;
+            case SessionTranscriptSaveResult.FileAlreadyExists:
+                _handlers.ShowWarning($"'{targetPath}' already exists. Transcript was not overwritten.");
+                break;
             case SessionTranscriptSaveResult.WriteFailed:
                 _handlers.ShowError("Transcript save failed", detail ?? "unknown error");
                 break;

@@ -207,6 +207,23 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public void ShowTranscriptSaveResult_WithFileAlreadyExists_ShouldWarnUser()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ShowWarning = warnings.Add
+        });
+        var method = typeof(SlashCommandDispatcher)
+            .GetMethod("ShowTranscriptSaveResult", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        method.Should().NotBeNull();
+        method!.Invoke(dispatcher, [SessionTranscriptSaveResult.FileAlreadyExists, "session.json", null]);
+
+        warnings.Should().Contain(message => message.Contains("already exists", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Dispatch_WithTranscriptLoadAndExistingHistoryDenied_ShouldNotReplaceHistory()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
