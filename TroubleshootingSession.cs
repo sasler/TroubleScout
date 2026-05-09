@@ -290,6 +290,27 @@ public class TroubleshootingSession : IAsyncDisposable
             GetTheme = () => ConsoleUI.CurrentTheme,
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = PersistThemeSetting,
+            GetSelectedModelInfo = GetSelectedModelInfo,
+            GetSelectedModelName = () => SelectedModel,
+            GetSelectedModelId = () => _selectedModel,
+            GetConfiguredReasoningEffort = () => _configuredReasoningEffort,
+            ApplyReasoningEffortSetting = ApplyReasoningEffortSetting,
+            SaveReasoningEffortState = SaveReasoningEffortState,
+            GetReasoningDisplay = GetReasoningDisplay,
+            PromptReasoningEffort = ConsoleUI.PromptReasoningEffort,
+            HasActiveCopilotSession = () => _copilotSession != null,
+            RunWithSpinnerAsync = ConsoleUI.RunWithSpinnerAsync,
+            RecreateCopilotSession = async (targetModel, updateStatus) =>
+            {
+                if (_copilotSession != null)
+                {
+                    await _copilotSession.DisposeAsync();
+                    _copilotSession = null;
+                }
+
+                return await CreateCopilotSessionAsync(targetModel, updateStatus);
+            },
+            ShowModelSelectionSummary = () => ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails()),
             GetLastAssistantMessage = () => _lastAssistantMessage,
             GetRecordedPrompts = GetRecordedPromptSnapshot,
             GetReportSessionSummary = BuildReportSessionSummary,
@@ -956,58 +977,26 @@ public class TroubleshootingSession : IAsyncDisposable
     private ModelInfo? GetModelInfo(string? modelId)
         => _modelDiscovery.GetModelInfo(modelId);
 
-    private static string? NormalizeReasoningEffort(string? reasoningEffort)
-    {
-        if (string.IsNullOrWhiteSpace(reasoningEffort))
-        {
-            return null;
-        }
-
-        var normalized = reasoningEffort.Trim().ToLowerInvariant();
-        return normalized is "auto" or "default" ? null : normalized;
-    }
-
     private void ApplyReasoningEffortSetting(string? reasoningEffort)
     {
-        _configuredReasoningEffort = NormalizeReasoningEffort(reasoningEffort);
+        _configuredReasoningEffort = ReasoningEffortHelper.Normalize(reasoningEffort);
     }
-
-    private static bool SupportsReasoningEffort(ModelInfo? model) =>
-        model?.Capabilities?.Supports?.ReasoningEffort == true;
-
-    private static IReadOnlyList<string> GetSupportedReasoningEfforts(ModelInfo? model)
-    {
-        if (model?.SupportedReasoningEfforts is not { Count: > 0 })
-        {
-            return [];
-        }
-
-        return model.SupportedReasoningEfforts
-            .Select(NormalizeReasoningEffort)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static string? GetDefaultReasoningEffort(ModelInfo? model) =>
-        NormalizeReasoningEffort(model?.DefaultReasoningEffort);
 
     private string? ResolveConfiguredReasoningEffort(string? modelId)
     {
-        var configured = NormalizeReasoningEffort(_configuredReasoningEffort);
+        var configured = ReasoningEffortHelper.Normalize(_configuredReasoningEffort);
         if (string.IsNullOrWhiteSpace(configured))
         {
             return null;
         }
 
         var model = GetModelInfo(modelId);
-        if (!SupportsReasoningEffort(model))
+        if (!ReasoningEffortHelper.SupportsReasoningEffort(model))
         {
             return null;
         }
 
-        var supported = GetSupportedReasoningEfforts(model);
+        var supported = ReasoningEffortHelper.GetSupportedReasoningEfforts(model);
         if (supported.Count == 0 || supported.Contains(configured, StringComparer.OrdinalIgnoreCase))
         {
             return configured;
@@ -1018,12 +1007,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private string? GetReasoningDisplay(ModelInfo? model)
     {
-        if (!SupportsReasoningEffort(model))
+        if (!ReasoningEffortHelper.SupportsReasoningEffort(model))
         {
             return null;
         }
 
-        var active = NormalizeReasoningEffort(_selectedReasoningEffort);
+        var active = ReasoningEffortHelper.Normalize(_selectedReasoningEffort);
         if (!string.IsNullOrWhiteSpace(active))
         {
             return active;
@@ -1035,7 +1024,7 @@ public class TroubleshootingSession : IAsyncDisposable
             return configured;
         }
 
-        var defaultReasoning = GetDefaultReasoningEffort(model);
+        var defaultReasoning = ReasoningEffortHelper.GetDefaultReasoningEffort(model);
         return string.IsNullOrWhiteSpace(defaultReasoning)
             ? "auto"
             : $"auto ({defaultReasoning})";
@@ -1892,7 +1881,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private static void SaveReasoningEffortState(string? reasoningEffort)
     {
         var settings = AppSettingsStore.Load();
-        settings.ReasoningEffort = NormalizeReasoningEffort(reasoningEffort);
+        settings.ReasoningEffort = ReasoningEffortHelper.Normalize(reasoningEffort);
         AppSettingsStore.Save(settings);
     }
 
@@ -2459,7 +2448,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var lowerInput = input.ToLowerInvariant();
             var firstToken = GetFirstInputToken(lowerInput);
 
-            var slashCommandResult = slashCommandDispatcher.Dispatch(input);
+            var slashCommandResult = await slashCommandDispatcher.DispatchAsync(input);
             if (slashCommandResult.Handled)
             {
                 if (slashCommandResult.ExitRequested)
@@ -2681,88 +2670,6 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/report")
             {
                 GenerateAndOpenReport();
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/reasoning"))
-            {
-                var currentModel = GetSelectedModelInfo();
-                if (currentModel == null)
-                {
-                    ConsoleUI.ShowWarning("No active model is selected yet. Use /model first.");
-                    continue;
-                }
-
-                if (!SupportsReasoningEffort(currentModel))
-                {
-                    ConsoleUI.ShowInfo($"The current model '{SelectedModel}' does not expose reasoning-effort controls.");
-                    continue;
-                }
-
-                var supportedEfforts = GetSupportedReasoningEfforts(currentModel);
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                string? requestedReasoningEffort;
-
-                if (parts.Length < 2)
-                {
-                    requestedReasoningEffort = ConsoleUI.PromptReasoningEffort(
-                        _configuredReasoningEffort,
-                        supportedEfforts,
-                        GetDefaultReasoningEffort(currentModel));
-                }
-                else
-                {
-                    requestedReasoningEffort = NormalizeReasoningEffort(parts[1]);
-                    if (!string.IsNullOrWhiteSpace(requestedReasoningEffort)
-                        && supportedEfforts.Count > 0
-                        && !supportedEfforts.Contains(requestedReasoningEffort, StringComparer.OrdinalIgnoreCase))
-                    {
-                        ConsoleUI.ShowWarning($"Unsupported reasoning effort '{parts[1].Trim()}'. Supported values: {string.Join(", ", supportedEfforts)} or auto.");
-                        continue;
-                    }
-                }
-
-                var previousReasoningEffort = _configuredReasoningEffort;
-                var normalizedReasoningEffort = NormalizeReasoningEffort(requestedReasoningEffort);
-                if (string.Equals(previousReasoningEffort, normalizedReasoningEffort, StringComparison.OrdinalIgnoreCase))
-                {
-                    ConsoleUI.ShowInfo($"Reasoning remains: {GetReasoningDisplay(currentModel)}");
-                    continue;
-                }
-
-                ApplyReasoningEffortSetting(normalizedReasoningEffort);
-                SaveReasoningEffortState(normalizedReasoningEffort);
-
-                if (_copilotSession != null)
-                {
-                    var targetModel = string.IsNullOrWhiteSpace(_selectedModel) ? currentModel.Id : _selectedModel;
-                    var spinnerLabel = string.IsNullOrWhiteSpace(normalizedReasoningEffort)
-                        ? "Restoring automatic reasoning..."
-                        : $"Applying reasoning {normalizedReasoningEffort}...";
-
-                    var success = await ConsoleUI.RunWithSpinnerAsync(spinnerLabel, async updateStatus =>
-                    {
-                        updateStatus("Restarting AI session...");
-                        await _copilotSession.DisposeAsync();
-                        _copilotSession = null;
-                        return await CreateCopilotSessionAsync(targetModel, updateStatus);
-                    });
-
-                    if (success)
-                    {
-                        ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
-                    }
-                    else
-                    {
-                        ApplyReasoningEffortSetting(previousReasoningEffort);
-                        SaveReasoningEffortState(previousReasoningEffort);
-                    }
-                }
-                else
-                {
-                    ConsoleUI.ShowSuccess($"Reasoning preference saved: {GetReasoningDisplay(currentModel) ?? "auto"}");
-                }
-
                 continue;
             }
 
@@ -3421,7 +3328,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         ResetStateForNewAiSession();
-        _selectedReasoningEffort = NormalizeReasoningEffort(config.ReasoningEffort);
+        _selectedReasoningEffort = ReasoningEffortHelper.Normalize(config.ReasoningEffort);
 
         if (_configurationWarnings.Count > 0)
         {
@@ -3468,7 +3375,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     _selectedModel = startEvt.Data.SelectedModel;
                 }
 
-                _selectedReasoningEffort = NormalizeReasoningEffort(startEvt.Data?.ReasoningEffort);
+                _selectedReasoningEffort = ReasoningEffortHelper.Normalize(startEvt.Data?.ReasoningEffort);
 
                 if (!string.IsNullOrWhiteSpace(startEvt.Data?.CopilotVersion))
                 {
@@ -3483,7 +3390,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     _selectedModel = modelChangeEvt.Data.NewModel;
                 }
 
-                _selectedReasoningEffort = NormalizeReasoningEffort(modelChangeEvt.Data?.ReasoningEffort);
+                _selectedReasoningEffort = ReasoningEffortHelper.Normalize(modelChangeEvt.Data?.ReasoningEffort);
 
                 break;
 

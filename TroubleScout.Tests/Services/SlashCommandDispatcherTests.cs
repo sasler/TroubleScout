@@ -1,4 +1,5 @@
 using FluentAssertions;
+using GitHub.Copilot.SDK;
 using TroubleScout.Services;
 using Xunit;
 
@@ -297,4 +298,182 @@ public class SlashCommandDispatcherTests
             }
         }
     }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningAndNoSelectedModel_ShouldWarnUser()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = () => null,
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning high");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("No active model is selected yet. Use /model first.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningOnUnsupportedModel_ShouldInformUser()
+    {
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = () => new ModelInfo { Id = "gpt-4.1", Name = "GPT 4.1" },
+            GetSelectedModelName = () => "gpt-4.1",
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning high");
+
+        result.Handled.Should().BeTrue();
+        messages.Should().Contain("The current model 'gpt-4.1' does not expose reasoning-effort controls.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningUnsupportedEffort_ShouldWarnAndNotSave()
+    {
+        var warnings = new List<string>();
+        var saveCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = CreateReasoningModel,
+            SaveReasoningEffortState = _ => saveCalls++,
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning extreme");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Unsupported reasoning effort 'extreme'. Supported values: low, medium, high or auto.");
+        saveCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithSameReasoningEffort_ShouldNotSaveOrRestart()
+    {
+        var messages = new List<string>();
+        var saveCalls = 0;
+        var restartCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = CreateReasoningModel,
+            GetConfiguredReasoningEffort = () => "high",
+            GetReasoningDisplay = _ => "high",
+            SaveReasoningEffortState = _ => saveCalls++,
+            RecreateCopilotSession = (_, _) =>
+            {
+                restartCalls++;
+                return Task.FromResult(true);
+            },
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning high");
+
+        result.Handled.Should().BeTrue();
+        messages.Should().Contain("Reasoning remains: high");
+        saveCalls.Should().Be(0);
+        restartCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningAndNoActiveSession_ShouldSavePreference()
+    {
+        string? applied = null;
+        string? saved = null;
+        var successes = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = CreateReasoningModel,
+            ApplyReasoningEffortSetting = value => applied = value,
+            SaveReasoningEffortState = value => saved = value,
+            GetReasoningDisplay = _ => "medium",
+            HasActiveCopilotSession = () => false,
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning medium");
+
+        result.Handled.Should().BeTrue();
+        applied.Should().Be("medium");
+        saved.Should().Be("medium");
+        successes.Should().Contain("Reasoning preference saved: medium");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningAndActiveSession_ShouldRestartSessionWithSpinner()
+    {
+        string? spinnerLabel = null;
+        string? restartedModel = null;
+        var summaries = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = CreateReasoningModel,
+            GetSelectedModelId = () => "gpt-5",
+            ApplyReasoningEffortSetting = _ => { },
+            SaveReasoningEffortState = _ => { },
+            HasActiveCopilotSession = () => true,
+            RunWithSpinnerAsync = async (label, action) =>
+            {
+                spinnerLabel = label;
+                return await action(_ => { });
+            },
+            RecreateCopilotSession = (model, _) =>
+            {
+                restartedModel = model;
+                return Task.FromResult(true);
+            },
+            ShowModelSelectionSummary = () => summaries++
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning high");
+
+        result.Handled.Should().BeTrue();
+        spinnerLabel.Should().Be("Applying reasoning high...");
+        restartedModel.Should().Be("gpt-5");
+        summaries.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReasoningRestartFailure_ShouldRestorePreviousPreference()
+    {
+        var applied = new List<string?>();
+        var saved = new List<string?>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSelectedModelInfo = CreateReasoningModel,
+            GetSelectedModelId = () => "gpt-5",
+            GetConfiguredReasoningEffort = () => "low",
+            ApplyReasoningEffortSetting = applied.Add,
+            SaveReasoningEffortState = saved.Add,
+            HasActiveCopilotSession = () => true,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            RecreateCopilotSession = (_, _) => Task.FromResult(false)
+        });
+
+        var result = await dispatcher.DispatchAsync("/reasoning high");
+
+        result.Handled.Should().BeTrue();
+        applied.Should().Equal("high", "low");
+        saved.Should().Equal("high", "low");
+    }
+
+    private static ModelInfo CreateReasoningModel() =>
+        new()
+        {
+            Id = "gpt-5",
+            Name = "GPT 5",
+            SupportedReasoningEfforts = ["low", "medium", "high"],
+            DefaultReasoningEffort = "medium",
+            Capabilities = new ModelCapabilities
+            {
+                Supports = new ModelSupports
+                {
+                    ReasoningEffort = true
+                }
+            }
+        };
 }

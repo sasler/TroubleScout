@@ -1,3 +1,5 @@
+using GitHub.Copilot.SDK;
+
 namespace TroubleScout.Services;
 
 internal sealed record SlashCommandResult(bool Handled, bool ExitRequested)
@@ -5,6 +7,21 @@ internal sealed record SlashCommandResult(bool Handled, bool ExitRequested)
     internal static SlashCommandResult NotHandled { get; } = new(false, false);
     internal static SlashCommandResult HandledCommand { get; } = new(true, false);
     internal static SlashCommandResult Exit { get; } = new(true, true);
+}
+
+internal sealed record SlashCommandInput(string Original, string Trimmed, string Lower, string FirstToken)
+{
+    internal static SlashCommandInput? Parse(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return null;
+        }
+
+        var trimmed = input.Trim();
+        var lower = trimmed.ToLowerInvariant();
+        return new SlashCommandInput(input, trimmed, lower, SlashCommandDispatcher.GetFirstToken(lower));
+    }
 }
 
 internal sealed class SlashCommandHandlers
@@ -19,6 +36,18 @@ internal sealed class SlashCommandHandlers
     internal Func<string> GetTheme { get; init; } = static () => "dark";
     internal Action<string> SetTheme { get; init; } = static _ => { };
     internal Action<string> PersistTheme { get; init; } = static _ => { };
+    internal Func<ModelInfo?> GetSelectedModelInfo { get; init; } = static () => null;
+    internal Func<string?> GetSelectedModelName { get; init; } = static () => null;
+    internal Func<string?> GetSelectedModelId { get; init; } = static () => null;
+    internal Func<string?> GetConfiguredReasoningEffort { get; init; } = static () => null;
+    internal Action<string?> ApplyReasoningEffortSetting { get; init; } = static _ => { };
+    internal Action<string?> SaveReasoningEffortState { get; init; } = static _ => { };
+    internal Func<ModelInfo, string?> GetReasoningDisplay { get; init; } = static _ => null;
+    internal Func<string?, IReadOnlyList<string>, string?, string?> PromptReasoningEffort { get; init; } = static (current, _, _) => current;
+    internal Func<bool> HasActiveCopilotSession { get; init; } = static () => false;
+    internal Func<string, Func<Action<string>, Task<bool>>, Task<bool>> RunWithSpinnerAsync { get; init; } = static async (_, action) => await action(static _ => { });
+    internal Func<string, Action<string>?, Task<bool>> RecreateCopilotSession { get; init; } = static (_, _) => Task.FromResult(false);
+    internal Action ShowModelSelectionSummary { get; init; } = static () => { };
     internal Func<string?> GetLastAssistantMessage { get; init; } = static () => null;
     internal Func<List<ReportPromptEntry>> GetRecordedPrompts { get; init; } = static () => [];
     internal Func<ReportSessionSummary?> GetReportSessionSummary { get; init; } = static () => null;
@@ -45,78 +74,98 @@ internal sealed class SlashCommandDispatcher
 
     internal SlashCommandResult Dispatch(string input)
     {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return SlashCommandResult.NotHandled;
-        }
+        var parsed = SlashCommandInput.Parse(input);
+        return parsed is null ? SlashCommandResult.NotHandled : Dispatch(parsed);
+    }
 
-        var trimmedInput = input.Trim();
-        var lowerInput = trimmedInput.ToLowerInvariant();
-        var firstToken = GetFirstToken(lowerInput);
-
-        if (firstToken is "/exit" or "/quit" || IsBareExitCommand(lowerInput))
+    private SlashCommandResult Dispatch(SlashCommandInput input)
+    {
+        if (input.FirstToken is "/exit" or "/quit" || IsBareExitCommand(input.Lower))
         {
             _handlers.ShowInfo("Ending session. Goodbye!");
             return SlashCommandResult.Exit;
         }
 
-        if (firstToken == "/status")
+        if (input.FirstToken == "/status")
         {
             _handlers.ShowStatus(true);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/stats")
+        if (input.FirstToken == "/stats")
         {
             _handlers.ShowStats();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/help")
+        if (input.FirstToken == "/help")
         {
             _handlers.ShowHelp();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/history")
+        if (input.FirstToken == "/history")
         {
             _handlers.ShowHistory();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/capabilities")
+        if (input.FirstToken == "/capabilities")
         {
             _handlers.ShowStatus(false);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/mode"))
+        if (IsInvocation(input.Lower, "/mode"))
         {
-            HandleModeCommand(trimmedInput);
+            HandleModeCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/theme"))
+        if (IsInvocation(input.Lower, "/theme"))
         {
-            HandleThemeCommand(trimmedInput);
+            HandleThemeCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/save"))
+        if (IsInvocation(input.Lower, "/save"))
         {
-            HandleSaveCommand(trimmedInput);
+            HandleSaveCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/transcript"))
+        if (IsInvocation(input.Lower, "/transcript"))
         {
-            HandleTranscriptCommand(trimmedInput);
+            HandleTranscriptCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/copy"))
+        if (IsInvocation(input.Lower, "/copy"))
         {
             HandleCopyCommand();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        return SlashCommandResult.NotHandled;
+    }
+
+    internal async Task<SlashCommandResult> DispatchAsync(string input)
+    {
+        var parsed = SlashCommandInput.Parse(input);
+        if (parsed is null)
+        {
+            return SlashCommandResult.NotHandled;
+        }
+
+        var result = Dispatch(parsed);
+        if (result.Handled)
+        {
+            return result;
+        }
+
+        if (IsInvocation(parsed.Lower, "/reasoning"))
+        {
+            await HandleReasoningCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -148,6 +197,91 @@ internal sealed class SlashCommandDispatcher
     internal static bool IsBareExitCommand(string input)
         => input.Equals("exit", StringComparison.Ordinal)
            || input.Equals("quit", StringComparison.Ordinal);
+
+    private async Task HandleReasoningCommandAsync(string input)
+    {
+        var currentModel = _handlers.GetSelectedModelInfo();
+        if (currentModel == null)
+        {
+            _handlers.ShowWarning("No active model is selected yet. Use /model first.");
+            return;
+        }
+
+        if (!ReasoningEffortHelper.SupportsReasoningEffort(currentModel))
+        {
+            var modelName = _handlers.GetSelectedModelName();
+            if (string.IsNullOrWhiteSpace(modelName))
+            {
+                modelName = string.IsNullOrWhiteSpace(currentModel.Id) ? currentModel.Name : currentModel.Id;
+            }
+
+            _handlers.ShowInfo($"The current model '{modelName}' does not expose reasoning-effort controls.");
+            return;
+        }
+
+        var supportedEfforts = ReasoningEffortHelper.GetSupportedReasoningEfforts(currentModel);
+        var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        string? requestedReasoningEffort;
+
+        if (parts.Length < 2)
+        {
+            requestedReasoningEffort = _handlers.PromptReasoningEffort(
+                _handlers.GetConfiguredReasoningEffort(),
+                supportedEfforts,
+                ReasoningEffortHelper.GetDefaultReasoningEffort(currentModel));
+        }
+        else
+        {
+            requestedReasoningEffort = ReasoningEffortHelper.Normalize(parts[1]);
+            if (!string.IsNullOrWhiteSpace(requestedReasoningEffort)
+                && supportedEfforts.Count > 0
+                && !supportedEfforts.Contains(requestedReasoningEffort, StringComparer.OrdinalIgnoreCase))
+            {
+                _handlers.ShowWarning($"Unsupported reasoning effort '{parts[1].Trim()}'. Supported values: {string.Join(", ", supportedEfforts)} or auto.");
+                return;
+            }
+        }
+
+        var previousReasoningEffort = _handlers.GetConfiguredReasoningEffort();
+        var normalizedReasoningEffort = ReasoningEffortHelper.Normalize(requestedReasoningEffort);
+        if (string.Equals(previousReasoningEffort, normalizedReasoningEffort, StringComparison.OrdinalIgnoreCase))
+        {
+            _handlers.ShowInfo($"Reasoning remains: {_handlers.GetReasoningDisplay(currentModel)}");
+            return;
+        }
+
+        _handlers.ApplyReasoningEffortSetting(normalizedReasoningEffort);
+        _handlers.SaveReasoningEffortState(normalizedReasoningEffort);
+
+        if (_handlers.HasActiveCopilotSession())
+        {
+            var selectedModelId = _handlers.GetSelectedModelId();
+            var targetModel = string.IsNullOrWhiteSpace(selectedModelId) ? currentModel.Id : selectedModelId;
+            var spinnerLabel = string.IsNullOrWhiteSpace(normalizedReasoningEffort)
+                ? "Restoring automatic reasoning..."
+                : $"Applying reasoning {normalizedReasoningEffort}...";
+
+            var success = await _handlers.RunWithSpinnerAsync(spinnerLabel, async updateStatus =>
+            {
+                updateStatus("Restarting AI session...");
+                return await _handlers.RecreateCopilotSession(targetModel, updateStatus);
+            });
+
+            if (success)
+            {
+                _handlers.ShowModelSelectionSummary();
+            }
+            else
+            {
+                _handlers.ApplyReasoningEffortSetting(previousReasoningEffort);
+                _handlers.SaveReasoningEffortState(previousReasoningEffort);
+            }
+        }
+        else
+        {
+            _handlers.ShowSuccess($"Reasoning preference saved: {_handlers.GetReasoningDisplay(currentModel) ?? "auto"}");
+        }
+    }
 
     private void HandleModeCommand(string input)
     {
