@@ -9,6 +9,21 @@ internal sealed record SlashCommandResult(bool Handled, bool ExitRequested)
     internal static SlashCommandResult Exit { get; } = new(true, true);
 }
 
+internal sealed record SlashCommandInput(string Original, string Trimmed, string Lower, string FirstToken)
+{
+    internal static SlashCommandInput? Parse(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return null;
+        }
+
+        var trimmed = input.Trim();
+        var lower = trimmed.ToLowerInvariant();
+        return new SlashCommandInput(input, trimmed, lower, SlashCommandDispatcher.GetFirstToken(lower));
+    }
+}
+
 internal sealed class SlashCommandHandlers
 {
     internal Action ShowHelp { get; init; } = static () => { };
@@ -59,76 +74,73 @@ internal sealed class SlashCommandDispatcher
 
     internal SlashCommandResult Dispatch(string input)
     {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return SlashCommandResult.NotHandled;
-        }
+        var parsed = SlashCommandInput.Parse(input);
+        return parsed is null ? SlashCommandResult.NotHandled : Dispatch(parsed);
+    }
 
-        var trimmedInput = input.Trim();
-        var lowerInput = trimmedInput.ToLowerInvariant();
-        var firstToken = GetFirstToken(lowerInput);
-
-        if (firstToken is "/exit" or "/quit" || IsBareExitCommand(lowerInput))
+    private SlashCommandResult Dispatch(SlashCommandInput input)
+    {
+        if (input.FirstToken is "/exit" or "/quit" || IsBareExitCommand(input.Lower))
         {
             _handlers.ShowInfo("Ending session. Goodbye!");
             return SlashCommandResult.Exit;
         }
 
-        if (firstToken == "/status")
+        if (input.FirstToken == "/status")
         {
             _handlers.ShowStatus(true);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/stats")
+        if (input.FirstToken == "/stats")
         {
             _handlers.ShowStats();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/help")
+        if (input.FirstToken == "/help")
         {
             _handlers.ShowHelp();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/history")
+        if (input.FirstToken == "/history")
         {
             _handlers.ShowHistory();
             return SlashCommandResult.HandledCommand;
         }
 
-        if (firstToken == "/capabilities")
+        if (input.FirstToken == "/capabilities")
         {
             _handlers.ShowStatus(false);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/mode"))
+        if (IsInvocation(input.Lower, "/mode"))
         {
-            HandleModeCommand(trimmedInput);
+            HandleModeCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/theme"))
+        if (IsInvocation(input.Lower, "/theme"))
         {
-            HandleThemeCommand(trimmedInput);
+            HandleThemeCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/save"))
+        if (IsInvocation(input.Lower, "/save"))
         {
-            HandleSaveCommand(trimmedInput);
+            HandleSaveCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/transcript"))
+        if (IsInvocation(input.Lower, "/transcript"))
         {
-            HandleTranscriptCommand(trimmedInput);
+            HandleTranscriptCommand(input.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
-        if (IsInvocation(lowerInput, "/copy"))
+        if (IsInvocation(input.Lower, "/copy"))
         {
             HandleCopyCommand();
             return SlashCommandResult.HandledCommand;
@@ -139,22 +151,21 @@ internal sealed class SlashCommandDispatcher
 
     internal async Task<SlashCommandResult> DispatchAsync(string input)
     {
-        var result = Dispatch(input);
+        var parsed = SlashCommandInput.Parse(input);
+        if (parsed is null)
+        {
+            return SlashCommandResult.NotHandled;
+        }
+
+        var result = Dispatch(parsed);
         if (result.Handled)
         {
             return result;
         }
 
-        if (string.IsNullOrWhiteSpace(input))
+        if (IsInvocation(parsed.Lower, "/reasoning"))
         {
-            return SlashCommandResult.NotHandled;
-        }
-
-        var trimmedInput = input.Trim();
-        var lowerInput = trimmedInput.ToLowerInvariant();
-        if (IsInvocation(lowerInput, "/reasoning"))
-        {
-            await HandleReasoningCommandAsync(trimmedInput);
+            await HandleReasoningCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -196,7 +207,7 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (!SupportsReasoningEffort(currentModel))
+        if (!ReasoningEffortHelper.SupportsReasoningEffort(currentModel))
         {
             var modelName = _handlers.GetSelectedModelName();
             if (string.IsNullOrWhiteSpace(modelName))
@@ -208,7 +219,7 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        var supportedEfforts = GetSupportedReasoningEfforts(currentModel);
+        var supportedEfforts = ReasoningEffortHelper.GetSupportedReasoningEfforts(currentModel);
         var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         string? requestedReasoningEffort;
 
@@ -217,11 +228,11 @@ internal sealed class SlashCommandDispatcher
             requestedReasoningEffort = _handlers.PromptReasoningEffort(
                 _handlers.GetConfiguredReasoningEffort(),
                 supportedEfforts,
-                GetDefaultReasoningEffort(currentModel));
+                ReasoningEffortHelper.GetDefaultReasoningEffort(currentModel));
         }
         else
         {
-            requestedReasoningEffort = NormalizeReasoningEffort(parts[1]);
+            requestedReasoningEffort = ReasoningEffortHelper.Normalize(parts[1]);
             if (!string.IsNullOrWhiteSpace(requestedReasoningEffort)
                 && supportedEfforts.Count > 0
                 && !supportedEfforts.Contains(requestedReasoningEffort, StringComparer.OrdinalIgnoreCase))
@@ -232,7 +243,7 @@ internal sealed class SlashCommandDispatcher
         }
 
         var previousReasoningEffort = _handlers.GetConfiguredReasoningEffort();
-        var normalizedReasoningEffort = NormalizeReasoningEffort(requestedReasoningEffort);
+        var normalizedReasoningEffort = ReasoningEffortHelper.Normalize(requestedReasoningEffort);
         if (string.Equals(previousReasoningEffort, normalizedReasoningEffort, StringComparison.OrdinalIgnoreCase))
         {
             _handlers.ShowInfo($"Reasoning remains: {_handlers.GetReasoningDisplay(currentModel)}");
@@ -271,38 +282,6 @@ internal sealed class SlashCommandDispatcher
             _handlers.ShowSuccess($"Reasoning preference saved: {_handlers.GetReasoningDisplay(currentModel) ?? "auto"}");
         }
     }
-
-    private static string? NormalizeReasoningEffort(string? reasoningEffort)
-    {
-        if (string.IsNullOrWhiteSpace(reasoningEffort))
-        {
-            return null;
-        }
-
-        var normalized = reasoningEffort.Trim().ToLowerInvariant();
-        return normalized is "auto" or "default" ? null : normalized;
-    }
-
-    private static bool SupportsReasoningEffort(ModelInfo? model) =>
-        model?.Capabilities?.Supports?.ReasoningEffort == true;
-
-    private static IReadOnlyList<string> GetSupportedReasoningEfforts(ModelInfo? model)
-    {
-        if (model?.SupportedReasoningEfforts is not { Count: > 0 })
-        {
-            return [];
-        }
-
-        return model.SupportedReasoningEfforts
-            .Select(NormalizeReasoningEffort)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static string? GetDefaultReasoningEffort(ModelInfo? model) =>
-        NormalizeReasoningEffort(model?.DefaultReasoningEffort);
 
     private void HandleModeCommand(string input)
     {
