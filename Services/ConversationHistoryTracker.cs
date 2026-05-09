@@ -172,6 +172,17 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
+    internal void ReplaceRecordedConversationHistory(IReadOnlyList<ReportPromptEntry> prompts)
+    {
+        lock (_reportLock)
+        {
+            _reportPrompts.Clear();
+            _reportPrompts.AddRange(SessionTranscriptService.RedactPrompts(prompts));
+            _lastPromptIndex = _reportPrompts.Count - 1;
+            _pendingMcpActions.Clear();
+        }
+    }
+
     internal int GetLatestPromptIndex()
     {
         lock (_reportLock)
@@ -192,49 +203,8 @@ internal sealed class ConversationHistoryTracker
     {
         lock (_reportLock)
         {
-            return _reportPrompts
-                .Select(prompt => new ReportPromptEntry(
-                    prompt.Timestamp,
-                    SecretRedactor.Redact(prompt.Prompt),
-                    prompt.Actions.Select(RedactAction).ToList(),
-                    SecretRedactor.Redact(prompt.AgentReply))
-                {
-                    StatusBar = RedactStatusBar(prompt.StatusBar)
-                })
-                .ToList();
+            return SessionTranscriptService.RedactPrompts(_reportPrompts);
         }
-    }
-
-    private static StatusBarInfo? RedactStatusBar(StatusBarInfo? statusBar)
-    {
-        if (statusBar == null)
-        {
-            return null;
-        }
-
-        return statusBar with
-        {
-            Model = SecretRedactor.Redact(statusBar.Model),
-            Provider = SecretRedactor.Redact(statusBar.Provider),
-            ReasoningEffort = SecretRedactor.Redact(statusBar.ReasoningEffort),
-            SessionCostEstimate = SecretRedactor.Redact(statusBar.SessionCostEstimate)
-        };
-    }
-
-    private static ReportActionEntry RedactAction(ReportActionEntry action)
-    {
-        return new ReportActionEntry(
-            action.Timestamp,
-            SecretRedactor.Redact(action.Target),
-            SecretRedactor.Redact(action.Command),
-            SecretRedactor.Redact(action.Output),
-            SecretRedactor.Redact(action.SafetyApproval),
-            SecretRedactor.Redact(action.Source))
-        {
-            Arguments = SecretRedactor.Redact(action.Arguments),
-            Success = action.Success,
-            ToolCallId = SecretRedactor.Redact(action.ToolCallId)
-        };
     }
 
     private void AppendActionToCurrentPrompt(ReportActionEntry actionEntry)
