@@ -108,21 +108,34 @@ Open `settings.json` in the default editor, then reload prompt and safety config
 
 Run GitHub Copilot login inside TroubleScout.
 
-### `/byok env|<api-key> [base-url] [model]`
+### `/byok [env|<api-key>|<base-url> [api-key]] [base-url] [model]`
 
 Enable OpenAI-compatible BYOK mode without GitHub authentication.
+
+- With no arguments, prompts interactively for the base URL and API key.
 
 - `env` reads `OPENAI_API_KEY` from the environment.
 
 - `<api-key>` passes the key directly. The key is encrypted at rest with DPAPI (`ByokOpenAiApiKeyEncrypted` in `settings.json`).
 
-- `base-url` overrides the OpenAI-compatible endpoint URL.
+- `base-url` overrides the OpenAI-compatible endpoint URL. It can appear after `env`/`<api-key>` or as the first argument before the API key.
 
 - `model` selects an initial BYOK model.
 
-### `/byok clear`
+Examples:
+
+```text
+/byok
+/byok env https://api.openai.com/v1
+/byok sk-... https://aigw.example.org
+/byok https://aigw.example.org sk-... gpt-5
+```
+
+### `/byok clear|off|disable`
 
 Clear saved BYOK settings for this profile.
+
+`clear`, `off`, and `disable` are accepted aliases.
 
 ### `/theme <dark|mono>`
 
@@ -196,4 +209,3 @@ deserve mention here.
 Press <kbd>Esc</kbd> during an AI turn to cancel at the RPC layer. The
 key is ignored while an approval prompt is open, so accidental presses
 do not abort an approval dialog.
-

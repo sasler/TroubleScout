@@ -106,6 +106,5 @@ internal static class SlashCommandDocumentation
         sb.AppendLine("Press <kbd>Esc</kbd> during an AI turn to cancel at the RPC layer. The");
         sb.AppendLine("key is ignored while an approval prompt is open, so accidental presses");
         sb.AppendLine("do not abort an approval dialog.");
-        sb.AppendLine();
     }
 }
