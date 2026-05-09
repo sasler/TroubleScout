@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.1] - 2026-05-09
+
+### Internal
+
+- 🧭 **Extract `/reasoning` slash-command dispatch** - `/reasoning` now flows through `SlashCommandDispatcher.DispatchAsync`, with focused tests for unsupported models, invalid efforts, unchanged preferences, save-only updates, active-session recreation, and rollback on restart failure. Added `docs/slash-command-dispatcher-roadmap.md` to track the remaining complex command extractions.
+
 ## [v1.17.0] - 2026-05-09
 
 ### Features

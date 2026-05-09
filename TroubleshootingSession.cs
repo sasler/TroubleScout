@@ -290,6 +290,27 @@ public class TroubleshootingSession : IAsyncDisposable
             GetTheme = () => ConsoleUI.CurrentTheme,
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = PersistThemeSetting,
+            GetSelectedModelInfo = GetSelectedModelInfo,
+            GetSelectedModelName = () => SelectedModel,
+            GetSelectedModelId = () => _selectedModel,
+            GetConfiguredReasoningEffort = () => _configuredReasoningEffort,
+            ApplyReasoningEffortSetting = ApplyReasoningEffortSetting,
+            SaveReasoningEffortState = SaveReasoningEffortState,
+            GetReasoningDisplay = GetReasoningDisplay,
+            PromptReasoningEffort = ConsoleUI.PromptReasoningEffort,
+            HasActiveCopilotSession = () => _copilotSession != null,
+            RunWithSpinnerAsync = ConsoleUI.RunWithSpinnerAsync,
+            RecreateCopilotSession = async (targetModel, updateStatus) =>
+            {
+                if (_copilotSession != null)
+                {
+                    await _copilotSession.DisposeAsync();
+                    _copilotSession = null;
+                }
+
+                return await CreateCopilotSessionAsync(targetModel, updateStatus);
+            },
+            ShowModelSelectionSummary = () => ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails()),
             GetLastAssistantMessage = () => _lastAssistantMessage,
             GetRecordedPrompts = GetRecordedPromptSnapshot,
             GetReportSessionSummary = BuildReportSessionSummary,
@@ -2459,7 +2480,7 @@ public class TroubleshootingSession : IAsyncDisposable
             var lowerInput = input.ToLowerInvariant();
             var firstToken = GetFirstInputToken(lowerInput);
 
-            var slashCommandResult = slashCommandDispatcher.Dispatch(input);
+            var slashCommandResult = await slashCommandDispatcher.DispatchAsync(input);
             if (slashCommandResult.Handled)
             {
                 if (slashCommandResult.ExitRequested)
@@ -2681,88 +2702,6 @@ public class TroubleshootingSession : IAsyncDisposable
             if (firstToken == "/report")
             {
                 GenerateAndOpenReport();
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/reasoning"))
-            {
-                var currentModel = GetSelectedModelInfo();
-                if (currentModel == null)
-                {
-                    ConsoleUI.ShowWarning("No active model is selected yet. Use /model first.");
-                    continue;
-                }
-
-                if (!SupportsReasoningEffort(currentModel))
-                {
-                    ConsoleUI.ShowInfo($"The current model '{SelectedModel}' does not expose reasoning-effort controls.");
-                    continue;
-                }
-
-                var supportedEfforts = GetSupportedReasoningEfforts(currentModel);
-                var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                string? requestedReasoningEffort;
-
-                if (parts.Length < 2)
-                {
-                    requestedReasoningEffort = ConsoleUI.PromptReasoningEffort(
-                        _configuredReasoningEffort,
-                        supportedEfforts,
-                        GetDefaultReasoningEffort(currentModel));
-                }
-                else
-                {
-                    requestedReasoningEffort = NormalizeReasoningEffort(parts[1]);
-                    if (!string.IsNullOrWhiteSpace(requestedReasoningEffort)
-                        && supportedEfforts.Count > 0
-                        && !supportedEfforts.Contains(requestedReasoningEffort, StringComparer.OrdinalIgnoreCase))
-                    {
-                        ConsoleUI.ShowWarning($"Unsupported reasoning effort '{parts[1].Trim()}'. Supported values: {string.Join(", ", supportedEfforts)} or auto.");
-                        continue;
-                    }
-                }
-
-                var previousReasoningEffort = _configuredReasoningEffort;
-                var normalizedReasoningEffort = NormalizeReasoningEffort(requestedReasoningEffort);
-                if (string.Equals(previousReasoningEffort, normalizedReasoningEffort, StringComparison.OrdinalIgnoreCase))
-                {
-                    ConsoleUI.ShowInfo($"Reasoning remains: {GetReasoningDisplay(currentModel)}");
-                    continue;
-                }
-
-                ApplyReasoningEffortSetting(normalizedReasoningEffort);
-                SaveReasoningEffortState(normalizedReasoningEffort);
-
-                if (_copilotSession != null)
-                {
-                    var targetModel = string.IsNullOrWhiteSpace(_selectedModel) ? currentModel.Id : _selectedModel;
-                    var spinnerLabel = string.IsNullOrWhiteSpace(normalizedReasoningEffort)
-                        ? "Restoring automatic reasoning..."
-                        : $"Applying reasoning {normalizedReasoningEffort}...";
-
-                    var success = await ConsoleUI.RunWithSpinnerAsync(spinnerLabel, async updateStatus =>
-                    {
-                        updateStatus("Restarting AI session...");
-                        await _copilotSession.DisposeAsync();
-                        _copilotSession = null;
-                        return await CreateCopilotSessionAsync(targetModel, updateStatus);
-                    });
-
-                    if (success)
-                    {
-                        ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
-                    }
-                    else
-                    {
-                        ApplyReasoningEffortSetting(previousReasoningEffort);
-                        SaveReasoningEffortState(previousReasoningEffort);
-                    }
-                }
-                else
-                {
-                    ConsoleUI.ShowSuccess($"Reasoning preference saved: {GetReasoningDisplay(currentModel) ?? "auto"}");
-                }
-
                 continue;
             }
 
