@@ -12,9 +12,9 @@
          always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
          downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
-    <Version>1.16.1</Version>
-    <AssemblyVersion>1.16.1.0</AssemblyVersion>
-    <FileVersion>1.16.1.0</FileVersion>
+    <Version>1.16.2</Version>
+    <AssemblyVersion>1.16.2.0</AssemblyVersion>
+    <FileVersion>1.16.2.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -35,6 +35,10 @@
   <ItemGroup>
     <PackageReference Include="GitHub.Copilot.SDK" Version="0.3.0" />
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.5.4" />
+    <!-- GitHub.Copilot.SDK transitively pulls in Nerdbank.MessagePack 1.0.2,
+         which has GHSA-2cwq-pwfr-wcw3. Pin a patched version until the
+         upstream dependency chain refreshes. -->
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.1.62" />
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
     <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
