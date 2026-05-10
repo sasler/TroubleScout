@@ -6,8 +6,17 @@ namespace TroubleScout.Tests.Services;
 
 public class PromptTemplateLoaderTests
 {
+    [Theory]
+    [MemberData(nameof(AllTemplateIds))]
+    public void Load_WithKnownTemplateId_ShouldReturnEmbeddedMarkdown(string templateId)
+    {
+        var template = PromptTemplateLoader.Load(templateId);
+
+        template.Should().NotBeNullOrWhiteSpace();
+    }
+
     [Fact]
-    public void Load_WithKnownTemplateId_ShouldReturnEmbeddedMarkdown()
+    public void Load_WithSystemIdentityTemplate_ShouldReturnExpectedMarkdown()
     {
         var template = PromptTemplateLoader.Load(PromptTemplateIds.SystemIdentity);
 
@@ -36,5 +45,16 @@ public class PromptTemplateLoaderTests
 
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*effectivePrimary*");
+    }
+
+    public static TheoryData<string> AllTemplateIds()
+    {
+        var data = new TheoryData<string>();
+        foreach (var templateId in PromptTemplateIds.All)
+        {
+            data.Add(templateId);
+        }
+
+        return data;
     }
 }

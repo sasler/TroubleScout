@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Collections.Concurrent;
 
 namespace TroubleScout.Services;
 
@@ -24,11 +25,34 @@ internal static class PromptTemplateIds
     internal const string TurnPostAnalysisContinue = "turn.post-analysis.continue";
     internal const string TurnPostAnalysisApplyFix = "turn.post-analysis.apply-fix";
     internal const string TurnApprovedCommandFollowUp = "turn.approved-command-follow-up";
+
+    internal static IReadOnlyCollection<string> All { get; } =
+    [
+        SystemIdentity,
+        SystemTargetContextDefault,
+        SystemTargetContextJea,
+        SystemInvestigationApproach,
+        SystemResponseFormat,
+        SystemTroubleshootingApproach,
+        SystemSafety,
+        SystemToolInstructions,
+        SystemCustomInstructions,
+        AgentServerEvidenceCollector,
+        AgentIssueResearcher,
+        AgentMonitoringInvestigator,
+        AgentTicketInvestigator,
+        TurnResponseFormattingRequirement,
+        TurnExecutionSafetyRequirement,
+        TurnPostAnalysisContinue,
+        TurnPostAnalysisApplyFix,
+        TurnApprovedCommandFollowUp
+    ];
 }
 
 internal static class PromptTemplateLoader
 {
     private static readonly Regex PlaceholderRegex = new(@"\{\{(?<name>[A-Za-z0-9_.-]+)\}\}", RegexOptions.Compiled);
+    private static readonly ConcurrentDictionary<string, string> TemplateCache = new(StringComparer.Ordinal);
 
     private static readonly IReadOnlyDictionary<string, string> ResourceNames = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -53,6 +77,11 @@ internal static class PromptTemplateLoader
     };
 
     internal static string Load(string templateId)
+    {
+        return TemplateCache.GetOrAdd(templateId, LoadUncached);
+    }
+
+    private static string LoadUncached(string templateId)
     {
         if (!ResourceNames.TryGetValue(templateId, out var resourceName))
         {
