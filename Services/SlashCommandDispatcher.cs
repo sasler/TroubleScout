@@ -54,6 +54,13 @@ internal sealed class SlashCommandHandlers
     internal Func<ReportSessionSummary?> GetReportSessionSummary { get; init; } = static () => null;
     internal Action<IReadOnlyList<ReportPromptEntry>> ReplaceRecordedPrompts { get; init; } = static _ => { };
     internal Func<bool> HasRecordedHistory { get; init; } = static () => false;
+    internal Func<IReadOnlyCollection<string>> GetApprovedMcpServers { get; init; } = static () => Array.Empty<string>();
+    internal Func<IReadOnlyList<string>> GetPersistedApprovedMcpServers { get; init; } = static () => Array.Empty<string>();
+    internal Func<string, string?> GetMcpServerRole { get; init; } = static _ => null;
+    internal Func<string, bool> RemovePersistedMcpApproval { get; init; } = static _ => false;
+    internal Func<string, bool> RemoveSessionMcpApproval { get; init; } = static _ => false;
+    internal Func<int> ClearPersistedMcpApprovals { get; init; } = static () => 0;
+    internal Action ClearSessionMcpApprovals { get; init; } = static () => { };
     internal Func<string> CreateReportPath { get; init; } = SlashCommandDispatcher.CreateDefaultReportPath;
     internal Action<string, string> WriteReportHtml { get; init; } = SlashCommandDispatcher.WriteReportHtmlFile;
     internal Action<string> OpenReport { get; init; } = SlashCommandDispatcher.OpenReportInDefaultBrowser;
@@ -176,6 +183,12 @@ internal sealed class SlashCommandDispatcher
         if (IsInvocation(parsed.Lower, "/report"))
         {
             HandleReportCommand();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/mcp-approvals"))
+        {
+            HandleMcpApprovalsCommand(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -318,6 +331,94 @@ internal sealed class SlashCommandDispatcher
         {
             _handlers.ShowWarning($"Report generated at {reportPath}, but could not auto-open browser: {TrimSingleLine(ex.Message)}");
         }
+    }
+
+    private void HandleMcpApprovalsCommand(string input)
+    {
+        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // /mcp-approvals  -> list
+        if (parts.Length <= 1 || string.Equals(parts[1], "list", StringComparison.OrdinalIgnoreCase))
+        {
+            var sessionApprovals = _handlers.GetApprovedMcpServers()
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var persisted = _handlers.GetPersistedApprovedMcpServers()
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (sessionApprovals.Count == 0 && persisted.Count == 0)
+            {
+                _handlers.ShowInfo("No MCP approvals are active for this session.");
+                _handlers.ShowInfo("MCP servers you approve via the prompt appear here automatically.");
+                return;
+            }
+
+            _handlers.ShowInfo($"Active MCP approvals ({sessionApprovals.Count}):");
+            foreach (var name in sessionApprovals)
+            {
+                var role = _handlers.GetMcpServerRole(name);
+                var persistedFlag = persisted.Any(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase))
+                    ? " [persisted]"
+                    : string.Empty;
+                var roleFlag = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
+                _handlers.ShowInfo($"  {name}{roleFlag}{persistedFlag}");
+            }
+
+            if (persisted.Count > 0)
+            {
+                var sessionSet = new HashSet<string>(sessionApprovals, StringComparer.OrdinalIgnoreCase);
+                var orphaned = persisted
+                    .Where(name => !sessionSet.Contains(name))
+                    .ToList();
+                if (orphaned.Count > 0)
+                {
+                    _handlers.ShowInfo("Persisted but not currently active:");
+                    foreach (var name in orphaned)
+                    {
+                        _handlers.ShowInfo($"  {name}");
+                    }
+                }
+            }
+
+            _handlers.ShowInfo("Use /mcp-approvals clear all  or  /mcp-approvals clear <server> to remove persisted approvals.");
+            return;
+        }
+
+        if (string.Equals(parts[1], "clear", StringComparison.OrdinalIgnoreCase))
+        {
+            if (parts.Length < 3)
+            {
+                _handlers.ShowWarning("Use /mcp-approvals clear all  or  /mcp-approvals clear <server>.");
+                return;
+            }
+
+            if (string.Equals(parts[2], "all", StringComparison.OrdinalIgnoreCase))
+            {
+                var removed = _handlers.ClearPersistedMcpApprovals();
+                _handlers.ClearSessionMcpApprovals();
+                _handlers.ShowSuccess(removed > 0
+                    ? $"Cleared {removed} persisted MCP approval{(removed == 1 ? string.Empty : "s")} and reset session approvals."
+                    : "Cleared session MCP approvals (no persisted approvals were stored).");
+                return;
+            }
+
+            var target = string.Join(' ', parts.Skip(2)).Trim();
+            var persistedRemoved = _handlers.RemovePersistedMcpApproval(target);
+            var sessionRemoved = _handlers.RemoveSessionMcpApproval(target);
+
+            if (persistedRemoved || sessionRemoved)
+            {
+                _handlers.ShowSuccess($"Removed MCP approval for '{target}'.");
+            }
+            else
+            {
+                _handlers.ShowWarning($"No active MCP approval found for '{target}'.");
+            }
+            return;
+        }
+
+        _handlers.ShowWarning("Use /mcp-approvals [list|clear all|clear <server>].");
     }
 
     internal static string CreateDefaultReportPath()

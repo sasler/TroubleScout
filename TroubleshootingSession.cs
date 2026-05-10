@@ -316,6 +316,13 @@ public class TroubleshootingSession : IAsyncDisposable
             GetReportSessionSummary = BuildReportSessionSummary,
             ReplaceRecordedPrompts = ReplaceRecordedConversationHistory,
             HasRecordedHistory = HasRecordedConversationHistory,
+            GetApprovedMcpServers = GetApprovedMcpServersSnapshot,
+            GetPersistedApprovedMcpServers = GetPersistedApprovedMcpServersSnapshot,
+            GetMcpServerRole = GetMcpServerRole,
+            RemovePersistedMcpApproval = RemovePersistedMcpApproval,
+            RemoveSessionMcpApproval = serverName => _approvedMcpServersForSession.Remove(serverName),
+            ClearPersistedMcpApprovals = ClearPersistedMcpApprovals,
+            ClearSessionMcpApprovals = _approvedMcpServersForSession.Clear,
             ConfirmOverwrite = targetPath => AnsiConsole.Confirm(SafeMarkup.Interpolate($"File '{targetPath}' already exists. Overwrite?"), defaultValue: false),
             ConfirmTranscriptLoadReplace = () => AnsiConsole.Confirm("Loading this transcript will replace the current recorded session history. Continue?", defaultValue: false),
             ShowInfo = ConsoleUI.ShowInfo,
@@ -2039,91 +2046,6 @@ public class TroubleshootingSession : IAsyncDisposable
             : null;
     }
 
-    private void HandleMcpApprovalsCommand(string input)
-    {
-        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-        // /mcp-approvals  -> list
-        if (parts.Length <= 1 || string.Equals(parts[1], "list", StringComparison.OrdinalIgnoreCase))
-        {
-            var sessionApprovals = _approvedMcpServersForSession.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
-            var persisted = GetPersistedApprovedMcpServersSnapshot()
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (sessionApprovals.Count == 0 && persisted.Count == 0)
-            {
-                ConsoleUI.ShowInfo("No MCP approvals are active for this session.");
-                ConsoleUI.ShowInfo("MCP servers you approve via the prompt appear here automatically.");
-                return;
-            }
-
-            ConsoleUI.ShowInfo($"Active MCP approvals ({sessionApprovals.Count}):");
-            foreach (var name in sessionApprovals)
-            {
-                var role = GetMcpServerRole(name);
-                var persistedFlag = persisted.Any(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase))
-                    ? " [persisted]"
-                    : string.Empty;
-                var roleFlag = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
-                ConsoleUI.ShowInfo($"  {name}{roleFlag}{persistedFlag}");
-            }
-
-            if (persisted.Count > 0)
-            {
-                var orphaned = persisted
-                    .Where(name => !_approvedMcpServersForSession.Contains(name))
-                    .ToList();
-                if (orphaned.Count > 0)
-                {
-                    ConsoleUI.ShowInfo("Persisted but not currently active:");
-                    foreach (var name in orphaned)
-                    {
-                        ConsoleUI.ShowInfo($"  {name}");
-                    }
-                }
-            }
-
-            ConsoleUI.ShowInfo("Use /mcp-approvals clear all  or  /mcp-approvals clear <server> to remove persisted approvals.");
-            return;
-        }
-
-        if (string.Equals(parts[1], "clear", StringComparison.OrdinalIgnoreCase))
-        {
-            if (parts.Length < 3)
-            {
-                ConsoleUI.ShowWarning("Use /mcp-approvals clear all  or  /mcp-approvals clear <server>.");
-                return;
-            }
-
-            if (string.Equals(parts[2], "all", StringComparison.OrdinalIgnoreCase))
-            {
-                var removed = ClearPersistedMcpApprovals();
-                _approvedMcpServersForSession.Clear();
-                ConsoleUI.ShowSuccess(removed > 0
-                    ? $"Cleared {removed} persisted MCP approval{(removed == 1 ? string.Empty : "s")} and reset session approvals."
-                    : "Cleared session MCP approvals (no persisted approvals were stored).");
-                return;
-            }
-
-            var target = string.Join(' ', parts.Skip(2)).Trim();
-            var persistedRemoved = RemovePersistedMcpApproval(target);
-            var sessionRemoved = _approvedMcpServersForSession.Remove(target);
-
-            if (persistedRemoved || sessionRemoved)
-            {
-                ConsoleUI.ShowSuccess($"Removed MCP approval for '{target}'.");
-            }
-            else
-            {
-                ConsoleUI.ShowWarning($"No active MCP approval found for '{target}'.");
-            }
-            return;
-        }
-
-        ConsoleUI.ShowWarning("Use /mcp-approvals [list|clear all|clear <server>].");
-    }
-
     private async Task HandleMcpRoleCommandAsync(string input)
     {
         var availableServers = GetAvailableMcpRoleServerNames();
@@ -2515,12 +2437,6 @@ public class TroubleshootingSession : IAsyncDisposable
             if (IsSlashCommandInvocation(lowerInput, "/mcp-role"))
             {
                 await HandleMcpRoleCommandAsync(input);
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/mcp-approvals"))
-            {
-                HandleMcpApprovalsCommand(input);
                 continue;
             }
 
