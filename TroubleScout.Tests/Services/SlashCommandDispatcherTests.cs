@@ -298,6 +298,178 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithMcpApprovalsAndNoApprovals_ShouldShowEmptyState()
+    {
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetApprovedMcpServers = () => [],
+            GetPersistedApprovedMcpServers = () => [],
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals");
+
+        result.Handled.Should().BeTrue();
+        result.ExitRequested.Should().BeFalse();
+        messages.Should().Equal(
+            "No MCP approvals are active for this session.",
+            "MCP servers you approve via the prompt appear here automatically.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpApprovalsList_ShouldShowSortedActiveApprovalsWithRoleAndPersistedFlags()
+    {
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetApprovedMcpServers = () => ["zabbix", "context7", "redmine"],
+            GetPersistedApprovedMcpServers = () => ["Redmine"],
+            GetMcpServerRole = server => server.Equals("zabbix", StringComparison.OrdinalIgnoreCase)
+                ? "monitoring"
+                : server.Equals("redmine", StringComparison.OrdinalIgnoreCase)
+                    ? "ticketing"
+                    : null,
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals list");
+
+        result.Handled.Should().BeTrue();
+        messages.Should().Equal(
+            "Active MCP approvals (3):",
+            "  context7",
+            "  redmine [ticketing] [persisted]",
+            "  zabbix [monitoring]",
+            "Use /mcp-approvals clear all  or  /mcp-approvals clear <server> to remove persisted approvals.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpApprovalsList_ShouldShowPersistedApprovalsThatAreNotCurrentlyActive()
+    {
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetApprovedMcpServers = () => ["zabbix"],
+            GetPersistedApprovedMcpServers = () => ["redmine", "zabbix"],
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals list");
+
+        result.Handled.Should().BeTrue();
+        messages.Should().Equal(
+            "Active MCP approvals (1):",
+            "  zabbix [persisted]",
+            "Persisted but not currently active:",
+            "  redmine",
+            "Use /mcp-approvals clear all  or  /mcp-approvals clear <server> to remove persisted approvals.");
+    }
+
+    [Theory]
+    [InlineData(0, "Cleared session MCP approvals (no persisted approvals were stored).")]
+    [InlineData(1, "Cleared 1 persisted MCP approval and reset session approvals.")]
+    [InlineData(2, "Cleared 2 persisted MCP approvals and reset session approvals.")]
+    public async Task DispatchAsync_WithMcpApprovalsClearAll_ShouldClearPersistedAndSessionApprovals(
+        int persistedRemoved,
+        string expectedMessage)
+    {
+        var clearSessionCalls = 0;
+        var successes = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ClearPersistedMcpApprovals = () => persistedRemoved,
+            ClearSessionMcpApprovals = () => clearSessionCalls++,
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals clear all");
+
+        result.Handled.Should().BeTrue();
+        clearSessionCalls.Should().Be(1);
+        successes.Should().ContainSingle().Which.Should().Be(expectedMessage);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task DispatchAsync_WithMcpApprovalsClearServer_ShouldSucceedWhenPersistedOrSessionApprovalRemoved(
+        bool persistedRemoved,
+        bool sessionRemoved)
+    {
+        string? persistedTarget = null;
+        string? sessionTarget = null;
+        var successes = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RemovePersistedMcpApproval = target =>
+            {
+                persistedTarget = target;
+                return persistedRemoved;
+            },
+            RemoveSessionMcpApproval = target =>
+            {
+                sessionTarget = target;
+                return sessionRemoved;
+            },
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals clear redmine");
+
+        result.Handled.Should().BeTrue();
+        persistedTarget.Should().Be("redmine");
+        sessionTarget.Should().Be("redmine");
+        successes.Should().Contain("Removed MCP approval for 'redmine'.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpApprovalsClearServer_ShouldWarnWhenNoApprovalRemoved()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RemovePersistedMcpApproval = _ => false,
+            RemoveSessionMcpApproval = _ => false,
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvals clear redmine");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("No active MCP approval found for 'redmine'.");
+    }
+
+    [Theory]
+    [InlineData("/mcp-approvals clear", "Use /mcp-approvals clear all  or  /mcp-approvals clear <server>.")]
+    [InlineData("/mcp-approvals show", "Use /mcp-approvals [list|clear all|clear <server>].")]
+    public async Task DispatchAsync_WithInvalidMcpApprovalsCommand_ShouldShowUsageWarning(string input, string expectedWarning)
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync(input);
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain(expectedWarning);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpApprovalsLikeUnknownCommand_ShouldFallThrough()
+    {
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers());
+
+        var result = await dispatcher.DispatchAsync("/mcp-approvalsx");
+
+        result.Handled.Should().BeFalse();
+        result.ExitRequested.Should().BeFalse();
+    }
+
+    [Fact]
     public void CreateDefaultReportPath_ShouldUseTroubleScoutTempReportsDirectory()
     {
         var reportPath = SlashCommandDispatcher.CreateDefaultReportPath();

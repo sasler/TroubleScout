@@ -11,7 +11,7 @@ as a separate PR so interactive behavior stays easy to review and test.
   into `SlashCommandDispatcher.DispatchAsync`.
 - [x] `/report` - Move no-history handling, temp report generation, HTML write,
   browser-open attempt, and user-facing success/warning messages.
-- [ ] `/mcp-approvals` - Move `list`, `clear all`, and `clear <server>` while
+- [x] `/mcp-approvals` - Move `list`, `clear all`, and `clear <server>` while
   preserving per-session and persisted approval semantics.
 - [ ] `/server` - Move direct multi-server connection flow while preserving
   Safe-mode approval outside spinners and session recreation after additional

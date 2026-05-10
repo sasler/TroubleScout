@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.3] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract `/mcp-approvals` slash-command dispatch** - `/mcp-approvals` now flows through `SlashCommandDispatcher.DispatchAsync`, preserving active and persisted approval listing plus per-server and clear-all removal semantics with focused dispatcher tests.
+
 ## [v1.17.2] - 2026-05-10
 
 ### Internal
