@@ -310,6 +310,13 @@ public class TroubleshootingSession : IAsyncDisposable
 
                 return await CreateCopilotSessionAsync(targetModel, updateStatus);
             },
+            ReconnectServer = ReconnectAsync,
+            ConnectAdditionalServer = ConnectAdditionalServerAsync,
+            PromptCommandApproval = (command, reason) =>
+                ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved,
+            RefreshServerContext = () =>
+                _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList()),
+            RecreateCurrentCopilotSession = RecreateCurrentCopilotSessionAsync,
             ShowModelSelectionSummary = () => ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails()),
             GetLastAssistantMessage = () => _lastAssistantMessage,
             GetRecordedPrompts = GetRecordedPromptSnapshot,
@@ -2668,68 +2675,6 @@ public class TroubleshootingSession : IAsyncDisposable
                             await RunInteractiveCancelableAiOperationAsync(token =>
                                 RequestSecondOpinionAsync(currentModel, SelectedModel, priorConversation, token));
                         }
-                    }
-                }
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/server"))
-            {
-                var parts = input.Split(new char[]{' ', ','}, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2)
-                {
-                    ConsoleUI.ShowWarning("Usage: /server <server1>[,server2,...]");
-                }
-                else
-                {
-                    var primaryServer = parts[1];
-                    var additionalServers = parts.Skip(2).ToList();
-
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {primaryServer}...", async updateStatus =>
-                    {
-                        return await ReconnectAsync(primaryServer, updateStatus);
-                    });
-
-                    if (success)
-                    {
-                        ConsoleUI.ShowSuccess($"Connected to {primaryServer}");
-
-                        foreach (var srv in additionalServers)
-                        {
-                            // Approval must happen OUTSIDE the spinner (Spectre exclusivity constraint)
-                            if (_executionMode == ExecutionMode.Safe)
-                            {
-                                var approval = ConsoleUI.PromptCommandApproval(
-                                    $"New-PSSession -ComputerName '{srv}'",
-                                    $"TroubleScout wants to establish a direct PowerShell session to {srv}");
-                                if (approval != ApprovalResult.Approved)
-                                {
-                                    ConsoleUI.ShowWarning($"Connection to {srv} was denied.");
-                                    continue;
-                                }
-                            }
-
-                            var addSuccess = await ConsoleUI.RunWithSpinnerAsync($"Connecting to {srv}...", async _ =>
-                            {
-                                var (s, e) = await ConnectAdditionalServerAsync(srv, skipApproval: true);
-                                if (!s) ConsoleUI.ShowWarning($"Could not connect to {srv}: {e}");
-                                return s;
-                            });
-                        }
-
-                        _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-
-                        // Recreate the Copilot session so the updated system message (with connected sessions) takes effect
-                        if (_copilotClient != null && _copilotSession != null && additionalServers.Count > 0)
-                        {
-                            await _copilotSession.DisposeAsync();
-                            _copilotSession = null;
-                            await CreateCopilotSessionAsync(
-                                string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
-                                null);
-                        }
-
-                        ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
                     }
                 }
                 continue;

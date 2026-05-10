@@ -470,6 +470,235 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithServerWithoutArgument_ShouldShowUsageAndNotReconnect()
+    {
+        var warnings = new List<string>();
+        var reconnectCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ReconnectServer = (_, _) =>
+            {
+                reconnectCalls++;
+                return Task.FromResult(true);
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/server");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Usage: /server <server1>[,server2,...]");
+        reconnectCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerTargetsInSafeMode_ShouldReconnectPromptConnectRefreshRecreateAndShowStatus()
+    {
+        var spinnerLabels = new List<string>();
+        var primaryTargets = new List<string>();
+        var approvalPrompts = new List<(string Command, string Reason)>();
+        var additionalTargets = new List<(string Server, bool SkipApproval)>();
+        var successes = new List<string>();
+        var refreshCalls = 0;
+        var recreateCalls = 0;
+        var statusCalls = new List<bool>();
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetExecutionMode = () => ExecutionMode.Safe,
+            RunWithSpinnerAsync = async (label, action) =>
+            {
+                spinnerLabels.Add(label);
+                return await action(_ => { });
+            },
+            ReconnectServer = (server, _) =>
+            {
+                primaryTargets.Add(server);
+                return Task.FromResult(true);
+            },
+            PromptCommandApproval = (command, reason) =>
+            {
+                approvalPrompts.Add((command, reason));
+                return true;
+            },
+            ConnectAdditionalServer = (server, skipApproval) =>
+            {
+                additionalTargets.Add((server, skipApproval));
+                return Task.FromResult((true, (string?)null));
+            },
+            RefreshServerContext = () => refreshCalls++,
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowStatus = statusCalls.Add,
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1,srv2 srv3");
+
+        result.Handled.Should().BeTrue();
+        primaryTargets.Should().Equal("srv1");
+        successes.Should().Contain("Connected to srv1");
+        spinnerLabels.Should().Equal("Connecting to srv1...", "Connecting to srv2...", "Connecting to srv3...");
+        approvalPrompts.Should().Equal(
+            ("New-PSSession -ComputerName 'srv2'", "TroubleScout wants to establish a direct PowerShell session to srv2"),
+            ("New-PSSession -ComputerName 'srv3'", "TroubleScout wants to establish a direct PowerShell session to srv3"));
+        additionalTargets.Should().Equal(("srv2", true), ("srv3", true));
+        refreshCalls.Should().Be(1);
+        recreateCalls.Should().Be(1);
+        statusCalls.Should().Equal(false);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerAdditionalTargetsAndSessionRecreateFailure_ShouldWarnWithError()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetExecutionMode = () => ExecutionMode.Yolo,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(true),
+            ConnectAdditionalServer = (_, _) => Task.FromResult((true, (string?)null)),
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"model unavailable")),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1 srv2");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Connected servers, but the AI session could not be recreated. Use /login or /model to reconnect. model unavailable");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerPrimaryOnlySuccess_ShouldRefreshAndShowStatusWithoutSessionRecreate()
+    {
+        var refreshCalls = 0;
+        var recreateCalls = 0;
+        var statusCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(true),
+            RefreshServerContext = () => refreshCalls++,
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowStatus = _ => statusCalls++
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1");
+
+        result.Handled.Should().BeTrue();
+        refreshCalls.Should().Be(1);
+        recreateCalls.Should().Be(0);
+        statusCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerAdditionalDeniedInSafeMode_ShouldWarnAndSkipConnection()
+    {
+        var warnings = new List<string>();
+        var additionalCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetExecutionMode = () => ExecutionMode.Safe,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(true),
+            PromptCommandApproval = (_, _) => false,
+            ConnectAdditionalServer = (_, _) =>
+            {
+                additionalCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1 srv2");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Connection to srv2 was denied.");
+        additionalCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerAdditionalInYoloMode_ShouldConnectWithoutPrompt()
+    {
+        var approvalCalls = 0;
+        var additionalTargets = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetExecutionMode = () => ExecutionMode.Yolo,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(true),
+            PromptCommandApproval = (_, _) =>
+            {
+                approvalCalls++;
+                return true;
+            },
+            ConnectAdditionalServer = (server, _) =>
+            {
+                additionalTargets.Add(server);
+                return Task.FromResult((true, (string?)null));
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1 srv2");
+
+        result.Handled.Should().BeTrue();
+        approvalCalls.Should().Be(0);
+        additionalTargets.Should().Equal("srv2");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerPrimaryReconnectFailure_ShouldStopAdditionalWork()
+    {
+        var additionalCalls = 0;
+        var refreshCalls = 0;
+        var recreateCalls = 0;
+        var statusCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(false),
+            ConnectAdditionalServer = (_, _) =>
+            {
+                additionalCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            RefreshServerContext = () => refreshCalls++,
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowStatus = _ => statusCalls++
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1 srv2");
+
+        result.Handled.Should().BeTrue();
+        additionalCalls.Should().Be(0);
+        refreshCalls.Should().Be(0);
+        recreateCalls.Should().Be(0);
+        statusCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithServerLikeUnknownCommand_ShouldFallThrough()
+    {
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers());
+
+        var result = await dispatcher.DispatchAsync("/serverX srv01");
+
+        result.Handled.Should().BeFalse();
+        result.ExitRequested.Should().BeFalse();
+    }
+
+    [Fact]
     public void CreateDefaultReportPath_ShouldUseTroubleScoutTempReportsDirectory()
     {
         var reportPath = SlashCommandDispatcher.CreateDefaultReportPath();

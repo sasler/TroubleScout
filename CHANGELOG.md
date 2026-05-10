@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.4] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract `/server` slash-command dispatch** - `/server` now flows through `SlashCommandDispatcher.DispatchAsync`, preserving direct multi-server connection parsing, Safe-mode approvals outside spinners, additional-target session refresh, and status output with focused dispatcher tests.
+
 ## [v1.17.3] - 2026-05-10
 
 ### Internal

@@ -13,7 +13,7 @@ as a separate PR so interactive behavior stays easy to review and test.
   browser-open attempt, and user-facing success/warning messages.
 - [x] `/mcp-approvals` - Move `list`, `clear all`, and `clear <server>` while
   preserving per-session and persisted approval semantics.
-- [ ] `/server` - Move direct multi-server connection flow while preserving
+- [x] `/server` - Move direct multi-server connection flow while preserving
   Safe-mode approval outside spinners and session recreation after additional
   targets.
 - [ ] `/jea` - Move guided prompts, example output, skip-approval connection,
