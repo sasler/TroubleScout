@@ -552,6 +552,26 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithServerAdditionalTargetsAndSessionRecreateFailure_ShouldWarnWithError()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetExecutionMode = () => ExecutionMode.Yolo,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ReconnectServer = (_, _) => Task.FromResult(true),
+            ConnectAdditionalServer = (_, _) => Task.FromResult((true, (string?)null)),
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"model unavailable")),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/server srv1 srv2");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Connected servers, but the AI session could not be recreated. Use /login or /model to reconnect. model unavailable");
+    }
+
+    [Fact]
     public async Task DispatchAsync_WithServerPrimaryOnlySuccess_ShouldRefreshAndShowStatusWithoutSessionRecreate()
     {
         var refreshCalls = 0;

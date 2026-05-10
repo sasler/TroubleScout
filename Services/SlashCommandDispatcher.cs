@@ -487,7 +487,17 @@ internal sealed class SlashCommandDispatcher
 
         if (additionalServers.Count > 0)
         {
-            _ = await _handlers.RecreateCurrentCopilotSession();
+            var (recreated, recreateError) = await _handlers.RecreateCurrentCopilotSession();
+            if (!recreated)
+            {
+                var message = "Connected servers, but the AI session could not be recreated. Use /login or /model to reconnect.";
+                if (!string.IsNullOrWhiteSpace(recreateError))
+                {
+                    message += $" {recreateError}";
+                }
+
+                _handlers.ShowWarning(message);
+            }
         }
 
         _handlers.ShowStatus(false);
