@@ -9,7 +9,7 @@ they are not GitHub pull request numbers.
 - [x] Step A: Prompt Templates - Move long AI-facing prompts into embedded
   Markdown template files, keep short UI copy in code, preserve system prompt
   overrides, and add focused rendering/template tests.
-- [ ] Step B: Session Permission Handler - Extract URL approvals, MCP approvals,
+- [x] Step B: Session Permission Handler - Extract URL approvals, MCP approvals,
   Safe/Yolo permission decisions, and `/mcp-approvals` state operations from
   `TroubleshootingSession`.
 - [ ] Step C: Remaining Low-Risk Slash Commands - Move `/clear`, `/settings`,
@@ -36,4 +36,5 @@ For each implementation step:
 - Run `dotnet run -- --server localhost --prompt "how is this computer doing?"`.
 - Bump `TroubleScout.csproj` version fields and add a matching `CHANGELOG.md`
   release section before opening the PR.
+- Update this roadmap checklist before committing the completed step.
 - Commit with an emoji-prefixed subject.
