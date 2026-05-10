@@ -48,6 +48,11 @@ internal sealed class SlashCommandHandlers
     internal Func<bool> HasActiveCopilotSession { get; init; } = static () => false;
     internal Func<string, Func<Action<string>, Task<bool>>, Task<bool>> RunWithSpinnerAsync { get; init; } = static async (_, action) => await action(static _ => { });
     internal Func<string, Action<string>?, Task<bool>> RecreateCopilotSession { get; init; } = static (_, _) => Task.FromResult(false);
+    internal Func<string, Action<string>?, Task<bool>> ReconnectServer { get; init; } = static (_, _) => Task.FromResult(false);
+    internal Func<string, bool, Task<(bool Success, string? Error)>> ConnectAdditionalServer { get; init; } = static (_, _) => Task.FromResult((false, (string?)null));
+    internal Func<string, string, bool> PromptCommandApproval { get; init; } = static (_, _) => false;
+    internal Action RefreshServerContext { get; init; } = static () => { };
+    internal Func<Task<(bool Success, string? Error)>> RecreateCurrentCopilotSession { get; init; } = static () => Task.FromResult((true, (string?)null));
     internal Action ShowModelSelectionSummary { get; init; } = static () => { };
     internal Func<string?> GetLastAssistantMessage { get; init; } = static () => null;
     internal Func<List<ReportPromptEntry>> GetRecordedPrompts { get; init; } = static () => [];
@@ -189,6 +194,12 @@ internal sealed class SlashCommandDispatcher
         if (IsInvocation(parsed.Lower, "/mcp-approvals"))
         {
             HandleMcpApprovalsCommand(parsed.Trimmed);
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/server"))
+        {
+            await HandleServerCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -420,6 +431,66 @@ internal sealed class SlashCommandDispatcher
         }
 
         _handlers.ShowWarning("Use /mcp-approvals [list|clear all|clear <server>].");
+    }
+
+    private async Task HandleServerCommandAsync(string input)
+    {
+        var parts = input.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            _handlers.ShowWarning("Usage: /server <server1>[,server2,...]");
+            return;
+        }
+
+        var primaryServer = parts[1];
+        var additionalServers = parts.Skip(2).ToList();
+
+        var success = await _handlers.RunWithSpinnerAsync($"Connecting to {primaryServer}...", async updateStatus =>
+        {
+            return await _handlers.ReconnectServer(primaryServer, updateStatus);
+        });
+
+        if (!success)
+        {
+            return;
+        }
+
+        _handlers.ShowSuccess($"Connected to {primaryServer}");
+
+        foreach (var server in additionalServers)
+        {
+            if (_handlers.GetExecutionMode() == ExecutionMode.Safe)
+            {
+                var approved = _handlers.PromptCommandApproval(
+                    $"New-PSSession -ComputerName '{server}'",
+                    $"TroubleScout wants to establish a direct PowerShell session to {server}");
+                if (!approved)
+                {
+                    _handlers.ShowWarning($"Connection to {server} was denied.");
+                    continue;
+                }
+            }
+
+            await _handlers.RunWithSpinnerAsync($"Connecting to {server}...", async _ =>
+            {
+                var (connected, error) = await _handlers.ConnectAdditionalServer(server, true);
+                if (!connected)
+                {
+                    _handlers.ShowWarning($"Could not connect to {server}: {error}");
+                }
+
+                return connected;
+            });
+        }
+
+        _handlers.RefreshServerContext();
+
+        if (additionalServers.Count > 0)
+        {
+            _ = await _handlers.RecreateCurrentCopilotSession();
+        }
+
+        _handlers.ShowStatus(false);
     }
 
     internal static string CreateDefaultReportPath()
