@@ -2667,12 +2667,6 @@ public class TroubleshootingSession : IAsyncDisposable
                 continue;
             }
 
-            if (firstToken == "/report")
-            {
-                GenerateAndOpenReport();
-                continue;
-            }
-
             if (firstToken == "/model")
             {
                 if (_copilotClient != null)
@@ -3169,47 +3163,6 @@ public class TroubleshootingSession : IAsyncDisposable
             cancellationToken,
             showPostAnalysisActionPrompt: true,
             forcePostAnalysisActionPrompt: false);
-    }
-
-    private void GenerateAndOpenReport()
-    {
-        var prompts = GetRecordedPromptSnapshot();
-
-        if (prompts.Count == 0)
-        {
-            ConsoleUI.ShowInfo("No prompts recorded yet. Ask a question first, then run /report.");
-            return;
-        }
-
-        var reportsDir = Path.Combine(Path.GetTempPath(), "TroubleScout", "reports");
-        Directory.CreateDirectory(reportsDir);
-
-        var reportPath = Path.Combine(reportsDir, $"troublescout-report-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.html");
-        var summary = BuildReportSessionSummary();
-        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary, contentAlreadyRedacted: true);
-        File.WriteAllText(reportPath, html, Encoding.UTF8);
-
-        try
-        {
-            // Use cmd.exe /c start instead of UseShellExecute to respect the current
-            // user context when running as a different user (RunAs). UseShellExecute
-            // opens the browser as the primary logged-in user, causing path mismatches.
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c start \"\" \"{reportPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            System.Diagnostics.Process.Start(psi);
-            ConsoleUI.ShowSuccess($"Report generated and opened: {reportPath}");
-            ConsoleUI.ShowInfo($"Reports are stored in temp: {reportsDir}");
-        }
-        catch (Exception ex)
-        {
-            ConsoleUI.ShowWarning($"Report generated at {reportPath}, but could not auto-open browser: {TrimSingleLine(ex.Message)}");
-        }
     }
 
     private ReportSessionSummary BuildReportSessionSummary()

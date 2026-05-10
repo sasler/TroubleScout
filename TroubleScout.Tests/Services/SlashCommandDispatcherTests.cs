@@ -174,6 +174,175 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithReportAndNoHistory_ShouldShowNoHistoryMessage()
+    {
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetRecordedPrompts = () => [],
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/report");
+
+        result.Handled.Should().BeTrue();
+        result.ExitRequested.Should().BeFalse();
+        messages.Should().Contain("No prompts recorded yet. Ask a question first, then run /report.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReportAndHistory_ShouldWriteReportHtmlWithSummary()
+    {
+        var reportPath = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}.html");
+        string? writtenPath = null;
+        string? writtenHtml = null;
+        var summary = new ReportSessionSummary(
+            CurrentModel: "gpt-5",
+            CurrentProvider: "GitHub Copilot",
+            ModelsUsed: ["gpt-5"],
+            ConfiguredMcpServers: [],
+            UsedMcpServers: [],
+            MonitoringMcp: null,
+            TicketingMcp: null,
+            ApprovedMcpServersForSession: [],
+            PersistedApprovedMcpServers: [],
+            ConfiguredSkills: [],
+            UsedSkills: [],
+            ExecutionMode: "safe",
+            TargetServer: "localhost");
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetRecordedPrompts = () =>
+            [
+                new ReportPromptEntry(DateTimeOffset.UtcNow, "Check services", [], "Looks healthy.")
+            ],
+            GetReportSessionSummary = () => summary,
+            CreateReportPath = () => reportPath,
+            WriteReportHtml = (path, html) =>
+            {
+                writtenPath = path;
+                writtenHtml = html;
+            },
+            OpenReport = _ => { }
+        });
+
+        var result = await dispatcher.DispatchAsync("/report");
+
+        result.Handled.Should().BeTrue();
+        writtenPath.Should().Be(reportPath);
+        writtenHtml.Should().Contain("Check services");
+        writtenHtml.Should().Contain("gpt-5");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReportOpenSuccess_ShouldShowSuccessAndReportDirectory()
+    {
+        var reportDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
+        var reportPath = Path.Combine(reportDir, "report.html");
+        var successes = new List<string>();
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetRecordedPrompts = () =>
+            [
+                new ReportPromptEntry(DateTimeOffset.UtcNow, "Check services", [], "Looks healthy.")
+            ],
+            CreateReportPath = () => reportPath,
+            WriteReportHtml = (_, _) => { },
+            OpenReport = _ => { },
+            ShowSuccess = successes.Add,
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/report");
+
+        result.Handled.Should().BeTrue();
+        successes.Should().Contain($"Report generated and opened: {reportPath}");
+        messages.Should().Contain($"Reports are stored in temp: {reportDir}");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReportOpenFailure_ShouldStillWriteAndWarn()
+    {
+        var reportPath = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}.html");
+        var writeCalls = 0;
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetRecordedPrompts = () =>
+            [
+                new ReportPromptEntry(DateTimeOffset.UtcNow, "Check services", [], "Looks healthy.")
+            ],
+            CreateReportPath = () => reportPath,
+            WriteReportHtml = (_, _) => writeCalls++,
+            OpenReport = _ => throw new InvalidOperationException("browser failed\r\nsecond line"),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/report");
+
+        result.Handled.Should().BeTrue();
+        writeCalls.Should().Be(1);
+        warnings.Should().Contain($"Report generated at {reportPath}, but could not auto-open browser: browser failed");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithReportLikeUnknownCommand_ShouldFallThrough()
+    {
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers());
+
+        var result = await dispatcher.DispatchAsync("/reportx");
+
+        result.Handled.Should().BeFalse();
+        result.ExitRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void CreateDefaultReportPath_ShouldUseTroubleScoutTempReportsDirectory()
+    {
+        var reportPath = SlashCommandDispatcher.CreateDefaultReportPath();
+        var reportsDir = Path.Combine(Path.GetTempPath(), "TroubleScout", "reports");
+
+        reportPath.Should().StartWith(reportsDir + Path.DirectorySeparatorChar);
+        Path.GetFileName(reportPath).Should().MatchRegex(@"^troublescout-report-\d{8}-\d{6}\.html$");
+        Directory.Exists(reportsDir).Should().BeTrue();
+    }
+
+    [Fact]
+    public void WriteReportHtmlFile_ShouldWriteUtf8Html()
+    {
+        var reportPath = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}.html");
+        const string html = "<html><body>Report \u2713</body></html>";
+
+        try
+        {
+            SlashCommandDispatcher.WriteReportHtmlFile(reportPath, html);
+
+            File.ReadAllText(reportPath, System.Text.Encoding.UTF8).Should().Be(html);
+        }
+        finally
+        {
+            if (File.Exists(reportPath))
+            {
+                File.Delete(reportPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void CreateReportOpenStartInfo_ShouldUseCmdStartWithoutShellExecute()
+    {
+        const string reportPath = @"C:\Temp\TroubleScout\reports\report.html";
+
+        var psi = SlashCommandDispatcher.CreateReportOpenStartInfo(reportPath);
+
+        psi.FileName.Should().Be("cmd.exe");
+        psi.Arguments.Should().Be(@"/c start """" ""C:\Temp\TroubleScout\reports\report.html""");
+        psi.UseShellExecute.Should().BeFalse();
+        psi.CreateNoWindow.Should().BeTrue();
+    }
+
+    [Fact]
     public void Dispatch_WithTranscriptSave_ShouldWriteCurrentHistory()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"troublescout-dispatcher-{Guid.NewGuid():N}");
