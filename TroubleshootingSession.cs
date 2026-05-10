@@ -53,8 +53,6 @@ public class TroubleshootingSession : IAsyncDisposable
         CleanSession,
         SecondOpinion
     }
-    internal sealed record ShellPermissionAssessment(string Command, CommandValidation Validation, string PromptReason, string ImpactText);
-
     private const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
     private const int MaxSecondOpinionTurns = 8;
@@ -104,11 +102,7 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _configuredMonitoringMcpServer;
     private string? _configuredTicketingMcpServer;
     private double? _sessionPremiumRequestCost;
-    private readonly HashSet<string> _approvedUrlsForSession = new(StringComparer.OrdinalIgnoreCase);
-    private bool _allowAllUrlsForSession;
-    private readonly HashSet<string> _approvedMcpServersForSession = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _persistedSeededApprovals = new(StringComparer.OrdinalIgnoreCase);
-    private AppSettings? _appSettings;
+    private readonly SessionPermissionHandler _permissionHandler;
 
     private CopilotUsageSnapshot? _lastUsage;
 
@@ -205,13 +199,20 @@ public class TroubleshootingSession : IAsyncDisposable
             : byokOpenAiApiKey.Trim();
         _isGitHubCopilotAuthenticated = false;
         var settings = AppSettingsStore.Load();
-        _appSettings = settings;
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
         ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(settings.Theme);
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
-        SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
+        _permissionHandler = new SessionPermissionHandler(
+            () => _executionMode,
+            () => _configuredSafeCommands,
+            GetMcpServerRole,
+            (command, reason, impact) => ConsoleUI.PromptCommandApproval(command, reason, impact: impact),
+            ConsoleUI.PromptUrlApproval,
+            ConsoleUI.PromptMcpApproval,
+            settings);
+        _permissionHandler.SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
@@ -337,13 +338,13 @@ public class TroubleshootingSession : IAsyncDisposable
             GetReportSessionSummary = BuildReportSessionSummary,
             ReplaceRecordedPrompts = ReplaceRecordedConversationHistory,
             HasRecordedHistory = HasRecordedConversationHistory,
-            GetApprovedMcpServers = GetApprovedMcpServersSnapshot,
-            GetPersistedApprovedMcpServers = GetPersistedApprovedMcpServersSnapshot,
+            GetApprovedMcpServers = _permissionHandler.GetApprovedMcpServersSnapshot,
+            GetPersistedApprovedMcpServers = _permissionHandler.GetPersistedApprovedMcpServersSnapshot,
             GetMcpServerRole = GetMcpServerRole,
-            RemovePersistedMcpApproval = RemovePersistedMcpApproval,
-            RemoveSessionMcpApproval = serverName => _approvedMcpServersForSession.Remove(serverName),
-            ClearPersistedMcpApprovals = ClearPersistedMcpApprovals,
-            ClearSessionMcpApprovals = _approvedMcpServersForSession.Clear,
+            RemovePersistedMcpApproval = _permissionHandler.RemovePersistedMcpApproval,
+            RemoveSessionMcpApproval = _permissionHandler.RemoveSessionMcpApproval,
+            ClearPersistedMcpApprovals = _permissionHandler.ClearPersistedMcpApprovals,
+            ClearSessionMcpApprovals = _permissionHandler.ClearSessionMcpApprovals,
             ConfirmOverwrite = targetPath => AnsiConsole.Confirm(SafeMarkup.Interpolate($"File '{targetPath}' already exists. Overwrite?"), defaultValue: false),
             ConfirmTranscriptLoadReplace = () => AnsiConsole.Confirm("Loading this transcript will replace the current recorded session history. Continue?", defaultValue: false),
             ShowInfo = ConsoleUI.ShowInfo,
@@ -1938,63 +1939,14 @@ public class TroubleshootingSession : IAsyncDisposable
     private void ReloadSafeCommandsFromSettings()
     {
         var settings = AppSettingsStore.Load();
-        _appSettings = settings;
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
-        SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
+        _permissionHandler.UpdateAppSettings(settings);
+        _permissionHandler.SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
         ApplySystemPromptSettings(settings.SystemPromptOverrides, settings.SystemPromptAppend);
         ApplyReasoningEffortSetting(settings.ReasoningEffort);
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-    }
-
-    private void SeedPersistedMcpApprovals(IEnumerable<string>? persistedApprovals)
-    {
-        // Compute the set of approvals that *should* be seeded from persistence
-        // right now, given the current monitoring/ticketing role mappings.
-        // Persistence is only ever offered for those roles; once a role mapping
-        // is cleared or changed, the prior trust must not silently apply.
-        var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer))
-        {
-            mapped.Add(_configuredMonitoringMcpServer);
-        }
-        if (!string.IsNullOrWhiteSpace(_configuredTicketingMcpServer))
-        {
-            mapped.Add(_configuredTicketingMcpServer);
-        }
-
-        var nextSeeded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (persistedApprovals != null)
-        {
-            foreach (var name in persistedApprovals)
-            {
-                if (string.IsNullOrWhiteSpace(name)) continue;
-                var trimmed = name.Trim();
-                if (mapped.Contains(trimmed))
-                {
-                    nextSeeded.Add(trimmed);
-                }
-            }
-        }
-
-        // Remove any previously-seeded persisted approvals that are no longer
-        // valid (settings edited, role mapping cleared, etc.). Session-scoped
-        // approvals (ApproveServerForSession) are intentionally left intact.
-        foreach (var previous in _persistedSeededApprovals)
-        {
-            if (!nextSeeded.Contains(previous))
-            {
-                _approvedMcpServersForSession.Remove(previous);
-            }
-        }
-
-        _persistedSeededApprovals.Clear();
-        foreach (var current in nextSeeded)
-        {
-            _approvedMcpServersForSession.Add(current);
-            _persistedSeededApprovals.Add(current);
-        }
     }
 
     private async Task<(bool Success, string? Error)> RecreateCurrentCopilotSessionAsync()
@@ -2959,8 +2911,8 @@ public class TroubleshootingSession : IAsyncDisposable
             UsedMcpServers: _runtimeMcpServers.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
             MonitoringMcp: _configuredMonitoringMcpServer,
             TicketingMcp: _configuredTicketingMcpServer,
-            ApprovedMcpServersForSession: _approvedMcpServersForSession.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
-            PersistedApprovedMcpServers: GetPersistedApprovedMcpServersSnapshot().ToList(),
+            ApprovedMcpServersForSession: _permissionHandler.GetApprovedMcpServersSnapshot().OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
+            PersistedApprovedMcpServers: _permissionHandler.GetPersistedApprovedMcpServersSnapshot().ToList(),
             ConfiguredSkills: _configuredSkills.ToList(),
             UsedSkills: _runtimeSkills.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
             ExecutionMode: _executionMode.ToString(),
@@ -3081,8 +3033,7 @@ public class TroubleshootingSession : IAsyncDisposable
         _toolInvocationCount = 0;
         _sessionPremiumRequestCost = null;
         _sessionUsageTracker.Reset();
-        _approvedUrlsForSession.Clear();
-        _allowAllUrlsForSession = false;
+        _permissionHandler.ResetUrlApprovals();
     }
 
     private static string? GetByokWireApi(string? model)
@@ -3158,89 +3109,7 @@ public class TroubleshootingSession : IAsyncDisposable
             CustomAgents = BuildCustomAgentConfigs(availableMcpServers),
             ClientName = "TroubleScout",
             OnEvent = HandleSessionLifecycleStateEvent,
-            OnPermissionRequest = (req, inv) =>
-            {
-                // Read-only operations and our own custom tools are always auto-approved
-                var kind = NormalizePermissionKind(req.Kind);
-                if (kind is "read" or "custom-tool")
-                {
-                    return Task.FromResult(new PermissionRequestResult
-                    {
-                        Kind = PermissionRequestResultKind.Approved
-                    });
-                }
-
-                // In YOLO mode, approve everything (read live value so /mode changes take effect)
-                if (_executionMode == ExecutionMode.Yolo)
-                {
-                    return Task.FromResult(new PermissionRequestResult
-                    {
-                        Kind = PermissionRequestResultKind.Approved
-                    });
-                }
-
-                if (kind == "shell")
-                {
-                    var shellAssessment = EvaluateShellPermissionRequest(req);
-                    if (shellAssessment != null)
-                    {
-                        if (shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
-                        {
-                            return Task.FromResult(new PermissionRequestResult
-                            {
-                                Kind = PermissionRequestResultKind.Approved
-                            });
-                        }
-
-                        if (!shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
-                        {
-                            return Task.FromResult(new PermissionRequestResult
-                            {
-                                Kind = PermissionRequestResultKind.Rejected
-                            });
-                        }
-
-                        var shellApproval = ConsoleUI.PromptCommandApproval(
-                            shellAssessment.Command,
-                            shellAssessment.PromptReason,
-                            impact: shellAssessment.ImpactText);
-                        return Task.FromResult(new PermissionRequestResult
-                        {
-                            Kind = shellApproval == ApprovalResult.Approved
-                                ? PermissionRequestResultKind.Approved
-                                : PermissionRequestResultKind.Rejected
-                        });
-                    }
-                }
-
-                if (kind == "url")
-                {
-                    if (TryIsApprovedUrlRequest(req))
-                    {
-                        return Task.FromResult(new PermissionRequestResult
-                        {
-                            Kind = PermissionRequestResultKind.Approved
-                        });
-                    }
-
-                    var url = GetUrlFromPermissionRequest(req);
-                    var intention = GetUrlPermissionIntention(req);
-                    var urlApproval = ConsoleUI.PromptUrlApproval(url ?? "URL fetch", intention);
-                    return Task.FromResult(CreateUrlPermissionApprovalResult(url, urlApproval));
-                }
-
-                if (kind == "mcp")
-                {
-                    return Task.FromResult(HandleMcpPermissionRequest(req));
-                }
-
-                // In Safe mode: MCP, shell, file-write require user approval
-                var description = DescribePermissionRequest(req);
-                var approval = ConsoleUI.PromptCommandApproval(
-                    description,
-                    BuildPermissionPromptReason(kind));
-                return Task.FromResult(CreatePermissionApprovalResult(req, kind, approval));
-            }
+            OnPermissionRequest = _permissionHandler.HandleAsync
         };
     }
 
@@ -3321,79 +3190,6 @@ public class TroubleshootingSession : IAsyncDisposable
         };
     }
 
-    private PermissionRequestResult CreateUrlPermissionApprovalResult(string? url, UrlApprovalResult approval)
-    {
-        switch (approval)
-        {
-            case UrlApprovalResult.ApproveAllUrls:
-                _allowAllUrlsForSession = true;
-                return new PermissionRequestResult
-                {
-                    Kind = PermissionRequestResultKind.Approved
-                };
-
-            case UrlApprovalResult.ApproveThisUrl:
-            {
-                var normalizedUrl = NormalizeUrlForApproval(url);
-                if (!string.IsNullOrWhiteSpace(normalizedUrl))
-                {
-                    _approvedUrlsForSession.Add(normalizedUrl);
-                }
-
-                return new PermissionRequestResult
-                {
-                    Kind = PermissionRequestResultKind.Approved
-                };
-            }
-
-            default:
-                return new PermissionRequestResult
-                {
-                    Kind = PermissionRequestResultKind.Rejected
-                };
-        }
-    }
-
-    private bool TryIsApprovedUrlRequest(PermissionRequest request)
-    {
-        if (_allowAllUrlsForSession)
-        {
-            return true;
-        }
-
-        var normalizedUrl = NormalizeUrlForApproval(GetUrlFromPermissionRequest(request));
-        return !string.IsNullOrWhiteSpace(normalizedUrl) && _approvedUrlsForSession.Contains(normalizedUrl);
-    }
-
-    private static string? GetUrlFromPermissionRequest(PermissionRequest request)
-    {
-        return request is PermissionRequestUrl urlRequest
-            ? urlRequest.Url?.Trim()
-            : ReadStringProperty(request, "Url", "Uri");
-    }
-
-    private static string? GetUrlPermissionIntention(PermissionRequest request)
-    {
-        return request is PermissionRequestUrl urlRequest
-            ? urlRequest.Intention?.Trim()
-            : ReadStringProperty(request, "Intention", "Reason", "Purpose");
-    }
-
-    private static string? NormalizeUrlForApproval(string? url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return null;
-        }
-
-        if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed))
-        {
-            return parsed.AbsoluteUri;
-        }
-
-        return url.Trim();
-    }
-
     private void ValidateConfiguredMcpRole(string roleName, string? configuredServerName, IReadOnlyDictionary<string, McpServerConfig> mcpServers)
     {
         if (string.IsNullOrWhiteSpace(configuredServerName))
@@ -3404,113 +3200,6 @@ public class TroubleshootingSession : IAsyncDisposable
         if (!mcpServers.ContainsKey(configuredServerName))
         {
             _configurationWarnings.Add($"{roleName} MCP '{configuredServerName}' is not available in the current MCP configuration.");
-        }
-    }
-
-    private static PermissionRequestResult CreatePermissionApprovalResult(
-        PermissionRequest request,
-        string kind,
-        ApprovalResult approval)
-    {
-        if (approval != ApprovalResult.Approved)
-        {
-            return new PermissionRequestResult
-            {
-                Kind = PermissionRequestResultKind.Rejected
-            };
-        }
-
-        var result = new PermissionRequestResult
-        {
-            Kind = PermissionRequestResultKind.Approved
-        };
-
-        var sessionRule = TryCreateSessionScopedApprovalRule(request, kind);
-        if (sessionRule != null)
-        {
-            result.Rules = [sessionRule];
-        }
-
-        return result;
-    }
-
-    private static object? TryCreateSessionScopedApprovalRule(PermissionRequest request, string kind)
-    {
-        // MCP approvals are now gated by TroubleshootingSession's own server-scoped HashSet,
-        // so we no longer emit per-tool SDK approval rules for them. Other kinds may add their
-        // own session-scoped rules in the future.
-        _ = request;
-        _ = kind;
-        return null;
-    }
-
-    private PermissionRequestResult HandleMcpPermissionRequest(PermissionRequest request)
-    {
-        var serverName = request is PermissionRequestMcp typedMcp
-            ? typedMcp.ServerName?.Trim()
-            : ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
-        var toolName = request is PermissionRequestMcp typedTool
-            ? typedTool.ToolName?.Trim() ?? typedTool.ToolTitle?.Trim()
-            : ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
-        var argumentsPreview = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
-
-        // If we can't even identify the server, fall back to the generic approval path.
-        if (string.IsNullOrWhiteSpace(serverName))
-        {
-            var description = DescribePermissionRequest(request);
-            var fallback = ConsoleUI.PromptCommandApproval(
-                description,
-                BuildPermissionPromptReason("mcp"));
-            return fallback == ApprovalResult.Approved
-                ? new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved }
-                : new PermissionRequestResult { Kind = PermissionRequestResultKind.Rejected };
-        }
-
-        // Already approved (this session or persisted on disk).
-        if (_approvedMcpServersForSession.Contains(serverName))
-        {
-            return new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved };
-        }
-
-        // Auto-approve clearly read-only tools (get_*/list_*/search_*/...).
-        if (McpReadOnlyHeuristic.IsReadOnlyToolName(toolName))
-        {
-            return new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved };
-        }
-
-        var role = GetMcpServerRole(serverName);
-        var approval = ConsoleUI.PromptMcpApproval(
-            serverName,
-            toolName ?? "(unknown tool)",
-            argumentsPreview,
-            role);
-
-        switch (approval)
-        {
-            case McpApprovalResult.ApproveOnce:
-                return new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved };
-
-            case McpApprovalResult.ApproveServerForSession:
-                _approvedMcpServersForSession.Add(serverName);
-                return new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved };
-
-            case McpApprovalResult.ApproveServerPersist:
-                _approvedMcpServersForSession.Add(serverName);
-                if (_appSettings != null)
-                {
-                    try
-                    {
-                        AppSettingsStore.AddPersistedApprovedMcpServer(_appSettings, serverName);
-                    }
-                    catch
-                    {
-                        // settings persistence is best-effort; the in-memory approval still applies for this session.
-                    }
-                }
-                return new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved };
-
-            default:
-                return new PermissionRequestResult { Kind = PermissionRequestResultKind.Rejected };
         }
     }
 
@@ -3532,616 +3221,6 @@ public class TroubleshootingSession : IAsyncDisposable
         }
 
         return null;
-    }
-
-    internal IReadOnlyCollection<string> GetApprovedMcpServersSnapshot()
-        => _approvedMcpServersForSession.ToArray();
-
-    internal IReadOnlyList<string> GetPersistedApprovedMcpServersSnapshot()
-        => _appSettings?.PersistedApprovedMcpServers?.ToArray() ?? Array.Empty<string>();
-
-    internal bool RemovePersistedMcpApproval(string serverName)
-    {
-        if (_appSettings == null || string.IsNullOrWhiteSpace(serverName))
-        {
-            return false;
-        }
-
-        var removed = AppSettingsStore.RemovePersistedApprovedMcpServer(_appSettings, serverName);
-        if (removed)
-        {
-            _approvedMcpServersForSession.Remove(serverName.Trim());
-        }
-        return removed;
-    }
-
-    internal int ClearPersistedMcpApprovals()
-    {
-        if (_appSettings == null)
-        {
-            return 0;
-        }
-
-        var snapshot = _appSettings.PersistedApprovedMcpServers?.ToList() ?? new List<string>();
-        var count = AppSettingsStore.ClearPersistedApprovedMcpServers(_appSettings);
-        foreach (var name in snapshot)
-        {
-            _approvedMcpServersForSession.Remove(name);
-        }
-        return count;
-    }
-
-    internal ShellPermissionAssessment? EvaluateShellPermissionRequest(PermissionRequest request)
-    {
-        if (NormalizePermissionKind(request.Kind) != "shell")
-        {
-            return null;
-        }
-
-        var fullCommand = TryReadShellCommandText(request, truncateForDisplay: false);
-        if (string.IsNullOrWhiteSpace(fullCommand) || !LooksLikePowerShellCommand(fullCommand))
-        {
-            return null;
-        }
-
-        var validation = PowerShellExecutor.ValidateStandaloneCommand(fullCommand, _executionMode, _configuredSafeCommands);
-        return new ShellPermissionAssessment(
-            TrimPermissionPreview(fullCommand),
-            validation,
-            validation.Reason ?? BuildPermissionPromptReason("shell"),
-            BuildShellPermissionImpactText(validation));
-    }
-
-    private static string NormalizePermissionKind(string? kind)
-    {
-        var normalized = (kind ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "file-read" => "read",
-            "file-write" => "write",
-            "url-fetch" => "url",
-            _ => normalized
-        };
-    }
-
-    private static string DescribePermissionRequest(PermissionRequest request)
-    {
-        var kind = NormalizePermissionKind(request.Kind);
-
-        switch (kind)
-        {
-            case "shell":
-            {
-                var command = TryReadShellCommandText(request, truncateForDisplay: true);
-                return !string.IsNullOrWhiteSpace(command)
-                    ? command
-                    : "Shell command";
-            }
-            case "mcp":
-            {
-                var serverName = request is PermissionRequestMcp mcpRequest
-                    ? mcpRequest.ServerName?.Trim()
-                    : ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
-                var toolName = request is PermissionRequestMcp typedMcp
-                    ? typedMcp.ToolName?.Trim() ?? typedMcp.ToolTitle?.Trim()
-                    : ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
-                var arguments = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
-
-                var target = string.IsNullOrWhiteSpace(serverName)
-                    ? toolName
-                    : string.IsNullOrWhiteSpace(toolName)
-                        ? serverName
-                        : $"{serverName}/{toolName}";
-
-                if (!string.IsNullOrWhiteSpace(target) && !string.IsNullOrWhiteSpace(arguments))
-                {
-                    return TrimPermissionPreview($"{target} {arguments}");
-                }
-
-                return !string.IsNullOrWhiteSpace(target)
-                    ? target
-                    : "MCP tool invocation";
-            }
-            case "write":
-            {
-                var path = request is PermissionRequestWrite writeRequest
-                    ? writeRequest.FileName?.Trim()
-                    : ReadStringProperty(request, "FileName", "Path", "FilePath", "Target", "Uri");
-                return !string.IsNullOrWhiteSpace(path)
-                    ? $"Write file: {path}"
-                    : "File write";
-            }
-            case "read":
-            {
-                var path = request is PermissionRequestRead readRequest
-                    ? readRequest.Path?.Trim()
-                    : ReadStringProperty(request, "Path", "FilePath", "Target", "Uri");
-                return !string.IsNullOrWhiteSpace(path)
-                    ? $"Read file: {path}"
-                    : "File read";
-            }
-            case "url":
-            {
-                var url = request is PermissionRequestUrl urlRequest
-                    ? urlRequest.Url?.Trim()
-                    : ReadStringProperty(request, "Url", "Uri");
-                return !string.IsNullOrWhiteSpace(url)
-                    ? $"Fetch URL: {url}"
-                    : "URL fetch";
-            }
-            case "custom-tool":
-            {
-                var toolName = request is PermissionRequestCustomTool customToolRequest
-                    ? customToolRequest.ToolName?.Trim()
-                    : ReadStringProperty(request, "ToolName", "Tool", "Name");
-                var arguments = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
-
-                if (!string.IsNullOrWhiteSpace(toolName) && !string.IsNullOrWhiteSpace(arguments))
-                {
-                    return TrimPermissionPreview($"{toolName} {arguments}");
-                }
-
-                return !string.IsNullOrWhiteSpace(toolName)
-                    ? toolName
-                    : "Custom tool invocation";
-            }
-            default:
-            {
-                var preview = ReadPermissionObjectString(request, "FullCommandText", "Command", "ToolName", "Path", "Url", "Uri")
-                    ?? ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
-                return !string.IsNullOrWhiteSpace(preview)
-                    ? TrimPermissionPreview(preview)
-                    : $"Tool operation ({kind})";
-            }
-        }
-    }
-
-    private static string BuildPermissionPromptReason(string kind)
-    {
-        return kind switch
-        {
-            "mcp" => "Allow this MCP tool invocation in Safe mode?",
-            "shell" => "Allow this shell command in Safe mode?",
-            "write" => "Allow this file write in Safe mode?",
-            "read" => "Allow this file read?",
-            "url" => "Allow this URL fetch?",
-            "custom-tool" => "Allow this custom tool invocation?",
-            _ => $"Allow this tool operation in Safe mode? (kind: {Markup.Escape(kind)})"
-        };
-    }
-
-    private static string BuildShellPermissionImpactText(CommandValidation validation)
-    {
-        if (!validation.IsAllowed && !validation.RequiresApproval)
-        {
-            return "This PowerShell command is blocked by TroubleScout safety rules.";
-        }
-
-        if (validation.RequiresApproval)
-        {
-            if (validation.Reason?.Contains("parse", StringComparison.OrdinalIgnoreCase) == true)
-            {
-                return "This PowerShell command could not be confidently classified as read-only.";
-            }
-
-            return "This PowerShell command is not classified as read-only and may modify system state, services, or configuration.";
-        }
-
-        return "This PowerShell command was recognized as read-only.";
-    }
-
-    private static string? TryReadShellCommandText(PermissionRequest request, bool truncateForDisplay)
-    {
-        var command = request is PermissionRequestShell shellRequest
-            ? shellRequest.FullCommandText?.Trim()
-            : ReadStringProperty(request, "FullCommandText", "Command", "CommandLine")
-              ?? ReadPermissionObjectRawString(request,
-                  "FullCommandText",
-                  "Command",
-                  "CommandLine",
-                  "CommandText",
-                  "Cmd",
-                  "ShellCommand",
-                  "RawCommand",
-                  "Text")
-              ?? ReadNestedPermissionObjectRawString(request,
-                  "Command",
-                  "Payload",
-                  "Input",
-                  "Request",
-                  "Details");
-
-        return string.IsNullOrWhiteSpace(command)
-            ? null
-            : truncateForDisplay
-                ? TrimPermissionPreview(command)
-                : command.Trim();
-    }
-
-    private static string? ReadPermissionObjectString(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in propertyNames)
-        {
-            var text = ConvertPermissionExtensionValueToString(GetPropertyValue(instance, propertyName));
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return TrimPermissionPreview(text);
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ReadPermissionObjectRawString(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in propertyNames)
-        {
-            var text = ConvertPermissionExtensionValueToRawString(GetPropertyValue(instance, propertyName));
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ReadNestedPermissionObjectRawString(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in propertyNames)
-        {
-            var value = GetPropertyValue(instance, propertyName);
-            if (value == null)
-            {
-                continue;
-            }
-
-            var text = ExtractNestedRawCommandText(value);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool LooksLikePowerShellCommand(string command)
-    {
-        var trimmed = command.TrimStart();
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return false;
-        }
-
-        if (trimmed.StartsWith("$", StringComparison.Ordinal) ||
-            trimmed.StartsWith("@(", StringComparison.Ordinal) ||
-            trimmed.StartsWith("@{", StringComparison.Ordinal) ||
-            trimmed.StartsWith("[", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var firstCommandSegment = trimmed
-            .Split(['|', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(segment => segment.Trim())
-            .FirstOrDefault();
-
-        var firstToken = firstCommandSegment?
-            .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
-            .FirstOrDefault();
-
-        if (string.IsNullOrWhiteSpace(firstToken) || firstToken.StartsWith("-", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return Regex.IsMatch(firstToken, "^[A-Za-z][A-Za-z0-9]*-[A-Za-z][A-Za-z0-9]*$");
-    }
-
-    private static string? ReadRawPermissionExtensionString(
-        IReadOnlyDictionary<string, object>? extensionData,
-        params string[] candidateKeys)
-    {
-        if (extensionData == null || extensionData.Count == 0)
-            return null;
-
-        foreach (var candidateKey in candidateKeys)
-        {
-            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
-                continue;
-
-            var text = ConvertPermissionExtensionValueToRawString(value);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ReadNestedRawPermissionExtensionString(
-        IReadOnlyDictionary<string, object>? extensionData,
-        params string[] candidateKeys)
-    {
-        if (extensionData == null || extensionData.Count == 0)
-            return null;
-
-        foreach (var candidateKey in candidateKeys)
-        {
-            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
-                continue;
-
-            if (value == null)
-                continue;
-
-            var text = ExtractNestedRawCommandText(value);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ReadPermissionExtensionString(
-        IReadOnlyDictionary<string, object>? extensionData,
-        params string[] candidateKeys)
-    {
-        if (extensionData == null || extensionData.Count == 0)
-            return null;
-
-        foreach (var candidateKey in candidateKeys)
-        {
-            if (!TryGetExtensionValue(extensionData, candidateKey, out var value))
-                continue;
-
-            var text = ConvertPermissionExtensionValueToString(value);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return TrimPermissionPreview(text);
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ReadNestedPermissionExtensionString(
-        IReadOnlyDictionary<string, object>? extensionData,
-        params string[] containerKeys)
-    {
-        if (extensionData == null || extensionData.Count == 0)
-        {
-            return null;
-        }
-
-        foreach (var containerKey in containerKeys)
-        {
-            if (!TryGetExtensionValue(extensionData, containerKey, out var value) || value == null)
-            {
-                continue;
-            }
-
-            var text = ExtractNestedCommandText(value);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return TrimPermissionPreview(text);
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ExtractNestedCommandText(object value)
-    {
-        if (value is JsonElement json)
-        {
-            return ExtractNestedCommandText(json);
-        }
-
-        if (value is IReadOnlyDictionary<string, object> readOnlyDictionary)
-        {
-            return ReadPermissionExtensionString(readOnlyDictionary,
-                "fullCommandText",
-                "command",
-                "commandLine",
-                "commandText",
-                "cmd",
-                "shellCommand",
-                "rawCommand",
-                "text");
-        }
-
-        if (value is IDictionary<string, object> dictionary)
-        {
-            return ReadPermissionExtensionString(
-                dictionary.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
-                "fullCommandText",
-                "command",
-                "commandLine",
-                "commandText",
-                "cmd",
-                "shellCommand",
-                "rawCommand",
-                "text");
-        }
-
-        return null;
-    }
-
-    private static string? ExtractNestedRawCommandText(object value)
-    {
-        if (value is JsonElement json)
-        {
-            return ExtractNestedRawCommandText(json);
-        }
-
-        if (value is IReadOnlyDictionary<string, object> readOnlyDictionary)
-        {
-            return ReadRawPermissionExtensionString(readOnlyDictionary,
-                "fullCommandText",
-                "command",
-                "commandLine",
-                "commandText",
-                "cmd",
-                "shellCommand",
-                "rawCommand",
-                "text");
-        }
-
-        if (value is IDictionary<string, object> dictionary)
-        {
-            return ReadRawPermissionExtensionString(
-                dictionary.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
-                "fullCommandText",
-                "command",
-                "commandLine",
-                "commandText",
-                "cmd",
-                "shellCommand",
-                "rawCommand",
-                "text");
-        }
-
-        return null;
-    }
-
-    private static string? ExtractNestedCommandText(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.String)
-        {
-            return TrimSingleLine(element.GetString());
-        }
-
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in new[]
-                 {
-                     "fullCommandText", "command", "commandLine", "commandText", "cmd", "shellCommand", "rawCommand", "text"
-                 })
-        {
-            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-            {
-                var text = ExtractNestedCommandText(value);
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ExtractNestedRawCommandText(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.String)
-        {
-            var text = element.GetString();
-            return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-        }
-
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in new[]
-                 {
-                     "fullCommandText", "command", "commandLine", "commandText", "cmd", "shellCommand", "rawCommand", "text"
-                 })
-        {
-            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-            {
-                var text = ExtractNestedRawCommandText(value);
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryGetExtensionValue(
-        IReadOnlyDictionary<string, object> extensionData,
-        string candidateKey,
-        out object? value)
-    {
-        foreach (var entry in extensionData)
-        {
-            if (entry.Key.Equals(candidateKey, StringComparison.OrdinalIgnoreCase))
-            {
-                value = entry.Value;
-                return true;
-            }
-        }
-
-        value = null;
-        return false;
-    }
-
-    private static string? ConvertPermissionExtensionValueToString(object? value)
-    {
-        string? rawText = value switch
-        {
-            null => null,
-            string text => text,
-            JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
-            JsonElement json => json.GetRawText(),
-            _ => value.ToString()
-        };
-
-        return string.IsNullOrWhiteSpace(rawText)
-            ? null
-            : TrimSingleLine(rawText);
-    }
-
-    private static string? ConvertPermissionExtensionValueToRawString(object? value)
-    {
-        string? rawText = value switch
-        {
-            null => null,
-            string text => text,
-            JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
-            JsonElement json => ExtractNestedRawCommandText(json) ?? json.GetRawText(),
-            _ => value.ToString()
-        };
-
-        return string.IsNullOrWhiteSpace(rawText)
-            ? null
-            : rawText.Trim();
-    }
-
-    private static string TrimPermissionPreview(string text)
-    {
-        const int maxLength = 180;
-
-        var singleLine = Regex.Replace(text.Trim(), @"\s*[\r\n]+\s*", " ");
-        return singleLine.Length <= maxLength
-            ? singleLine
-            : singleLine[..maxLength].TrimEnd() + "...";
     }
 
     private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)
@@ -4380,8 +3459,8 @@ public class TroubleshootingSession : IAsyncDisposable
         // the HTML report under "MCP approved (session/persisted)".
         if (includeMcpApprovals)
         {
-            AddCapabilityField(fields, "MCP approved (session)", _approvedMcpServersForSession.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-            AddCapabilityField(fields, "MCP approved (persisted)", GetPersistedApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+            AddCapabilityField(fields, "MCP approved (session)", _permissionHandler.GetApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+            AddCapabilityField(fields, "MCP approved (persisted)", _permissionHandler.GetPersistedApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
         }
         AddCapabilityField(fields, "Skills configured", _configuredSkills);
         AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));

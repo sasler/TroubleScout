@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.7] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract session permission handling** - SDK permission decisions, URL approval state, MCP approval state, and `/mcp-approvals` state operations now live in `SessionPermissionHandler`, keeping `TroubleshootingSession` focused on session orchestration while preserving Safe/YOLO, URL, shell, and MCP approval behavior.
+
 ## [v1.17.6] - 2026-05-10
 
 ### Internal
