@@ -1,4 +1,3 @@
-using System.Reflection;
 using GitHub.Copilot.SDK;
 using TroubleScout.UI;
 
@@ -238,11 +237,11 @@ internal sealed class SessionPermissionHandler
     {
         var serverName = request is PermissionRequestMcp typedMcp
             ? typedMcp.ServerName?.Trim()
-            : ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
+            : PermissionEvaluator.ReadStringProperty(request, "McpServerName", "ServerName", "Server", "Name");
         var toolName = request is PermissionRequestMcp typedTool
             ? typedTool.ToolName?.Trim() ?? typedTool.ToolTitle?.Trim()
-            : ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
-        var argumentsPreview = ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
+            : PermissionEvaluator.ReadStringProperty(request, "ToolName", "ToolTitle", "Tool", "Method");
+        var argumentsPreview = PermissionEvaluator.ReadPermissionObjectString(request, "Args", "Arguments", "Params", "Input");
 
         if (string.IsNullOrWhiteSpace(serverName))
         {
@@ -310,14 +309,14 @@ internal sealed class SessionPermissionHandler
     {
         return request is PermissionRequestUrl urlRequest
             ? urlRequest.Url?.Trim()
-            : ReadStringProperty(request, "Url", "Uri");
+            : PermissionEvaluator.ReadStringProperty(request, "Url", "Uri");
     }
 
     private static string? GetUrlPermissionIntention(PermissionRequest request)
     {
         return request is PermissionRequestUrl urlRequest
             ? urlRequest.Intention?.Trim()
-            : ReadStringProperty(request, "Intention", "Reason", "Purpose");
+            : PermissionEvaluator.ReadStringProperty(request, "Intention", "Reason", "Purpose");
     }
 
     private static string? NormalizeUrlForApproval(string? url)
@@ -332,88 +331,4 @@ internal sealed class SessionPermissionHandler
             : url.Trim();
     }
 
-    private static string? ReadPermissionObjectString(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in propertyNames)
-        {
-            var text = ConvertPermissionExtensionValueToString(GetPropertyValue(instance, propertyName));
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return TrimPermissionPreview(text);
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ConvertPermissionExtensionValueToString(object? value)
-    {
-        var rawText = value switch
-        {
-            null => null,
-            string text => text,
-            System.Text.Json.JsonElement json when json.ValueKind == System.Text.Json.JsonValueKind.String => json.GetString(),
-            System.Text.Json.JsonElement json => json.GetRawText(),
-            _ => value.ToString()
-        };
-
-        return string.IsNullOrWhiteSpace(rawText)
-            ? null
-            : TrimSingleLine(rawText);
-    }
-
-    private static string? ReadStringProperty(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in propertyNames)
-        {
-            var prop = instance.GetType().GetProperty(propertyName,
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            var value = prop?.GetValue(instance);
-            if (value is string stringValue && !string.IsNullOrWhiteSpace(stringValue))
-            {
-                return stringValue.Trim();
-            }
-        }
-
-        return null;
-    }
-
-    private static object? GetPropertyValue(object instance, string propertyName)
-    {
-        var prop = instance.GetType().GetProperty(propertyName,
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        return prop?.GetValue(instance);
-    }
-
-    private static string TrimSingleLine(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return "Unknown error";
-        }
-
-        var trimmed = text.Trim();
-        var newlineIndex = trimmed.IndexOfAny(['\r', '\n']);
-        return newlineIndex < 0 ? trimmed : trimmed[..newlineIndex].Trim();
-    }
-
-    private static string TrimPermissionPreview(string text)
-    {
-        const int maxLength = 180;
-
-        var singleLine = System.Text.RegularExpressions.Regex.Replace(text.Trim(), @"\s*[\r\n]+\s*", " ");
-        return singleLine.Length <= maxLength
-            ? singleLine
-            : singleLine[..maxLength].TrimEnd() + "...";
-    }
 }

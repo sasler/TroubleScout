@@ -199,7 +199,7 @@ internal static class PermissionEvaluator
                 : command.Trim();
     }
 
-    private static string? ReadPermissionObjectString(object? instance, params string[] propertyNames)
+    internal static string? ReadPermissionObjectString(object? instance, params string[] propertyNames)
     {
         if (instance == null)
         {
@@ -589,7 +589,7 @@ internal static class PermissionEvaluator
             : rawText.Trim();
     }
 
-    private static string? ReadStringProperty(object? instance, params string[] propertyNames)
+    internal static string? ReadStringProperty(object? instance, params string[] propertyNames)
     {
         if (instance == null)
         {

@@ -6,6 +6,7 @@ using Xunit;
 
 namespace TroubleScout.Tests.Services;
 
+[Collection("AppSettings")]
 public class SessionPermissionHandlerTests
 {
     [Fact]
