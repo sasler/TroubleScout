@@ -131,22 +131,21 @@ internal static class SystemPromptBuilder
         }
 
         var targetContextGuidance = primaryJeaConfigName == null
-            ? $"""
-            - You are currently connected to {targetInfo}
-            - ALL commands and diagnostic operations will execute on this target server
-            - When gathering data or making observations, you MUST always state which server the data comes from
-            - Always verify that the data you receive is from the expected target server
-            - If the user doesn't specify a server in their question, assume they mean the current target: {effectivePrimary}
-            """
-            : $"""
-            - Your primary troubleshooting focus is {targetInfo}
-            - If the user doesn't specify a server in their question, assume they mean the current JEA target: {effectivePrimary}
-            - The default unnamed PowerShell session still targets {SanitizeServerNameForPrompt(targetServer)}. Do NOT use it for {SanitizeServerNameForPrompt(effectivePrimary)} unless the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)}.
-            - To work on {SanitizeServerNameForPrompt(effectivePrimary)}, use run_powershell with sessionName: "{SanitizeServerNameForPrompt(effectivePrimary)}"
-            - Do NOT use the built-in diagnostic helper tools for {SanitizeServerNameForPrompt(effectivePrimary)}; they rely on broader PowerShell language features than constrained JEA endpoints allow
-            - When gathering data or making observations, you MUST always state which server the data comes from
-            - For the primary JEA endpoint, verify source using the targeted session/server name rather than `$env:COMPUTERNAME`, which may be unavailable in no-language mode
-            """;
+            ? PromptTemplateLoader.Render(
+                PromptTemplateIds.SystemTargetContextDefault,
+                new Dictionary<string, string?>
+                {
+                    ["targetInfo"] = targetInfo,
+                    ["effectivePrimary"] = effectivePrimary
+                })
+            : PromptTemplateLoader.Render(
+                PromptTemplateIds.SystemTargetContextJea,
+                new Dictionary<string, string?>
+                {
+                    ["targetInfo"] = targetInfo,
+                    ["targetServer"] = SanitizeServerNameForPrompt(targetServer),
+                    ["effectivePrimary"] = SanitizeServerNameForPrompt(effectivePrimary)
+                });
 
         var dataCollectionGuidance = primaryJeaConfigName == null
             ? "Use the diagnostic tools to collect relevant information FROM THE TARGET SERVER"
@@ -156,60 +155,24 @@ internal static class SystemPromptBuilder
             ? $"Always confirm the data comes from {effectivePrimary} by checking $env:COMPUTERNAME"
             : $"For the primary JEA endpoint, confirm the source from the targeted session/server name ({SanitizeServerNameForPrompt(effectivePrimary)}) rather than using $env:COMPUTERNAME on the constrained endpoint";
 
-        var investigationApproach = """
-            ## Investigation Approach
-            - When investigating an issue, exhaust ALL available diagnostic tools and data sources before asking the user for more information
-            - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted the relevant diagnostics
-            - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
-            - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
-            - When you are ready for the user to choose what happens next, end with a short `## Ready for next action` section
-            - If one diagnostic approach yields no results, try alternative approaches before concluding
-            - Gather data from ALL relevant sources (event logs, services, processes, performance counters, disk, network) in a single investigation pass
-            """;
+        var investigationApproach = PromptTemplateLoader.Render(PromptTemplateIds.SystemInvestigationApproach);
 
-        var responseFormat = $"""
-            ## Response Format
-            - ALWAYS start your response by confirming which server you're analyzing (e.g., "Analyzing {effectivePrimary}...")
-            - Always format your response as Markdown
-            - Use short Markdown sections and bullet lists to keep output readable
-            - Separate distinct steps/findings with blank lines
-            - For tabular data, use compact Markdown tables (pipe syntax) and avoid fixed-width ASCII-art table alignment
-            - If a table would be too wide, reduce columns or use a concise bullet list instead of forcing alignment
-            - Be concise but thorough
-            - Use bullet points for lists
-            - Highlight critical findings with **bold**
-            - Use fenced code blocks for commands or command output when relevant
-            - For remediation commands (non-Get commands), explain what they do and why they're needed
-            - Always explain your reasoning
-            - When presenting diagnostic data, include the source server name in your explanation
-            """;
+        var responseFormat = PromptTemplateLoader.Render(
+            PromptTemplateIds.SystemResponseFormat,
+            new Dictionary<string, string?>
+            {
+                ["effectivePrimary"] = effectivePrimary
+            });
 
-        var troubleshootingApproach = $"""
-            ## Troubleshooting Approach
-            1. **Understand the Problem**: Ask clarifying questions if the issue description is vague
-            2. **Gather Data**: {dataCollectionGuidance}
-            3. **Verify Source**: {sourceVerificationGuidance}
-            4. **Analyze**: Look for errors, warnings, resource exhaustion, or configuration issues
-            5. **Diagnose**: Form hypotheses about the root cause based on evidence
-            6. **Recommend**: Provide clear, actionable next steps
-            """;
+        var troubleshootingApproach = PromptTemplateLoader.Render(
+            PromptTemplateIds.SystemTroubleshootingApproach,
+            new Dictionary<string, string?>
+            {
+                ["dataCollectionGuidance"] = dataCollectionGuidance,
+                ["sourceVerificationGuidance"] = sourceVerificationGuidance
+            });
 
-        var safetyGuidance = """
-            ## Safety
-            - Only read-only Get-* commands execute automatically
-            - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
-            - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
-            - In YOLO mode, remediation commands can execute without confirmation
-            - For ANY mutating task, you MUST call the run_powershell tool with the exact command
-            - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
-            - Never claim a command was executed unless run_powershell returned execution output
-            - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
-            - If no tool was executed, clearly state that no command has been run yet
-            - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
-            - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
-            - Never suggest commands that could cause data loss without clear warnings
-            - Always consider the impact of recommended actions
-            """;
+        var safetyGuidance = PromptTemplateLoader.Render(PromptTemplateIds.SystemSafety);
 
         var mcpRoleGuidance = string.Empty;
         if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer) || !string.IsNullOrWhiteSpace(settings.TicketingMcpServer))
@@ -259,10 +222,7 @@ internal static class SystemPromptBuilder
             }
         }
 
-        var identity = """
-            You are TroubleScout, an expert Windows Server troubleshooting assistant.
-            Your role is to diagnose issues on Windows servers by analyzing system data and providing actionable insights.
-            """;
+        var identity = PromptTemplateLoader.Render(PromptTemplateIds.SystemIdentity);
 
         var environmentContext = $"""
             ## Target Server Context
@@ -270,29 +230,14 @@ internal static class SystemPromptBuilder
             {primaryJeaBlock}
             """;
 
-        var toolInstructions = $"""
-            ## Your Capabilities
-            - Execute read-only PowerShell commands (Get-*) to gather diagnostic information from the target server
-            - Analyze Windows Event Logs, services, processes, performance counters, disk space, and network configuration
-            - Use all available runtime capabilities when relevant, including built-in tools, configured MCP servers, and loaded skills
-            - Always prefer using the available diagnostic tools to gather data rather than stating you cannot retrieve information
-            - Attempt every relevant diagnostic tool before concluding data is unavailable
-            - If a tool call returns an error or times out, retry it once with a slightly different approach before giving up
-            - All read-only tools (get_system_info, get_event_logs, get_services, get_processes, get_disk_space, get_network_info, get_performance_counters) execute automatically without any confirmation required
-            - Identify patterns, anomalies, and potential root causes
-            - Provide clear, prioritized recommendations
-
-            ## Multi-Server Sessions & Double-Hop Avoidance
-            - To avoid PowerShell double-hop authentication issues, NEVER run remote commands from one server to another.
-            - If you need data from a different server, use connect_server(serverName) to establish a DIRECT session from this client.
-            - If you need to use a constrained JEA endpoint, use connect_jea_server(serverName, configurationName) and then only run commands allowed by that endpoint.
-            - Use run_powershell(command, sessionName: "serverName") to run commands on that specific server.
-            - Use close_server_session(serverName) when done with a server to clean up resources.
-            - Always indicate which server each piece of data comes from.
-            {connectedSessionsBlock}
-            {jeaSessionsBlock}
-            {mcpRoleGuidance}
-            """;
+        var toolInstructions = PromptTemplateLoader.Render(
+            PromptTemplateIds.SystemToolInstructions,
+            new Dictionary<string, string?>
+            {
+                ["connectedSessionsBlock"] = connectedSessionsBlock,
+                ["jeaSessionsBlock"] = jeaSessionsBlock,
+                ["mcpRoleGuidance"] = mcpRoleGuidance
+            });
 
         var guidelines = $"""
             {troubleshootingApproach}
@@ -302,11 +247,12 @@ internal static class SystemPromptBuilder
             {responseFormat}
             """;
 
-        var customInstructions = $"""
-            Remember: Your goal is to help the user understand what's wrong with {effectivePrimary} and guide them to a solution,
-            not just dump raw data. Interpret the findings and provide expert analysis. Always maintain awareness of which
-            server you're working on.
-            """;
+        var customInstructions = PromptTemplateLoader.Render(
+            PromptTemplateIds.SystemCustomInstructions,
+            new Dictionary<string, string?>
+            {
+                ["effectivePrimary"] = effectivePrimary
+            });
 
         return new SystemMessageConfig
         {

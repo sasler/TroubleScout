@@ -1,0 +1,1 @@
+Response formatting requirement: Always reply in Markdown with short sections, bullet points, and blank lines between sections. For tabular data, use compact Markdown tables (pipe syntax), avoid ASCII-art aligned tables, and if width is large use a concise bullet list instead.

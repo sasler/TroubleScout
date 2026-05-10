@@ -1,0 +1,1 @@
+Execution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. For PowerShell cmdlets that support confirmation prompts, include -Confirm:$false when appropriate. Do not claim any action was executed unless tool output confirms execution.

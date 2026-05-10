@@ -146,6 +146,57 @@ public class SystemPromptTests : IDisposable
     }
 
     [Fact]
+    public void SystemPrompt_WithMultiServerContext_ShouldDescribeConnectedNamedSessions()
+    {
+        var config = SystemPromptBuilder.CreateSystemMessage(
+            "srv01",
+            ["srv02", "srv03"],
+            effectivePrimaryServer: null,
+            primaryJeaConfigName: null,
+            primaryJeaExecutor: null,
+            additionalExecutors: new Dictionary<string, PowerShellExecutor>(StringComparer.OrdinalIgnoreCase),
+            settings: new AppSettings(),
+            executionMode: ExecutionMode.Safe);
+
+        var content = GetCombinedPromptContent(config);
+
+        content.Should().Contain("## Connected PSSessions");
+        content.Should().Contain("Primary (default): srv01");
+        content.Should().Contain("srv02");
+        content.Should().Contain("srv03");
+        content.Should().Contain("Do NOT call connect_server for these");
+    }
+
+    [Fact]
+    public void SystemPrompt_WithPrimaryJeaContext_ShouldDescribeConstrainedEndpoint()
+    {
+        using var jeaExecutor = new PowerShellExecutor("srv-jea", "JEA-Admins");
+        jeaExecutor.SetJeaAllowedCommandsForTesting(["Get-Service", "Get-EventLog"]);
+
+        var config = SystemPromptBuilder.CreateSystemMessage(
+            "localhost",
+            ["srv-jea"],
+            effectivePrimaryServer: "srv-jea",
+            primaryJeaConfigName: "JEA-Admins",
+            primaryJeaExecutor: jeaExecutor,
+            additionalExecutors: new Dictionary<string, PowerShellExecutor>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["srv-jea"] = jeaExecutor
+            },
+            settings: new AppSettings(),
+            executionMode: ExecutionMode.Safe);
+
+        var content = GetCombinedPromptContent(config);
+
+        content.Should().Contain("Your primary troubleshooting focus is the remote server: srv-jea");
+        content.Should().Contain("## Primary JEA Endpoint: srv-jea (Configuration: JEA-Admins)");
+        content.Should().Contain("ONLY the following commands are available");
+        content.Should().Contain("Get-Service");
+        content.Should().Contain("Get-EventLog");
+        content.Should().Contain("Do NOT use the built-in diagnostic helper tools for srv-jea");
+    }
+
+    [Fact]
     public async Task SystemPromptOverride_ReplacesTroubleshootingApproachSection()
     {
         AppSettingsStore.Save(new AppSettings
