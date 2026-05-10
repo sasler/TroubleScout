@@ -346,6 +346,7 @@ internal sealed class SlashCommandDispatcher
             var persisted = _handlers.GetPersistedApprovedMcpServers()
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            var persistedSet = new HashSet<string>(persisted, StringComparer.OrdinalIgnoreCase);
 
             if (sessionApprovals.Count == 0 && persisted.Count == 0)
             {
@@ -358,7 +359,7 @@ internal sealed class SlashCommandDispatcher
             foreach (var name in sessionApprovals)
             {
                 var role = _handlers.GetMcpServerRole(name);
-                var persistedFlag = persisted.Any(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase))
+                var persistedFlag = persistedSet.Contains(name)
                     ? " [persisted]"
                     : string.Empty;
                 var roleFlag = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
