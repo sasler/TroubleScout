@@ -1707,14 +1707,13 @@ public class TroubleshootingSession : IAsyncDisposable
     private static string BuildPromptForExecutionSafety(string userMessage)
     {
         var promptBuilder = new StringBuilder(userMessage);
-        promptBuilder.Append("\n\nResponse formatting requirement: Always reply in Markdown with short sections, bullet points, and blank lines between sections. ");
-        promptBuilder.Append("For tabular data, use compact Markdown tables (pipe syntax), avoid ASCII-art aligned tables, and if width is large use a concise bullet list instead.");
+        promptBuilder.Append("\n\n");
+        promptBuilder.Append(PromptTemplateLoader.Render(PromptTemplateIds.TurnResponseFormattingRequirement));
 
         if (MutatingIntentRegex.IsMatch(userMessage))
         {
-            promptBuilder.Append("\n\nExecution safety requirement: If this request can modify system state, you must call run_powershell with the exact command. ");
-            promptBuilder.Append("For PowerShell cmdlets that support confirmation prompts, include -Confirm:$false when appropriate. ");
-            promptBuilder.Append("Do not claim any action was executed unless tool output confirms execution.");
+            promptBuilder.Append("\n\n");
+            promptBuilder.Append(PromptTemplateLoader.Render(PromptTemplateIds.TurnExecutionSafetyRequirement));
         }
 
         return promptBuilder.ToString();
@@ -1744,42 +1743,19 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         return action switch
         {
-            PostAnalysisAction.ContinueInvestigating => """
-                Continue investigating from the current evidence.
-
-                Requirements:
-                - Do not repeat the full prior diagnosis unless something changed.
-                - Gather only the next most useful diagnostics or validation steps.
-                - If you reach an updated diagnosis or recommendation, stop after this response.
-                - End with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.
-                """,
-            PostAnalysisAction.ApplyFix => """
-                Apply the most appropriate remediation based on your latest analysis.
-
-                Requirements:
-                - If you already recommended a fix in your most recent analysis, proceed with that path now instead of starting over.
-                - If you have not proposed a fix yet, determine the next remediation step first.
-                - Keep the explanation brief, request approval for any mutating commands, and do not repeat the full diagnosis unless it changed.
-                - After reporting the outcome or next remediation step, end with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.
-                """,
+            PostAnalysisAction.ContinueInvestigating => PromptTemplateLoader.Render(PromptTemplateIds.TurnPostAnalysisContinue),
+            PostAnalysisAction.ApplyFix => PromptTemplateLoader.Render(PromptTemplateIds.TurnPostAnalysisApplyFix),
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, "Unsupported post-analysis action.")
         };
     }
 
     private static string BuildApprovedCommandFollowUpPrompt(string executionSummary)
-    {
-        var promptBuilder = new StringBuilder();
-        promptBuilder.AppendLine("One or more approved command(s) have finished running.");
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine("Here are the approved command results:");
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine(executionSummary.Trim());
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine("Analyze what changed, summarize whether the action helped, and clearly state the next best option.");
-        promptBuilder.AppendLine("Do not continue into more diagnostics or remediation on your own after this response.");
-        promptBuilder.Append("End with a short `## Ready for next action` section so TroubleScout can ask the user what to do next.");
-        return promptBuilder.ToString();
-    }
+        => PromptTemplateLoader.Render(
+            PromptTemplateIds.TurnApprovedCommandFollowUp,
+            new Dictionary<string, string?>
+            {
+                ["executionSummary"] = executionSummary.Trim()
+            });
 
     private async Task<bool> HandlePostAnalysisActionAsync(CancellationToken cancellationToken)
     {
@@ -3278,14 +3254,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 DisplayName = "Server Evidence Collector",
                 Description = "Collects targeted server and MCP evidence, then returns only the relevant findings.",
                 Infer = true,
-                Prompt = """
-                    You are TroubleScout's focused evidence-collection sub-agent.
-                    Gather only the evidence needed for the current troubleshooting step.
-                    Prefer concise summaries over raw output dumps.
-                    Always identify the source server or MCP system for each finding.
-                    Do not recommend fixes unless the parent agent explicitly asked for remediation options.
-                    Return only the findings that materially affect the diagnosis.
-                    """
+                Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentServerEvidenceCollector)
             },
             new CustomAgentConfig
             {
@@ -3294,12 +3263,7 @@ public class TroubleshootingSession : IAsyncDisposable
                 Description = "Researches detected errors, symptoms, and event IDs on the web and returns concise findings.",
                 Infer = true,
                 Tools = ["web_search"],
-                Prompt = """
-                    You are TroubleScout's focused web research sub-agent.
-                    Use web_search to validate suspected issues, error messages, event IDs, and likely root causes.
-                    Prefer high-signal, directly relevant findings over generic troubleshooting advice.
-                    Return a short summary of what is relevant, why it matters, and any high-confidence remediation guidance.
-                    """
+                Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentIssueResearcher)
             }
         };
 
@@ -3308,11 +3272,7 @@ public class TroubleshootingSession : IAsyncDisposable
             "Monitoring Investigator",
             _configuredMonitoringMcpServer,
             availableMcpServers,
-            """
-            You are TroubleScout's monitoring-focused sub-agent.
-            Use the mapped monitoring MCP server to gather only the alert, dashboard, trigger, incident, or telemetry data that is relevant to the current issue.
-            Return concise findings with the monitoring source clearly identified.
-            """
+            PromptTemplateLoader.Render(PromptTemplateIds.AgentMonitoringInvestigator)
         );
         if (monitoringAgent != null)
         {
@@ -3324,11 +3284,7 @@ public class TroubleshootingSession : IAsyncDisposable
             "Ticket Investigator",
             _configuredTicketingMcpServer,
             availableMcpServers,
-            """
-            You are TroubleScout's ticket-focused sub-agent.
-            Use the mapped ticketing MCP server to gather only the tickets, incidents, prior actions, or historical notes that materially affect the current diagnosis.
-            Return concise findings with the ticketing source clearly identified.
-            """
+            PromptTemplateLoader.Render(PromptTemplateIds.AgentTicketInvestigator)
         );
         if (ticketingAgent != null)
         {

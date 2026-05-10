@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.6] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract prompt templates** - Long AI-facing system, agent, and turn prompts now live in embedded Markdown templates loaded through a small template renderer, preserving settings-based system prompt overrides and adding focused rendering coverage for default, multi-server, JEA, and MCP role prompt scenarios.
+
 ## [v1.17.5] - 2026-05-10
 
 ### Internal

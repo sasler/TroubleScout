@@ -155,17 +155,17 @@ All coding tasks must follow this workflow for each logical unit of work:
 2. **Implement** — write the minimum code to make the tests pass.
 3. **Run tests, fix, repeat** — `dotnet build && dotnet test` until all tests pass.
 4. **Run smoke tests** — `dotnet run -- --server localhost --prompt "how is this computer doing?"`. If anything fails, go back to step 2. The app was fully functional before your changes — any errors are regressions you introduced.
-5. **Code review** — send to a subagent with a different model for review. If implementation used GPT, use the latest Sonnet model for review; if it used Claude, use the latest GPT model.
+5. **Code review** — send to a subagent for review. If a different model is avialbale for code review agent, use it.
 6. **Apply valid suggestions** — implement the review feedback, then repeat from step 3.
 7. **Commit and move to next task**.
 
-### Model Selection for Agents
+### Model Selection for Agents (if available)
 
 | Task                    | Model        |
 |-------------------------|--------------|
-| Coding / implementation | GPT 5.4      |
+| Coding / implementation | GPT 5.5      |
 | Code review             | Sonnet 4.6   |
-| UI / design tasks       | Opus 4.6     |
+| UI / design tasks       | Opus 4.7     |
 | App smoke tests         | GPT 4.1 (GitHub) — free tier |
 
 ## Git Workflow Rules
