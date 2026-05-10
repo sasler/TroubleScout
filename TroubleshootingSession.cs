@@ -312,12 +312,26 @@ public class TroubleshootingSession : IAsyncDisposable
             },
             ReconnectServer = ReconnectAsync,
             ConnectAdditionalServer = ConnectAdditionalServerAsync,
+            ConnectJeaServer = ConnectJeaServerAsync,
             PromptCommandApproval = (command, reason) =>
                 ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved,
+            PromptText = () => ConsoleUI.GetUserInput(),
             RefreshServerContext = () =>
                 _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList()),
             RecreateCurrentCopilotSession = RecreateCurrentCopilotSessionAsync,
             ShowModelSelectionSummary = () => ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails()),
+            GetJeaAllowedCommands = serverName =>
+                _serverManager.Executors.TryGetValue(serverName, out var executor) && executor.JeaAllowedCommands is { Count: > 0 } commands
+                    ? commands
+                    : Array.Empty<string>(),
+            ShowJeaDiscoveredCommands = (serverName, configurationName, commands) =>
+            {
+                AnsiConsole.MarkupLine($"[grey]Discovered commands for {Markup.Escape(serverName)} ({Markup.Escape(configurationName)}):[/]");
+                foreach (var commandName in commands.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                {
+                    AnsiConsole.MarkupLine($"  [grey]-[/] {Markup.Escape(commandName)}");
+                }
+            },
             GetLastAssistantMessage = () => _lastAssistantMessage,
             GetRecordedPrompts = GetRecordedPromptSnapshot,
             GetReportSessionSummary = BuildReportSessionSummary,
@@ -2677,81 +2691,6 @@ public class TroubleshootingSession : IAsyncDisposable
                         }
                     }
                 }
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/jea"))
-            {
-                var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var serverName = parts.Length > 1 ? parts[1] : null;
-                var configurationName = parts.Length > 2 ? string.Join(' ', parts.Skip(2)) : null;
-
-                if (string.IsNullOrWhiteSpace(serverName))
-                {
-                    ConsoleUI.ShowInfo("Enter the server name for the JEA session:");
-                    serverName = ConsoleUI.GetUserInput().Trim();
-                    if (string.IsNullOrWhiteSpace(serverName))
-                    {
-                        ConsoleUI.ShowWarning("Server name cannot be empty.");
-                        continue;
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(configurationName))
-                {
-                    ConsoleUI.ShowInfo("Enter the JEA configuration name:");
-                    configurationName = ConsoleUI.GetUserInput().Trim();
-                    if (string.IsNullOrWhiteSpace(configurationName))
-                    {
-                        ConsoleUI.ShowWarning("Configuration name cannot be empty.");
-                        continue;
-                    }
-                }
-
-                if (parts.Length < 3)
-                {
-                    ConsoleUI.ShowInfo("Example: /jea server1 JEA-Admins");
-                }
-
-                var success = await ConsoleUI.RunWithSpinnerAsync(
-                    $"Connecting to JEA endpoint {configurationName} on {serverName}...",
-                    async _ =>
-                    {
-                        var (connected, error) = await ConnectJeaServerAsync(serverName, configurationName, skipApproval: true);
-                        if (!connected)
-                        {
-                            ConsoleUI.ShowWarning(error ?? $"Could not connect to JEA endpoint {configurationName} on {serverName}.");
-                        }
-
-                        return connected;
-                    });
-
-                if (success)
-                {
-                    if (_serverManager.Executors.TryGetValue(serverName, out var executor) && executor.JeaAllowedCommands is { Count: > 0 })
-                    {
-                        ConsoleUI.ShowSuccess($"Connected to JEA endpoint '{configurationName}' on {serverName}");
-                        AnsiConsole.MarkupLine($"[grey]Discovered commands for {Markup.Escape(serverName)} ({Markup.Escape(configurationName)}):[/]");
-                        foreach (var commandName in executor.JeaAllowedCommands.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
-                        {
-                            AnsiConsole.MarkupLine($"  [grey]-[/] {Markup.Escape(commandName)}");
-                        }
-                    }
-
-                    _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-
-                    if (_copilotClient != null && _copilotSession != null)
-                    {
-                        await _copilotSession.DisposeAsync();
-                        _copilotSession = null;
-                        await CreateCopilotSessionAsync(
-                            string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel,
-                            null);
-                    }
-
-                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-                }
-
                 continue;
             }
 
