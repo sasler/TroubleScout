@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.2] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract `/report` slash-command dispatch** - `/report` now flows through `SlashCommandDispatcher.DispatchAsync`, preserving no-history handling, temp HTML report generation, browser-open behavior, and success/warning messages with focused dispatcher tests.
+
 ## [v1.17.1] - 2026-05-09
 
 ### Internal

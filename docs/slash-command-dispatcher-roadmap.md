@@ -9,7 +9,7 @@ as a separate PR so interactive behavior stays easy to review and test.
 - [x] `/reasoning` - Move parsing, supported-effort validation, preference
   persistence, active-session recreation, failure rollback, and summary output
   into `SlashCommandDispatcher.DispatchAsync`.
-- [ ] `/report` - Move no-history handling, temp report generation, HTML write,
+- [x] `/report` - Move no-history handling, temp report generation, HTML write,
   browser-open attempt, and user-facing success/warning messages.
 - [ ] `/mcp-approvals` - Move `list`, `clear all`, and `clear <server>` while
   preserving per-session and persisted approval semantics.

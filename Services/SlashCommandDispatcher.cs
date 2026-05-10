@@ -1,4 +1,5 @@
 using GitHub.Copilot.SDK;
+using System.Text;
 
 namespace TroubleScout.Services;
 
@@ -53,6 +54,9 @@ internal sealed class SlashCommandHandlers
     internal Func<ReportSessionSummary?> GetReportSessionSummary { get; init; } = static () => null;
     internal Action<IReadOnlyList<ReportPromptEntry>> ReplaceRecordedPrompts { get; init; } = static _ => { };
     internal Func<bool> HasRecordedHistory { get; init; } = static () => false;
+    internal Func<string> CreateReportPath { get; init; } = SlashCommandDispatcher.CreateDefaultReportPath;
+    internal Action<string, string> WriteReportHtml { get; init; } = SlashCommandDispatcher.WriteReportHtmlFile;
+    internal Action<string> OpenReport { get; init; } = SlashCommandDispatcher.OpenReportInDefaultBrowser;
     internal Func<string, bool> ConfirmOverwrite { get; init; } = static _ => false;
     internal Func<bool> ConfirmTranscriptLoadReplace { get; init; } = static () => false;
     internal Action<string> ShowInfo { get; init; } = static _ => { };
@@ -169,6 +173,12 @@ internal sealed class SlashCommandDispatcher
             return SlashCommandResult.HandledCommand;
         }
 
+        if (IsInvocation(parsed.Lower, "/report"))
+        {
+            HandleReportCommand();
+            return SlashCommandResult.HandledCommand;
+        }
+
         return SlashCommandResult.NotHandled;
     }
 
@@ -281,6 +291,77 @@ internal sealed class SlashCommandDispatcher
         {
             _handlers.ShowSuccess($"Reasoning preference saved: {_handlers.GetReasoningDisplay(currentModel) ?? "auto"}");
         }
+    }
+
+    private void HandleReportCommand()
+    {
+        var prompts = _handlers.GetRecordedPrompts();
+
+        if (prompts.Count == 0)
+        {
+            _handlers.ShowInfo("No prompts recorded yet. Ask a question first, then run /report.");
+            return;
+        }
+
+        var reportPath = _handlers.CreateReportPath();
+        var summary = _handlers.GetReportSessionSummary();
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts, summary, contentAlreadyRedacted: true);
+        _handlers.WriteReportHtml(reportPath, html);
+
+        try
+        {
+            _handlers.OpenReport(reportPath);
+            _handlers.ShowSuccess($"Report generated and opened: {reportPath}");
+            _handlers.ShowInfo($"Reports are stored in temp: {Path.GetDirectoryName(reportPath) ?? Path.GetTempPath()}");
+        }
+        catch (Exception ex)
+        {
+            _handlers.ShowWarning($"Report generated at {reportPath}, but could not auto-open browser: {TrimSingleLine(ex.Message)}");
+        }
+    }
+
+    internal static string CreateDefaultReportPath()
+    {
+        var reportsDir = Path.Combine(Path.GetTempPath(), "TroubleScout", "reports");
+        Directory.CreateDirectory(reportsDir);
+
+        return Path.Combine(reportsDir, $"troublescout-report-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.html");
+    }
+
+    internal static void OpenReportInDefaultBrowser(string reportPath)
+    {
+        System.Diagnostics.Process.Start(CreateReportOpenStartInfo(reportPath));
+    }
+
+    internal static System.Diagnostics.ProcessStartInfo CreateReportOpenStartInfo(string reportPath)
+    {
+        // Use cmd.exe /c start instead of UseShellExecute to respect the current
+        // user context when running as a different user (RunAs). UseShellExecute
+        // opens the browser as the primary logged-in user, causing path mismatches.
+        return new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/c start \"\" \"{reportPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
+
+    internal static void WriteReportHtmlFile(string reportPath, string html)
+    {
+        File.WriteAllText(reportPath, html, Encoding.UTF8);
+    }
+
+    private static string TrimSingleLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "Unknown error";
+        }
+
+        var trimmed = text.Trim();
+        var newlineIndex = trimmed.IndexOfAny(['\r', '\n']);
+        return newlineIndex < 0 ? trimmed : trimmed[..newlineIndex].Trim();
     }
 
     private void HandleModeCommand(string input)
