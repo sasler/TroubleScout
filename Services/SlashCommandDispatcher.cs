@@ -50,10 +50,14 @@ internal sealed class SlashCommandHandlers
     internal Func<string, Action<string>?, Task<bool>> RecreateCopilotSession { get; init; } = static (_, _) => Task.FromResult(false);
     internal Func<string, Action<string>?, Task<bool>> ReconnectServer { get; init; } = static (_, _) => Task.FromResult(false);
     internal Func<string, bool, Task<(bool Success, string? Error)>> ConnectAdditionalServer { get; init; } = static (_, _) => Task.FromResult((false, (string?)null));
+    internal Func<string, string, bool, Task<(bool Success, string? Error)>> ConnectJeaServer { get; init; } = static (_, _, _) => Task.FromResult((false, (string?)null));
     internal Func<string, string, bool> PromptCommandApproval { get; init; } = static (_, _) => false;
+    internal Func<string> PromptText { get; init; } = static () => string.Empty;
     internal Action RefreshServerContext { get; init; } = static () => { };
     internal Func<Task<(bool Success, string? Error)>> RecreateCurrentCopilotSession { get; init; } = static () => Task.FromResult((true, (string?)null));
     internal Action ShowModelSelectionSummary { get; init; } = static () => { };
+    internal Func<string, IReadOnlyCollection<string>> GetJeaAllowedCommands { get; init; } = static _ => Array.Empty<string>();
+    internal Action<string, string, IReadOnlyCollection<string>> ShowJeaDiscoveredCommands { get; init; } = static (_, _, _) => { };
     internal Func<string?> GetLastAssistantMessage { get; init; } = static () => null;
     internal Func<List<ReportPromptEntry>> GetRecordedPrompts { get; init; } = static () => [];
     internal Func<ReportSessionSummary?> GetReportSessionSummary { get; init; } = static () => null;
@@ -194,6 +198,12 @@ internal sealed class SlashCommandDispatcher
         if (IsInvocation(parsed.Lower, "/mcp-approvals"))
         {
             HandleMcpApprovalsCommand(parsed.Trimmed);
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/jea"))
+        {
+            await HandleJeaCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -498,6 +508,81 @@ internal sealed class SlashCommandDispatcher
 
                 _handlers.ShowWarning(message);
             }
+        }
+
+        _handlers.ShowStatus(false);
+    }
+
+    private async Task HandleJeaCommandAsync(string input)
+    {
+        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var serverName = parts.Length > 1 ? parts[1] : null;
+        var configurationName = parts.Length > 2 ? string.Join(' ', parts.Skip(2)) : null;
+
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            _handlers.ShowInfo("Enter the server name for the JEA session:");
+            serverName = _handlers.PromptText().Trim();
+            if (string.IsNullOrWhiteSpace(serverName))
+            {
+                _handlers.ShowWarning("Server name cannot be empty.");
+                return;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(configurationName))
+        {
+            _handlers.ShowInfo("Enter the JEA configuration name:");
+            configurationName = _handlers.PromptText().Trim();
+            if (string.IsNullOrWhiteSpace(configurationName))
+            {
+                _handlers.ShowWarning("Configuration name cannot be empty.");
+                return;
+            }
+        }
+
+        if (parts.Length < 3)
+        {
+            _handlers.ShowInfo("Example: /jea server1 JEA-Admins");
+        }
+
+        var connected = await _handlers.RunWithSpinnerAsync(
+            $"Connecting to JEA endpoint {configurationName} on {serverName}...",
+            async _ =>
+            {
+                var (success, error) = await _handlers.ConnectJeaServer(serverName, configurationName, true);
+                if (!success)
+                {
+                    _handlers.ShowWarning(error ?? $"Could not connect to JEA endpoint {configurationName} on {serverName}.");
+                }
+
+                return success;
+            });
+
+        if (!connected)
+        {
+            return;
+        }
+
+        var allowedCommands = _handlers.GetJeaAllowedCommands(serverName);
+        if (allowedCommands.Count > 0)
+        {
+            _handlers.ShowSuccess($"Connected to JEA endpoint '{configurationName}' on {serverName}");
+            _handlers.ShowJeaDiscoveredCommands(serverName, configurationName, allowedCommands);
+        }
+
+        _handlers.RefreshServerContext();
+
+        var (recreated, recreateError) = await _handlers.RecreateCurrentCopilotSession();
+        if (!recreated)
+        {
+            var message = "Connected JEA endpoint, but the AI session could not be recreated. Use /login or /model to reconnect.";
+            if (!string.IsNullOrWhiteSpace(recreateError))
+            {
+                message += $" {recreateError}";
+            }
+
+            _handlers.ShowWarning(message);
         }
 
         _handlers.ShowStatus(false);

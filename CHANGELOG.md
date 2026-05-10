@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.5] - 2026-05-10
+
+### Internal
+
+- 🧭 **Extract `/jea` slash-command dispatch** - `/jea` now flows through `SlashCommandDispatcher.DispatchAsync`, preserving guided prompts, example output, skip-approval connection, discovered-command display, status refresh, and AI session recreation with focused dispatcher tests.
+
 ## [v1.17.4] - 2026-05-10
 
 ### Internal

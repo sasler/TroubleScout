@@ -688,6 +688,210 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithJeaWithoutArguments_ShouldPromptAndConnectWithSkipApproval()
+    {
+        var prompts = new Queue<string>(["srv1", "JEA-Admins"]);
+        var infos = new List<string>();
+        var connectCalls = new List<(string Server, string Configuration, bool SkipApproval)>();
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            PromptText = () => prompts.Dequeue(),
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ConnectJeaServer = (server, configuration, skipApproval) =>
+            {
+                connectCalls.Add((server, configuration, skipApproval));
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowInfo = infos.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea");
+
+        result.Handled.Should().BeTrue();
+        infos.Should().Contain("Enter the server name for the JEA session:");
+        infos.Should().Contain("Enter the JEA configuration name:");
+        infos.Should().Contain("Example: /jea server1 JEA-Admins");
+        connectCalls.Should().Equal(("srv1", "JEA-Admins", true));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaEmptyGuidedServer_ShouldWarnAndNotConnect()
+    {
+        var warnings = new List<string>();
+        var connectCalls = 0;
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            PromptText = () => " ",
+            ConnectJeaServer = (_, _, _) =>
+            {
+                connectCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Server name cannot be empty.");
+        connectCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaEmptyGuidedConfiguration_ShouldWarnAndNotConnect()
+    {
+        var prompts = new Queue<string>(["srv1", " "]);
+        var warnings = new List<string>();
+        var connectCalls = 0;
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            PromptText = () => prompts.Dequeue(),
+            ConnectJeaServer = (_, _, _) =>
+            {
+                connectCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Configuration name cannot be empty.");
+        connectCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaConfigurationContainingSpaces_ShouldJoinConfigurationName()
+    {
+        var connectCalls = new List<(string Server, string Configuration, bool SkipApproval)>();
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ConnectJeaServer = (server, configuration, skipApproval) =>
+            {
+                connectCalls.Add((server, configuration, skipApproval));
+                return Task.FromResult((true, (string?)null));
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea srv1 JEA Admin Role");
+
+        result.Handled.Should().BeTrue();
+        connectCalls.Should().Equal(("srv1", "JEA Admin Role", true));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaSuccess_ShouldShowCommandsRefreshRecreateAndShowStatus()
+    {
+        var spinnerLabels = new List<string>();
+        var successes = new List<string>();
+        var renderedCommands = new List<(string Server, string Configuration, IReadOnlyCollection<string> Commands)>();
+        var refreshCalls = 0;
+        var recreateCalls = 0;
+        var statusCalls = new List<bool>();
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (label, action) =>
+            {
+                spinnerLabels.Add(label);
+                return await action(_ => { });
+            },
+            ConnectJeaServer = (_, _, _) => Task.FromResult((true, (string?)null)),
+            GetJeaAllowedCommands = _ => new[] { "Get-Service", "Restart-Service" },
+            ShowJeaDiscoveredCommands = (server, configuration, commands) =>
+                renderedCommands.Add((server, configuration, commands.ToArray())),
+            RefreshServerContext = () => refreshCalls++,
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowStatus = statusCalls.Add,
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea srv1 JEA-Admins");
+
+        result.Handled.Should().BeTrue();
+        spinnerLabels.Should().Equal("Connecting to JEA endpoint JEA-Admins on srv1...");
+        successes.Should().Contain("Connected to JEA endpoint 'JEA-Admins' on srv1");
+        renderedCommands.Should().ContainSingle();
+        renderedCommands[0].Server.Should().Be("srv1");
+        renderedCommands[0].Configuration.Should().Be("JEA-Admins");
+        renderedCommands[0].Commands.Should().BeEquivalentTo("Get-Service", "Restart-Service");
+        refreshCalls.Should().Be(1);
+        recreateCalls.Should().Be(1);
+        statusCalls.Should().Equal(false);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaConnectFailure_ShouldWarnAndSkipRefreshRecreateStatus()
+    {
+        var warnings = new List<string>();
+        var refreshCalls = 0;
+        var recreateCalls = 0;
+        var statusCalls = 0;
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ConnectJeaServer = (_, _, _) => Task.FromResult((false, (string?)"access denied")),
+            RefreshServerContext = () => refreshCalls++,
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowStatus = _ => statusCalls++,
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea srv1 JEA-Admins");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("access denied");
+        refreshCalls.Should().Be(0);
+        recreateCalls.Should().Be(0);
+        statusCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaSessionRecreateFailure_ShouldWarnWithError()
+    {
+        var warnings = new List<string>();
+
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ConnectJeaServer = (_, _, _) => Task.FromResult((true, (string?)null)),
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"model unavailable")),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/jea srv1 JEA-Admins");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Connected JEA endpoint, but the AI session could not be recreated. Use /login or /model to reconnect. model unavailable");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithJeaLikeUnknownCommand_ShouldFallThrough()
+    {
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers());
+
+        var result = await dispatcher.DispatchAsync("/jeaX srv01 JEA-Admins");
+
+        result.Handled.Should().BeFalse();
+        result.ExitRequested.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task DispatchAsync_WithServerLikeUnknownCommand_ShouldFallThrough()
     {
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers());

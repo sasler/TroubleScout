@@ -16,7 +16,7 @@ as a separate PR so interactive behavior stays easy to review and test.
 - [x] `/server` - Move direct multi-server connection flow while preserving
   Safe-mode approval outside spinners and session recreation after additional
   targets.
-- [ ] `/jea` - Move guided prompts, example output, skip-approval connection,
+- [x] `/jea` - Move guided prompts, example output, skip-approval connection,
   discovered-command display, status refresh, and session recreation.
 
 ## Deferred Commands
