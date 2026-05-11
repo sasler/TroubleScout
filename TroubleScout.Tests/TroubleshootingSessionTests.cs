@@ -129,16 +129,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         SetPrivateField(_session, "_selectedModel", "gpt-4.1");
         SetPrivateField(_session, "_useByokOpenAi", false);
 
-        // Create a ModelSelectionEntry with Byok source via reflection
-        var entryType = typeof(TroubleshootingSession).GetNestedType("ModelSelectionEntry", BindingFlags.NonPublic);
-        var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
-        entryType.Should().NotBeNull();
-        sourceType.Should().NotBeNull();
-        var byokValue = Enum.Parse(sourceType!, "Byok");
-        var entry = Activator.CreateInstance(entryType!, "gpt-4.1", "GPT-4.1", byokValue)!;
+        var entry = new ModelSelectionEntry("gpt-4.1", "GPT-4.1", ModelSource.Byok);
 
         var method = typeof(TroubleshootingSession)
-            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [entryType!], null);
+            .GetMethod("IsCurrentModelAndSource", BindingFlags.Instance | BindingFlags.NonPublic, null, [typeof(ModelSelectionEntry)], null);
         method.Should().NotBeNull();
 
         // Act
@@ -1032,6 +1026,17 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     private static void SetPrivateField(object instance, string fieldName, object? value)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null && instance is TroubleshootingSession telemetrySession
+            && (fieldName == "_lastUsage" || fieldName == "_sessionPremiumRequestCost"))
+        {
+            var telemetry = GetSessionEventTelemetry(telemetrySession);
+            var propertyName = fieldName == "_lastUsage" ? nameof(SessionEventTelemetry.LastUsage) : nameof(SessionEventTelemetry.SessionPremiumRequestCost);
+            var telemetryProperty = telemetry.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            telemetryProperty.Should().NotBeNull();
+            telemetryProperty!.SetValue(telemetry, value);
+            return;
+        }
+
         if (field == null && instance is TroubleshootingSession session
             && (fieldName == "_availableModels" || fieldName == "_modelSources" || fieldName == "_byokPricing"))
         {
@@ -1696,7 +1701,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void ResetStateForNewAiSession_ShouldClearSessionUsageTracker()
     {
         var tracker = GetPrivateField<SessionUsageTracker>(_session, "_sessionUsageTracker");
-        var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, null);
+        var pricing = new ByokPriceInfo(2.50m, 10.00m, null);
         tracker.RecordTurn(100, 50, pricing, 1.0);
         SetPrivateField(_session, "_sessionPremiumRequestCost", 2.5);
 
@@ -2811,60 +2816,26 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     private static string InvokeBuildPromptForExecutionSafety(string userMessage)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("BuildPromptForExecutionSafety", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("BuildPromptForExecutionSafety should exist on TroubleshootingSession");
-        return (string)method!.Invoke(null, [userMessage])!;
-    }
+        => SessionPromptFlow.BuildPromptForExecutionSafety(userMessage);
 
     private static bool InvokeShouldOfferPostAnalysisActionPrompt(string response, bool forcePrompt)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("ShouldOfferPostAnalysisActionPrompt", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("ShouldOfferPostAnalysisActionPrompt should exist on TroubleshootingSession");
-        return (bool)method!.Invoke(null, [response, forcePrompt])!;
-    }
+        => SessionPromptFlow.ShouldOfferPostAnalysisActionPrompt(response, forcePrompt);
 
     private static string InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("BuildPostAnalysisFollowUpPrompt", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("BuildPostAnalysisFollowUpPrompt should exist on TroubleshootingSession");
-        return (string)method!.Invoke(null, [action])!;
-    }
+        => SessionPromptFlow.BuildPostAnalysisFollowUpPrompt(action);
 
     private static string InvokeBuildApprovedCommandFollowUpPrompt(string executionSummary)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("BuildApprovedCommandFollowUpPrompt", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("BuildApprovedCommandFollowUpPrompt should exist on TroubleshootingSession");
-        return (string)method!.Invoke(null, [executionSummary])!;
-    }
+        => SessionPromptFlow.BuildApprovedCommandFollowUpPrompt(executionSummary);
 
     private static void InvokeAddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("AddContextUsageField", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("AddContextUsageField should exist on TroubleshootingSession");
-        method!.Invoke(null, [fields, usedContext, maxContext]);
-    }
+        => SessionStatusBuilder.AddContextUsageField(fields, usedContext, maxContext);
 
     private static string InvokeGetModelRateLabel(TroubleshootingSession session, ModelInfo model, string sourceName)
     {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic);
-        var sourceType = typeof(TroubleshootingSession).GetNestedType("ModelSource", BindingFlags.NonPublic);
-        sourceType.Should().NotBeNull();
-        var source = Enum.Parse(sourceType!, sourceName);
-
-        method.Should().NotBeNull("GetModelRateLabel should exist on TroubleshootingSession");
-        return (string)method!.Invoke(session, [model, source])!;
+        var source = Enum.Parse<ModelSource>(sourceName);
+        return GetModelDiscoveryManager(session).GetType()
+            .GetMethod("GetModelRateLabel", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!
+            .Invoke(GetModelDiscoveryManager(session), [model, source]) as string ?? string.Empty;
     }
 
     private static string? InvokeResolveInitialSessionModel(TroubleshootingSession session, IReadOnlyList<ModelInfo> availableModels)
@@ -2877,22 +2848,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     private static void InvokeSaveModelAndProviderState(string model, bool useByokOpenAi)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("SaveModelAndProviderState", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("SaveModelAndProviderState should exist on TroubleshootingSession");
-        method!.Invoke(null, [model, useByokOpenAi]);
-    }
+        => SettingsWorkflowService.SaveModelAndProviderState(model, useByokOpenAi);
 
     private static string? InvokeGetByokWireApi(string model)
-    {
-        var method = typeof(TroubleshootingSession)
-            .GetMethod("GetByokWireApi", BindingFlags.Static | BindingFlags.NonPublic);
-
-        method.Should().NotBeNull("GetByokWireApi should exist on TroubleshootingSession");
-        return method!.Invoke(null, [model]) as string;
-    }
+        => SessionModelHelpers.GetByokWireApi(model);
 
     private static void InvokeReloadSafeCommandsFromSettings(TroubleshootingSession session)
     {
@@ -3009,6 +2968,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     private static T GetPrivateField<T>(object instance, string fieldName)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null && instance is TroubleshootingSession telemetrySession
+            && (fieldName == "_lastUsage" || fieldName == "_sessionPremiumRequestCost"))
+        {
+            var telemetry = GetSessionEventTelemetry(telemetrySession);
+            var propertyName = fieldName == "_lastUsage" ? nameof(SessionEventTelemetry.LastUsage) : nameof(SessionEventTelemetry.SessionPremiumRequestCost);
+            var telemetryProperty = telemetry.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            telemetryProperty.Should().NotBeNull();
+            return (T)telemetryProperty!.GetValue(telemetry)!;
+        }
+
         if (field == null && instance is TroubleshootingSession session
             && (fieldName == "_availableModels" || fieldName == "_modelSources" || fieldName == "_byokPricing"))
         {
@@ -3125,21 +3094,13 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static async Task<bool> InvokeChangeModelAsyncWithEntry(TroubleshootingSession session, TestModelSelectionEntry testEntry)
     {
-        var entryType = session.GetType().GetNestedType("ModelSelectionEntry", BindingFlags.NonPublic);
-        entryType.Should().NotBeNull("ModelSelectionEntry should exist as a nested type");
-
-        // Parse the source enum value
-        var modelSourceType = session.GetType().GetNestedType("ModelSource", BindingFlags.NonPublic)!;
-        var sourceValue = Enum.Parse(modelSourceType, testEntry.Source, ignoreCase: true);
-
-        // Construct a ModelSelectionEntry instance
-        var entry = Activator.CreateInstance(entryType!, testEntry.ModelId, testEntry.DisplayName, sourceValue);
-
+        var sourceValue = Enum.Parse<ModelSource>(testEntry.Source, ignoreCase: true);
+        var entry = new ModelSelectionEntry(testEntry.ModelId, testEntry.DisplayName, sourceValue);
         var method = typeof(TroubleshootingSession)
             .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
             .FirstOrDefault(m => m.Name == "ChangeModelAsync"
                 && m.GetParameters().Length >= 1
-                && m.GetParameters()[0].ParameterType == entryType);
+                && m.GetParameters()[0].ParameterType == typeof(ModelSelectionEntry));
 
         method.Should().NotBeNull("ChangeModelAsync(ModelSelectionEntry) overload should exist");
         var task = (Task<bool>)method!.Invoke(session, [entry, null])!;
@@ -3160,6 +3121,13 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         return field!.GetValue(session)!;
     }
 
+    private static object GetSessionEventTelemetry(TroubleshootingSession session)
+    {
+        var field = session.GetType().GetField("_telemetry", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull("_telemetry should exist on TroubleshootingSession");
+        return field!.GetValue(session)!;
+    }
+
     private static object CreateUsageSnapshot(
         int? promptTokens = null,
         int? completionTokens = null,
@@ -3170,11 +3138,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         int? usedContextTokens = null,
         int? freeContextTokens = null)
     {
-        var snapshotType = typeof(TroubleshootingSession).GetNestedType("CopilotUsageSnapshot", BindingFlags.NonPublic);
-        snapshotType.Should().NotBeNull();
-
-        return Activator.CreateInstance(
-            snapshotType!,
+        return new SessionUsageSnapshot(
             promptTokens,
             completionTokens,
             totalTokens,
@@ -3182,7 +3146,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             outputTokens,
             maxContextTokens,
             usedContextTokens,
-            freeContextTokens)!;
+            freeContextTokens);
     }
 
     private static PermissionRequestUrl CreateUrlPermissionRequest(string url, string? intention = null)

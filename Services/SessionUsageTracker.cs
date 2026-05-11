@@ -41,7 +41,7 @@ internal sealed class SessionUsageTracker
     /// For BYOK: uses per-million-token pricing.
     /// For GitHub: accumulates premium request multiplier.
     /// </summary>
-    public void RecordTurn(int? inputTokens, int? outputTokens, TroubleshootingSession.ByokPriceInfo? pricing, double? premiumMultiplier)
+    public void RecordTurn(int? inputTokens, int? outputTokens, ByokPriceInfo? pricing, double? premiumMultiplier)
     {
         var inTokens = inputTokens ?? 0;
         var outTokens = outputTokens ?? 0;

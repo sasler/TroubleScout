@@ -22,7 +22,7 @@ public class SessionUsageTrackerTests
     public void RecordTurn_ByokCost_CalculatesCorrectly()
     {
         var tracker = new SessionUsageTracker();
-        var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, "$2.50/M in, $10.00/M out");
+        var pricing = new ByokPriceInfo(2.50m, 10.00m, "$2.50/M in, $10.00/M out");
 
         tracker.RecordTurn(1_000_000, 500_000, pricing, null);
 
@@ -44,7 +44,7 @@ public class SessionUsageTrackerTests
     public void GetCostEstimateDisplay_ByokCost_ShowsDollarAmount()
     {
         var tracker = new SessionUsageTracker();
-        var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, null);
+        var pricing = new ByokPriceInfo(2.50m, 10.00m, null);
 
         tracker.RecordTurn(100_000, 50_000, pricing, null);
 
@@ -78,7 +78,7 @@ public class SessionUsageTrackerTests
     public void Reset_ClearsAll()
     {
         var tracker = new SessionUsageTracker();
-        var pricing = new TroubleshootingSession.ByokPriceInfo(2.50m, 10.00m, null);
+        var pricing = new ByokPriceInfo(2.50m, 10.00m, null);
 
         tracker.RecordTurn(100, 50, pricing, 1.0);
         tracker.Reset();

@@ -1799,7 +1799,7 @@ public class SlashCommandDispatcherTests
     {
         var entry = CreateModelEntry("gpt-5", "GPT 5 (GitHub Copilot)", isCurrent: false);
         var spinnerLabels = new List<string>();
-        var changedEntries = new List<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>();
+        var changedEntries = new List<ModelSelectionEntry>();
         var historyClears = 0;
         var summaries = 0;
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
@@ -1810,7 +1810,7 @@ public class SlashCommandDispatcherTests
             PromptModelSelection = (_, _) => entry,
             IsCurrentModelAndSource = _ => false,
             HasRecordedHistory = () => true,
-            PromptModelSwitchBehavior = (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession,
+            PromptModelSwitchBehavior = (_, _) => ModelSwitchBehavior.CleanSession,
             RunWithSpinnerAsync = async (label, action) =>
             {
                 spinnerLabels.Add(label);
@@ -1852,7 +1852,7 @@ public class SlashCommandDispatcherTests
             IsCurrentModelAndSource = _ => false,
             HasRecordedHistory = () => true,
             GetRecordedPrompts = () => [prompt],
-            PromptModelSwitchBehavior = (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion,
+            PromptModelSwitchBehavior = (_, _) => ModelSwitchBehavior.SecondOpinion,
             RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
             ChangeModel = (_, _) => Task.FromResult(true),
             ClearRecordedHistory = () => historyClears++,
@@ -1875,11 +1875,11 @@ public class SlashCommandDispatcherTests
         messages.Should().Contain("Asking gpt-5 for a second opinion using the current session context...");
     }
 
-    private static global::TroubleScout.TroubleshootingSession.ModelSelectionEntry CreateModelEntry(
+    private static ModelSelectionEntry CreateModelEntry(
         string modelId,
         string displayName,
         bool isCurrent)
-        => new(modelId, displayName, global::TroubleScout.TroubleshootingSession.ModelSource.GitHub)
+        => new(modelId, displayName, ModelSource.GitHub)
         {
             IsCurrent = isCurrent
         };

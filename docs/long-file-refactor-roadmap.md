@@ -23,6 +23,10 @@ they are not GitHub pull request numbers.
 - [x] Step G: Console UI Split - Split terminal lifetime/progress, input
   editing/history, status bar rendering, approval prompts, and thinking
   indicator helpers behind the existing `ConsoleUI` facade.
+- [x] Step G2: Aggressive TroubleshootingSession Split - Reduce
+  `TroubleshootingSession.cs` below a 900-line facade cap by moving remaining
+  prompt flow, approvals, status, telemetry, model/BYOK, target coordination,
+  initialization, and command wiring into focused services with direct tests.
 - [ ] Step H: Secondary Large-File Cleanup - Split `ReportHtmlBuilder` and
   `DiagnosticTools` into focused helpers without broad rewrites.
 

@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.13] - 2026-05-11
+
+### Internal
+
+- ♻️ **Aggressively split TroubleshootingSession** - `TroubleshootingSession.cs` is now capped below 900 lines as a facade/composition root, with prompt flow, approvals, status, telemetry, model/BYOK, target coordination, initialization, and command wiring moved into focused services and direct tests.
+
 ## [v1.17.12] - 2026-05-11
 
 ### Internal

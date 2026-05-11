@@ -1,9 +1,4 @@
 using System.Globalization;
-using System.Net;
-using System.Reflection;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using TroubleScout.Services;
@@ -15,44 +10,8 @@ namespace TroubleScout;
 /// <summary>
 /// Manages the Copilot-powered troubleshooting session
 /// </summary>
-public class TroubleshootingSession : IAsyncDisposable
+public partial class TroubleshootingSession : IAsyncDisposable
 {
-    [Flags]
-    internal enum ModelSource
-    {
-        None = 0,
-        GitHub = 1,
-        Byok = 2
-    }
-
-    internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSource Source)
-    {
-        public string ProviderLabel { get; init; } = string.Empty;
-        public string RateLabel { get; init; } = "n/a";
-        public string DetailSummary { get; init; } = string.Empty;
-        public bool IsCurrent { get; init; }
-
-        internal static ModelSelectionEntry FromService(Services.ModelSelectionEntry entry) =>
-            new(entry.ModelId, entry.DisplayName, (ModelSource)(int)entry.Source)
-            {
-                ProviderLabel = entry.ProviderLabel,
-                RateLabel = entry.RateLabel,
-                DetailSummary = entry.DetailSummary,
-                IsCurrent = entry.IsCurrent
-            };
-    }
-
-    internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText)
-    {
-        internal static ByokPriceInfo FromService(Services.ByokPriceInfo priceInfo) =>
-            new(priceInfo.InputPricePerMillionTokens, priceInfo.OutputPricePerMillionTokens, priceInfo.DisplayText);
-    }
-
-    internal enum ModelSwitchBehavior
-    {
-        CleanSession,
-        SecondOpinion
-    }
     private const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
     private const int MaxSecondOpinionTurns = 8;
@@ -101,10 +60,8 @@ public class TroubleshootingSession : IAsyncDisposable
     private string? _selectedReasoningEffort;
     private string? _configuredMonitoringMcpServer;
     private string? _configuredTicketingMcpServer;
-    private double? _sessionPremiumRequestCost;
     private readonly SessionPermissionHandler _permissionHandler;
-
-    private CopilotUsageSnapshot? _lastUsage;
+    private readonly SessionEventTelemetry _telemetry;
 
     private SystemMessageConfig _systemMessageConfig;
 
@@ -126,38 +83,12 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static readonly string[] SlashCommands = SlashCommandDispatcher.SlashCommands;
 
-    private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
-    {
-        string? effectivePrimary = null;
-        string? primaryJeaConfigName = null;
-        PowerShellExecutor? primaryJeaExec = null;
-
-        if (targetServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase)
-            && TryGetEffectivePrimaryJeaSession(out var primaryJeaServerName, out var configurationName, out var jeaExecCandidate))
-        {
-            effectivePrimary = primaryJeaServerName;
-            primaryJeaConfigName = configurationName;
-            primaryJeaExec = jeaExecCandidate;
-        }
-
-        var settings = new AppSettings
-        {
-            SystemPromptOverrides = _configuredSystemPromptOverrides?.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
-            SystemPromptAppend = _configuredSystemPromptAppend,
-            MonitoringMcpServer = _configuredMonitoringMcpServer,
-            TicketingMcpServer = _configuredTicketingMcpServer
-        };
-
-        return SystemPromptBuilder.CreateSystemMessage(
-            targetServer,
-            additionalServerNames,
-            effectivePrimary,
-            primaryJeaConfigName,
-            primaryJeaExec,
-            _serverManager.Executors,
-            settings,
-            _executionMode);
-    }
+    private EffectivePrimaryJeaSession? GetEffectivePrimaryJeaSessionInfo()
+        => SessionTargetDisplay.GetEffectivePrimaryJeaSession(
+            _initialJeaSession,
+            _startupJeaFocusActive,
+            _targetServer,
+            _serverManager.Executors);
 
     public TroubleshootingSession(
         string targetServer,
@@ -213,15 +144,22 @@ public class TroubleshootingSession : IAsyncDisposable
             ConsoleUI.PromptMcpApproval,
             settings);
         _permissionHandler.SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
+        _telemetry = new SessionEventTelemetry(
+            _sessionUsageTracker,
+            _runtimeMcpServers,
+            _runtimeSkills,
+            () => _useByokOpenAi,
+            GetSelectedModelInfo,
+            GetActiveByokPricing,
+            modelValue => _selectedModel = modelValue,
+            reasoningEffort => _selectedReasoningEffort = reasoningEffort,
+            version => _copilotVersion = version);
         _systemMessageConfig = CreateSystemMessage(_targetServer);
         _executor = new PowerShellExecutor(_targetServer);
         _executor.ExecutionMode = _executionMode;
         ApplySafeCommandsToAllExecutors(settings.SafeCommands);
         _diagnosticTools = CreateDiagnosticTools();
     }
-
-    private static Services.ModelSource ToServiceModelSource(ModelSource source)
-        => (Services.ModelSource)(int)source;
 
     /// <summary>
     /// Convenience constructor: servers[0] is primary, the rest are additional initial servers.
@@ -254,154 +192,6 @@ public class TroubleshootingSession : IAsyncDisposable
     {
     }
 
-    private DiagnosticTools CreateDiagnosticTools() =>
-        new(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
-            s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
-            (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName));
-
-    private SlashCommandDispatcher CreateSlashCommandDispatcher() =>
-        new(new SlashCommandHandlers
-        {
-            ShowHelp = ConsoleUI.ShowHelp,
-            ShowStatus = includeMcpApprovals => ConsoleUI.ShowStatusPanel(
-                EffectiveTargetServer,
-                EffectiveConnectionMode,
-                _copilotSession != null,
-                SelectedModel,
-                _executionMode,
-                GetStatusFields(includeMcpApprovals: includeMcpApprovals),
-                GetAdditionalTargetsForDisplay(),
-                DefaultSessionTarget),
-            ShowStats = () => ConsoleUI.ShowStatsPanel(
-                completedTurns: _sessionUsageTracker.CompletedTurns,
-                failedTurns: _sessionUsageTracker.FailedTurns,
-                cancelledTurns: _sessionUsageTracker.CancelledTurns,
-                totalInputTokens: _sessionUsageTracker.TotalInputTokens,
-                totalOutputTokens: _sessionUsageTracker.TotalOutputTokens,
-                p50Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.5),
-                p95Latency: _sessionUsageTracker.GetTurnElapsedQuantile(0.95),
-                totalToolCalls: _sessionUsageTracker.TotalToolCalls,
-                p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
-                p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
-                costEstimate: _sessionUsageTracker.GetCostEstimateDisplay()),
-            ShowHistory = () => ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory()),
-            GetExecutionMode = () => _executionMode,
-            SetExecutionMode = SetExecutionMode,
-            SetConsoleExecutionMode = ConsoleUI.SetExecutionMode,
-            GetTheme = () => ConsoleUI.CurrentTheme,
-            SetTheme = theme => ConsoleUI.CurrentTheme = theme,
-            PersistTheme = PersistThemeSetting,
-            GetSelectedModelInfo = GetSelectedModelInfo,
-            GetSelectedModelName = () => SelectedModel,
-            GetSelectedModelId = () => _selectedModel,
-            HasCopilotClient = () => _copilotClient != null,
-            IsDebugMode = () => _debugMode,
-            RefreshAvailableModels = RefreshAvailableModelsAsync,
-            GetAvailableModelCount = () => _modelDiscovery.AvailableModels.Count,
-            GetModelSelectionEntries = GetModelSelectionEntries,
-            PromptModelSelection = ConsoleUI.PromptModelSelection,
-            IsCurrentModelAndSource = IsCurrentModelAndSource,
-            PromptModelSwitchBehavior = ConsoleUI.PromptModelSwitchBehavior,
-            ChangeModel = ChangeModelAsync,
-            ClearRecordedHistory = ClearRecordedConversationHistory,
-            RunSecondOpinion = async (previousModel, selectedModel, prompts) =>
-                await RunInteractiveCancelableAiOperationAsync(token =>
-                    RequestSecondOpinionAsync(previousModel, selectedModel, prompts, token)),
-            GetByokBaseUrl = () => _byokOpenAiBaseUrl,
-            GetDefaultByokModel = () => _selectedModel ?? _requestedModel,
-            GetOpenAiApiKeyEnvironmentVariable = () => OpenAiApiKeyEnvironmentVariable,
-            GetEnvironmentVariable = Environment.GetEnvironmentVariable,
-            SaveByokSettings = SaveByokSettings,
-            ClearByokRuntimeState = () =>
-            {
-                _useByokOpenAi = false;
-                _byokOpenAiApiKey = null;
-            },
-            ConfigureByokOpenAi = ConfigureByokOpenAiAsync,
-            GetConfiguredReasoningEffort = () => _configuredReasoningEffort,
-            ApplyReasoningEffortSetting = ApplyReasoningEffortSetting,
-            SaveReasoningEffortState = SaveReasoningEffortState,
-            GetReasoningDisplay = GetReasoningDisplay,
-            PromptReasoningEffort = ConsoleUI.PromptReasoningEffort,
-            HasActiveCopilotSession = () => _copilotSession != null,
-            RunWithSpinnerAsync = ConsoleUI.RunWithSpinnerAsync,
-            RecreateCopilotSession = async (targetModel, updateStatus) =>
-            {
-                if (_copilotSession != null)
-                {
-                    await _copilotSession.DisposeAsync();
-                    _copilotSession = null;
-                }
-
-                return await CreateCopilotSessionAsync(targetModel, updateStatus);
-            },
-            ReconnectServer = ReconnectAsync,
-            ConnectAdditionalServer = ConnectAdditionalServerAsync,
-            ConnectJeaServer = ConnectJeaServerAsync,
-            PromptCommandApproval = (command, reason) =>
-                ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved,
-            PromptText = () => ConsoleUI.GetUserInput(),
-            ResetConversation = () => ResetConversationAsync(),
-            ClearConsole = Console.Clear,
-            ShowBanner = () => ConsoleUI.ShowBanner(),
-            ShowWelcomeMessage = ConsoleUI.ShowWelcomeMessage,
-            GetWelcomeHint = GetWelcomeHint,
-            GetSessionId = () => _sessionId,
-            EnsureSettingsFile = () => _ = AppSettingsStore.Load(),
-            GetSettingsPath = () => AppSettingsStore.SettingsPath,
-            OpenSettingsEditor = TryOpenSettingsEditorAsync,
-            ReloadSettings = ReloadSafeCommandsFromSettings,
-            GetPersistedTheme = () => AppSettingsStore.Load().Theme,
-            InvalidateModelCache = _modelDiscovery.InvalidateMergedModelListCache,
-            LoginAndCreateGitHubSession = LoginAndCreateGitHubSessionAsync,
-            GetConfiguredMonitoringMcpServer = () => _configuredMonitoringMcpServer,
-            GetConfiguredTicketingMcpServer = () => _configuredTicketingMcpServer,
-            GetAvailableMcpRoleServerNames = GetAvailableMcpRoleServerNames,
-            PromptMcpRoleSelection = ConsoleUI.PromptMcpRoleSelection,
-            SaveMcpRoleSettings = SaveMcpRoleSettings,
-            RefreshServerContext = () =>
-                _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList()),
-            RecreateCurrentCopilotSession = RecreateCurrentCopilotSessionAsync,
-            ShowModelSelectionSummary = () => ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails()),
-            GetJeaAllowedCommands = serverName =>
-                _serverManager.Executors.TryGetValue(serverName, out var executor) && executor.JeaAllowedCommands is { Count: > 0 } commands
-                    ? commands
-                    : Array.Empty<string>(),
-            ShowJeaDiscoveredCommands = (serverName, configurationName, commands) =>
-            {
-                AnsiConsole.MarkupLine($"[grey]Discovered commands for {Markup.Escape(serverName)} ({Markup.Escape(configurationName)}):[/]");
-                foreach (var commandName in commands.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
-                {
-                    AnsiConsole.MarkupLine($"  [grey]-[/] {Markup.Escape(commandName)}");
-                }
-            },
-            GetLastAssistantMessage = () => _lastAssistantMessage,
-            GetRecordedPrompts = GetRecordedPromptSnapshot,
-            GetReportSessionSummary = BuildReportSessionSummary,
-            ReplaceRecordedPrompts = ReplaceRecordedConversationHistory,
-            HasRecordedHistory = HasRecordedConversationHistory,
-            GetApprovedMcpServers = _permissionHandler.GetApprovedMcpServersSnapshot,
-            GetPersistedApprovedMcpServers = _permissionHandler.GetPersistedApprovedMcpServersSnapshot,
-            GetMcpServerRole = GetMcpServerRole,
-            RemovePersistedMcpApproval = _permissionHandler.RemovePersistedMcpApproval,
-            RemoveSessionMcpApproval = _permissionHandler.RemoveSessionMcpApproval,
-            ClearPersistedMcpApprovals = _permissionHandler.ClearPersistedMcpApprovals,
-            ClearSessionMcpApprovals = _permissionHandler.ClearSessionMcpApprovals,
-            ConfirmOverwrite = targetPath => AnsiConsole.Confirm(SafeMarkup.Interpolate($"File '{targetPath}' already exists. Overwrite?"), defaultValue: false),
-            ConfirmTranscriptLoadReplace = () => AnsiConsole.Confirm("Loading this transcript will replace the current recorded session history. Continue?", defaultValue: false),
-            ShowInfo = ConsoleUI.ShowInfo,
-            ShowWarning = ConsoleUI.ShowWarning,
-            ShowSuccess = ConsoleUI.ShowSuccess,
-            ShowError = ConsoleUI.ShowError
-        });
-
-    private static void PersistThemeSetting(string theme)
-    {
-        var settings = AppSettingsStore.Load();
-        settings.Theme = theme;
-        AppSettingsStore.Save(settings);
-    }
-
     private readonly string? _requestedModel;
     private bool _useByokOpenAi
     {
@@ -427,101 +217,35 @@ public class TroubleshootingSession : IAsyncDisposable
         set => _byokProviderManager.ApiKey = value;
     }
 
-    private static readonly Regex MutatingIntentRegex = new(
-        "\\b(empty|clear|delete|remove|restart|stop|start|set|enable|disable|kill|format|reset|recycle\\s+bin|trash)\\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex PostAnalysisHeadingRegex = new(
-        "^\\s{0,3}#{1,6}\\s*(diagnosis|findings|recommendation|recommendations|next steps|root cause)\\b",
-        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
-    private static readonly Regex CliModelIdRegex = new(
-        "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Gpt5FamilyModelRegex = new(
-        "(^|[^a-z0-9])gpt[\\s._-]*5($|[^a-z0-9])",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
-
-    private bool TryGetEffectivePrimaryJeaSession(
-        out string serverName,
-        out string configurationName,
-        out PowerShellExecutor executor)
-    {
-        if (_initialJeaSession is { } jea
-            && _startupJeaFocusActive
-            && _targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            && _serverManager.Executors.TryGetValue(jea.ServerName, out var candidate)
-            && candidate.IsJeaSession)
-        {
-            serverName = jea.ServerName;
-            configurationName = candidate.ConfigurationName ?? jea.ConfigurationName;
-            executor = candidate;
-            return true;
-        }
-
-        serverName = string.Empty;
-        configurationName = string.Empty;
-        executor = null!;
-        return false;
-    }
 
     /// <summary>
     /// The effective primary target for display purposes. When a startup JEA session is active
     /// and the base target is localhost, the JEA server is the effective primary target.
     /// </summary>
     public string EffectiveTargetServer
-    {
-        get
-        {
-            if (TryGetEffectivePrimaryJeaSession(out var serverName, out _, out _))
-            {
-                return serverName;
-            }
-
-            return _targetServer;
-        }
-    }
+        => SessionTargetDisplay.GetEffectiveTargetServer(_targetServer, GetEffectivePrimaryJeaSessionInfo());
 
     /// <summary>
     /// Connection mode reflecting the effective primary context. Returns JEA mode
     /// when a startup JEA session is the effective primary target.
     /// </summary>
     public string EffectiveConnectionMode
-    {
-        get
-        {
-            if (TryGetEffectivePrimaryJeaSession(out _, out var configurationName, out _))
-            {
-                return $"JEA ({configurationName})";
-            }
-
-            return _executor.GetConnectionMode();
-        }
-    }
+        => SessionTargetDisplay.GetEffectiveConnectionMode(_executor, GetEffectivePrimaryJeaSessionInfo());
 
     /// <summary>
     /// All target servers, with the effective primary listed first.
     /// When a startup JEA session is the effective primary, localhost is excluded from the list.
     /// </summary>
     public IReadOnlyList<string> EffectiveTargetServers
-    {
-        get
-        {
-            if (TryGetEffectivePrimaryJeaSession(out var serverName, out _, out _))
-            {
-                // JEA server is primary; exclude localhost from the visible list
-                return [serverName, .._serverManager.Executors.Keys
-                    .Where(k => !k.Equals(serverName, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
-            }
-
-            return [_targetServer, .._serverManager.Executors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
-        }
-    }
+        => SessionTargetDisplay.GetEffectiveTargetServers(
+            _targetServer,
+            _serverManager.Executors,
+            GetEffectivePrimaryJeaSessionInfo());
 
     public string? DefaultSessionTarget =>
-        TryGetEffectivePrimaryJeaSession(out _, out _, out _) ? _targetServer : null;
+        GetEffectivePrimaryJeaSessionInfo() is null ? null : _targetServer;
 
     public bool IsAiSessionReady => _copilotSession != null;
     public string SelectedModel => GetModelDisplayName(_selectedModel) ?? "default";
@@ -537,264 +261,14 @@ public class TroubleshootingSession : IAsyncDisposable
     public IReadOnlyList<string> AllTargetServers =>
         [_targetServer, .._serverManager.Executors.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase)];
 
-    private sealed record CopilotUsageSnapshot(
-        int? PromptTokens,
-        int? CompletionTokens,
-        int? TotalTokens,
-        int? InputTokens,
-        int? OutputTokens,
-        int? MaxContextTokens,
-        int? UsedContextTokens,
-        int? FreeContextTokens)
-    {
-        public bool HasAny => PromptTokens.HasValue || CompletionTokens.HasValue || TotalTokens.HasValue ||
-                              InputTokens.HasValue || OutputTokens.HasValue || MaxContextTokens.HasValue ||
-                              UsedContextTokens.HasValue || FreeContextTokens.HasValue;
-    }
-
     /// <summary>
     /// Initialize the session and establish connections
     /// </summary>
     public async Task<bool> InitializeAsync(Action<string>? updateStatus = null, bool allowInteractiveSetup = false)
-    {
-        if (_isInitialized)
-            return true;
-
-        var copilotInitializationStarted = false;
-
-        try
-        {
-            // Test PowerShell connection and verify target
-            updateStatus?.Invoke($"Connecting to {_targetServer}...");
-            
-            var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
-            if (!connectionSuccess)
-            {
-                ConsoleUI.ShowError("Connection Failed", connectionError ?? $"Unable to connect to {_targetServer}");
-                return false;
-            }
-
-            // Show verified connection
-            updateStatus?.Invoke($"Connected to {_executor.ActualComputerName}...");
-
-            // Connect additional initial servers (non-fatal)
-            foreach (var additionalServer in _additionalInitialServers)
-            {
-                if (additionalServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                updateStatus?.Invoke($"Connecting to {additionalServer}...");
-                var (addSuccess, addError) = await ConnectAdditionalServerAsync(additionalServer, skipApproval: true);
-                if (!addSuccess)
-                {
-                    _configurationWarnings.Add($"Could not connect to additional server '{additionalServer}': {addError}");
-                    if (_debugMode)
-                    {
-                        ConsoleUI.ShowWarning($"Additional server '{additionalServer}' failed: {addError}");
-                    }
-                }
-            }
-
-            // Regenerate system message to include successfully connected additional servers
-            if (_serverManager.Executors.Count > 0)
-            {
-                _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-            }
-
-            if (_initialJeaSession is { } initialJeaSession)
-            {
-                updateStatus?.Invoke($"Connecting to JEA endpoint {initialJeaSession.ConfigurationName} on {initialJeaSession.ServerName}...");
-                var (jeaSuccess, jeaError) = await ConnectJeaServerAsync(
-                    initialJeaSession.ServerName,
-                    initialJeaSession.ConfigurationName,
-                    skipApproval: true);
-                if (!jeaSuccess)
-                {
-                    ConsoleUI.ShowError(
-                        "JEA Connection Failed",
-                        jeaError ?? $"Unable to connect to JEA endpoint '{initialJeaSession.ConfigurationName}' on {initialJeaSession.ServerName}");
-                    return false;
-                }
-            }
-
-            await WarnIfPowerShellVersionIsOldAsync();
-
-            // Initialize Copilot client
-            updateStatus?.Invoke("Starting Copilot SDK...");
-            copilotInitializationStarted = true;
-            
-            // Resolve Copilot CLI path (env override, bundled app CLI, then installed fallback).
-            // If nothing explicit is found, let the SDK use its default resolution path.
-            var cliPath = CopilotCliResolver.TryResolvePreferredCopilotCliPath();
-
-            var clientOptions = new CopilotClientOptions
-            {
-                LogLevel = "info"
-            };
-
-            if (!string.IsNullOrWhiteSpace(cliPath))
-            {
-                clientOptions.CliPath = cliPath;
-            }
-
-            _copilotClient = new CopilotClient(clientOptions);
-
-            try
-            {
-                await _copilotClient.StartAsync();
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
-            {
-                var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
-                await ShowCopilotInitializationFailureAsync(
-                    BuildProtocolMismatchMessage(report, _debugMode),
-                    ex,
-                    includeDiagnostics: true);
-                _copilotClient = null;
-                return false;
-            }
-            catch (Exception)
-            {
-                // CLI startup failed (e.g. unsupported --headless flag on older CLI versions).
-                // Dispose and null out the client so guard-checks see it as unavailable,
-                // then re-throw so the outer handler can show actionable diagnostics.
-                try { await _copilotClient.DisposeAsync(); } catch { /* best-effort */ }
-                _copilotClient = null;
-                throw;
-            }
-
-            _isGitHubCopilotAuthenticated = await IsGitHubAuthenticatedAsync();
-
-            if (_useByokOpenAi)
-            {
-                if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey))
-                {
-                    if (_byokExplicitlyRequested)
-                    {
-                        // User explicitly passed --byok-openai: fail with a clear error.
-                        await ShowCopilotInitializationFailureAsync(
-                            $"BYOK mode requires an OpenAI API key.\n\nSet {OpenAiApiKeyEnvironmentVariable} or pass --openai-api-key.",
-                            includeDiagnostics: false);
-                        return false;
-                    }
-
-                    // BYOK was loaded from saved settings but no key is available.
-                    // Fall back to GitHub Copilot so the app can still open.
-                    ConsoleUI.ShowWarning(
-                        "BYOK is enabled in saved settings but no API key is available. Falling back to GitHub Copilot.\n" +
-                        "Use /byok to configure OpenAI-compatible mode, or /model to switch provider.");
-                    _useByokOpenAi = false;
-                    // fall through to GitHub Copilot path below
-                }
-                else
-                {
-                    // Use requested model only when it was explicitly specified via CLI.
-                    // Otherwise pass null so the BYOK endpoint uses its default model,
-                    // avoiding failures from a stale saved model that may not be supported.
-                    var byokModel = _modelExplicitlyRequested
-                        ? _requestedModel
-                        : (!string.IsNullOrWhiteSpace(_selectedModel) ? _selectedModel : _requestedModel);
-
-                    if (!await CreateCopilotSessionAsync(byokModel, updateStatus))
-                    {
-                        return false;
-                    }
-
-                    await RefreshAvailableModelsAsync();
-
-                    _isInitialized = true;
-                    return true;
-                }
-            }
-
-            if (!_isGitHubCopilotAuthenticated)
-            {
-                if (allowInteractiveSetup)
-                {
-                    ConsoleUI.ShowWarning(
-                        "GitHub Copilot is not authenticated. Use /login to sign in, or /byok to configure OpenAI-compatible BYOK.");
-                    _isInitialized = true;
-                    return true;
-                }
-
-                await ShowCopilotInitializationFailureAsync(
-                    "Copilot CLI is installed but not authenticated.\n\nTo continue:\n  1. Run: copilot login\n  2. Re-run TroubleScout",
-                    includeDiagnostics: true);
-                return false;
-            }
-
-            updateStatus?.Invoke("Fetching available models...");
-            _modelDiscovery.AvailableModels = await GetMergedModelListAsync(cliPath);
-
-            if (_modelDiscovery.AvailableModels.Count == 0)
-            {
-                await ShowCopilotInitializationFailureAsync(
-                    "No models were returned by Copilot CLI. Ensure you are authenticated and your subscription has model access.",
-                    includeDiagnostics: true);
-                return false;
-            }
-
-            var effectiveModel = ResolveInitialSessionModel(_modelDiscovery.AvailableModels);
-            if (!string.IsNullOrWhiteSpace(_requestedModel)
-                && !string.Equals(effectiveModel, _requestedModel, StringComparison.OrdinalIgnoreCase)
-                && _modelDiscovery.AvailableModels.All(m => m.Id != _requestedModel))
-            {
-                if (_modelExplicitlyRequested)
-                {
-                    // User explicitly passed --model: fail with a clear error.
-                    ConsoleUI.ShowError("Invalid Model", $"The requested model '{_requestedModel}' is not available.");
-                    return false;
-                }
-
-                // Model from saved settings is not available (e.g. a BYOK-only model after switching to GitHub).
-                // Warn and fall back to the first verified available model rather than trusting the SDK default.
-                ConsoleUI.ShowWarning($"Saved model '{_requestedModel}' is not available with the current provider. Using '{effectiveModel}'.\nUse /model to select a different one.");
-            }
-
-            if (!await CreateCopilotSessionAsync(effectiveModel, updateStatus))
-            {
-                if (allowInteractiveSetup)
-                {
-                    ConsoleUI.ShowWarning("AI session is not ready. Use /login or /byok to set up authentication, then continue.");
-                    _isInitialized = true;
-                    return true;
-                }
-
-                return false;
-            }
-
-            await RefreshAvailableModelsAsync();
-            
-            _isInitialized = true;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            if (copilotInitializationStarted)
-            {
-                var report = await CopilotCliResolver.ValidateCopilotPrerequisitesAsync();
-                if (allowInteractiveSetup)
-                {
-                    ConsoleUI.ShowWarning(BuildActionableInitializationMessage(ex, report, _debugMode));
-                    _isInitialized = true;
-                    return true;
-                }
-
-                await ShowCopilotInitializationFailureAsync(
-                    BuildActionableInitializationMessage(ex, report, _debugMode),
-                    ex,
-                    includeDiagnostics: true);
-                return false;
-            }
-
-            ConsoleUI.ShowError("Initialization Failed", "TroubleScout could not complete startup.");
-            if (_debugMode)
-            {
-                ConsoleUI.ShowWarning($"Technical details: {TrimSingleLine(ex.Message)}");
-            }
-            return false;
-        }
-    }
+        => await SessionInitializationCoordinator.InitializeAsync(
+            CreateInitializationRequest(),
+            updateStatus,
+            allowInteractiveSetup);
 
     private string? ResolveInitialSessionModel(IReadOnlyList<ModelInfo> availableModels)
         => _modelDiscovery.ResolveInitialSessionModel(_requestedModel, availableModels);
@@ -803,143 +277,13 @@ public class TroubleshootingSession : IAsyncDisposable
     /// Change the AI model by creating a new session
     /// </summary>
     public async Task<bool> ChangeModelAsync(string newModel, Action<string>? updateStatus = null)
-    {
-        if (_copilotClient == null)
-        {
-            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(newModel))
-        {
-            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
-            return false;
-        }
-
-        if (_modelDiscovery.AvailableModels.Count == 0 || _modelDiscovery.AvailableModels.All(m => !m.Id.Equals(newModel, StringComparison.OrdinalIgnoreCase)))
-        {
-            ConsoleUI.ShowError("Invalid Model", $"The selected model '{newModel}' is not available.");
-            return false;
-        }
-
-        var targetSource = ResolveTargetSource(newModel);
-        if (targetSource == ModelSource.None)
-        {
-            ConsoleUI.ShowError("Invalid Model", $"Could not determine provider for model '{newModel}'.");
-            return false;
-        }
-
-        if (targetSource == ModelSource.Byok)
-        {
-            if (!IsByokConfigured())
-            {
-                ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
-                return false;
-            }
-
-            _useByokOpenAi = true;
-        }
-        else
-        {
-            if (!_isGitHubCopilotAuthenticated)
-            {
-                ConsoleUI.ShowWarning("GitHub Copilot is not authenticated. Run /login to use GitHub models.");
-                return false;
-            }
-
-            _useByokOpenAi = false;
-        }
-
-        try
-        {
-            // Dispose existing session
-            if (_copilotSession != null)
-            {
-                updateStatus?.Invoke("Closing current session...");
-                await _copilotSession.DisposeAsync();
-                _copilotSession = null;
-            }
-
-            if (!await CreateCopilotSessionAsync(newModel, updateStatus))
-            {
-                return false;
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            ConsoleUI.ShowError("Model Change Failed", ex.Message);
-            return false;
-        }
-    }
+        => await SessionModelSwitcher.ChangeModelAsync(newModel, CreateModelSwitchRequest(), updateStatus);
 
     internal async Task<bool> ChangeModelAsync(ModelSelectionEntry entry, Action<string>? updateStatus = null)
-    {
-        if (_copilotClient == null)
-        {
-            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(entry.ModelId))
-        {
-            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
-            return false;
-        }
-
-        if (_modelDiscovery.AvailableModels.Count == 0 || _modelDiscovery.AvailableModels.All(m => !m.Id.Equals(entry.ModelId, StringComparison.OrdinalIgnoreCase)))
-        {
-            ConsoleUI.ShowError("Invalid Model", $"The selected model '{entry.ModelId}' is not available.");
-            return false;
-        }
-
-        if (entry.Source == ModelSource.Byok)
-        {
-            if (!IsByokConfigured())
-            {
-                ConsoleUI.ShowWarning("BYOK is not configured. Run /byok first to use BYOK models.");
-                return false;
-            }
-
-            _useByokOpenAi = true;
-        }
-        else
-        {
-            if (!_isGitHubCopilotAuthenticated)
-            {
-                ConsoleUI.ShowWarning("GitHub Copilot is not authenticated. Run /login to use GitHub models.");
-                return false;
-            }
-
-            _useByokOpenAi = false;
-        }
-
-        try
-        {
-            if (_copilotSession != null)
-            {
-                updateStatus?.Invoke("Closing current session...");
-                await _copilotSession.DisposeAsync();
-                _copilotSession = null;
-            }
-
-            if (!await CreateCopilotSessionAsync(entry.ModelId, updateStatus))
-            {
-                return false;
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            ConsoleUI.ShowError("Model Change Failed", ex.Message);
-            return false;
-        }
-    }
+        => await SessionModelSwitcher.ChangeModelAsync(entry, CreateModelSwitchRequest(), updateStatus);
 
     private ModelSource ResolveTargetSource(string modelId)
-        => (ModelSource)(int)_modelDiscovery.ResolveTargetSource(modelId, _useByokOpenAi, _isGitHubCopilotAuthenticated);
+        => _modelDiscovery.ResolveTargetSource(modelId, _useByokOpenAi, _isGitHubCopilotAuthenticated);
 
     private string? GetModelDisplayName(string? modelId)
         => _modelDiscovery.GetModelDisplayName(modelId);
@@ -963,19 +307,18 @@ public class TroubleshootingSession : IAsyncDisposable
                     displayBase,
                     source,
                     _modelDiscovery.GetModelRateLabel,
-                    (entryModel, entrySource) => BuildModelDetailSummary(entryModel, (ModelSource)(int)entrySource),
-                    (modelId, entrySource) => IsCurrentModelAndSource(modelId, (ModelSource)(int)entrySource)))
-            .Select(ModelSelectionEntry.FromService)
+                    BuildModelDetailSummary,
+                    IsCurrentModelAndSource))
             .ToList();
 
     private ModelSelectionEntry BuildModelSelectionEntry(ModelInfo model, string displayBase, ModelSource source)
-        => ModelSelectionEntry.FromService(_modelDiscovery.BuildModelSelectionEntry(
+        => _modelDiscovery.BuildModelSelectionEntry(
             model,
             displayBase,
-            ToServiceModelSource(source),
-            (entryModel, entrySource) => GetModelRateLabel(entryModel, (ModelSource)(int)entrySource),
-            (entryModel, entrySource) => BuildModelDetailSummary(entryModel, (ModelSource)(int)entrySource),
-            (modelId, entrySource) => IsCurrentModelAndSource(modelId, (ModelSource)(int)entrySource)));
+            source,
+            GetModelRateLabel,
+            BuildModelDetailSummary,
+            IsCurrentModelAndSource);
 
     private async Task RefreshAvailableModelsAsync()
         => await _modelDiscovery.RefreshAvailableModelsAsync(_copilotClient, _isGitHubCopilotAuthenticated, TryGetCliModelIdsAsync, TryGetByokProviderModelsAsync);
@@ -989,61 +332,13 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private string GetModelRateLabel(ModelInfo model, ModelSource source)
-        => _modelDiscovery.GetModelRateLabel(model, ToServiceModelSource(source));
+        => _modelDiscovery.GetModelRateLabel(model, source);
 
     private static string BuildModelDetailSummary(ModelInfo model, ModelSource source)
-    {
-        var details = new List<string>();
-
-        var contextWindow = model.Capabilities?.Limits?.MaxContextWindowTokens;
-        if (contextWindow is > 0)
-        {
-            details.Add($"context {FormatCompactTokenCount(contextWindow.Value)}");
-        }
-
-        var maxPrompt = model.Capabilities?.Limits?.MaxPromptTokens;
-        if (maxPrompt is > 0)
-        {
-            details.Add($"prompt {FormatCompactTokenCount(maxPrompt.Value)}");
-        }
-
-        if (model.Capabilities?.Supports?.Vision == true)
-        {
-            details.Add("vision");
-        }
-
-        if (model.Capabilities?.Supports?.ReasoningEffort == true)
-        {
-            details.Add("reasoning");
-        }
-
-        if (!string.IsNullOrWhiteSpace(model.DefaultReasoningEffort))
-        {
-            details.Add($"default reasoning {model.DefaultReasoningEffort}");
-        }
-
-        if (source == ModelSource.GitHub && model.Billing?.Multiplier > 0)
-        {
-            details.Add($"multiplier {model.Billing.Multiplier:0.##}x");
-        }
-
-        return details.Count == 0 ? "No extra metadata available" : string.Join(" | ", details);
-    }
+        => SessionModelHelpers.BuildModelDetailSummary(model, source);
 
     private static string FormatCompactTokenCount(int value)
-    {
-        if (value >= 1_000_000)
-        {
-            return (value / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M";
-        }
-
-        if (value >= 1_000)
-        {
-            return (value / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "k";
-        }
-
-        return value.ToString(CultureInfo.InvariantCulture);
-    }
+        => SessionModelHelpers.FormatCompactTokenCount(value);
 
     private ModelInfo? GetSelectedModelInfo()
         => _modelDiscovery.GetSelectedModelInfo(_selectedModel);
@@ -1127,52 +422,7 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private static IReadOnlyList<string> ParseCliModelIds(string helpText)
-    {
-        if (string.IsNullOrWhiteSpace(helpText))
-        {
-            return [];
-        }
-
-        static void ExtractModelIds(string text, List<string> target)
-        {
-            foreach (Match match in CliModelIdRegex.Matches(text))
-            {
-                if (match.Groups.Count < 2)
-                {
-                    continue;
-                }
-
-                var value = match.Groups[1].Value;
-                if (!target.Contains(value, StringComparer.OrdinalIgnoreCase))
-                {
-                    target.Add(value);
-                }
-            }
-        }
-
-        var modelIds = new List<string>();
-
-        var modelSectionStart = helpText.IndexOf("--model <model>", StringComparison.OrdinalIgnoreCase);
-        if (modelSectionStart < 0)
-        {
-            ExtractModelIds(helpText, modelIds);
-            return modelIds;
-        }
-
-        var modelSectionEnd = helpText.IndexOf("--no-alt-screen", modelSectionStart, StringComparison.OrdinalIgnoreCase);
-        var modelSection = modelSectionEnd > modelSectionStart
-            ? helpText[modelSectionStart..modelSectionEnd]
-            : helpText[modelSectionStart..];
-
-        ExtractModelIds(modelSection, modelIds);
-
-        if (modelIds.Count == 0)
-        {
-            ExtractModelIds(helpText, modelIds);
-        }
-
-        return modelIds;
-    }
+        => SessionModelHelpers.ParseCliModelIds(helpText);
 
     private async Task WarnIfPowerShellVersionIsOldAsync()
     {
@@ -1184,160 +434,17 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private static string TrimSingleLine(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return "Unknown error";
-
-        var trimmed = text.Trim();
-        var newlineIndex = trimmed.IndexOfAny(['\r', '\n']);
-        return newlineIndex < 0 ? trimmed : trimmed[..newlineIndex].Trim();
-    }
-
-    private static async Task<IReadOnlyList<string>> RunSimpleStartupDiagnosticsAsync()
-    {
-        var diagnostics = new List<string>();
-        var cliPath = CopilotCliResolver.CopilotCliPathResolver();
-        var nodeRuntimeRequired = await CopilotCliResolver.CliPathRequiresNodeRuntimeAsync(cliPath);
-
-        var (copilotCommand, copilotArguments) = CopilotCliResolver.BuildCopilotCommand(cliPath, "--version");
-        var copilotVersion = await CopilotCliResolver.ProcessRunnerResolver(copilotCommand, copilotArguments);
-        diagnostics.Add(FormatDiagnosticLine($"{copilotCommand} {copilotArguments}", copilotVersion));
-
-        var nodeVersion = await CopilotCliResolver.ProcessRunnerResolver("node", "--version");
-        diagnostics.Add(FormatDiagnosticLine("node --version", nodeVersion));
-        if (!nodeRuntimeRequired && nodeVersion.ExitCode != 0)
-        {
-            diagnostics.Add("- Note: Node.js is only required for some Copilot CLI installations.");
-        }
-
-        return diagnostics;
-    }
-
-    private static string FormatDiagnosticLine(string command, (int ExitCode, string StdOut, string StdErr) result)
-    {
-        var output = TrimSingleLine(string.IsNullOrWhiteSpace(result.StdOut) ? result.StdErr : result.StdOut);
-        return result.ExitCode == 0
-            ? $"- {command}: {output}"
-            : $"- {command}: failed ({output})";
-    }
+        => SessionInitializationDiagnostics.TrimSingleLine(text);
 
     private async Task ShowCopilotInitializationFailureAsync(
         string baseMessage,
         Exception? exception = null,
         bool includeDiagnostics = false)
-    {
-        var message = baseMessage;
-
-        if (includeDiagnostics)
-        {
-            var diagnostics = await RunSimpleStartupDiagnosticsAsync();
-            message += "\n\nStartup diagnostics:\n" + string.Join("\n", diagnostics);
-        }
-
-        if (_debugMode && exception != null)
-        {
-            message += "\n\nTechnical details:\n" + exception;
-        }
-
-        ConsoleUI.ShowError("Initialization Failed", message);
-    }
-
-    private static string BuildProtocolMismatchMessage(CopilotPrerequisiteReport report, bool includeTechnicalDetails)
-    {
-        var message = "Copilot SDK protocol version mismatch detected.\n\n" +
-               "Ensure Copilot CLI prerequisites are installed and compatible:\n" +
-               $"  1. Install Node.js {CopilotCliResolver.MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
-               "  2. Restart your terminal\n" +
-                             $"  3. Install or update Copilot CLI: {CopilotCliResolver.CopilotCliInstallUrl}\n" +
-               "  4. copilot login\n\n" +
-               "References:\n" +
-               $"- {CopilotCliResolver.CopilotCliRepoUrl}\n" +
-                             $"- {CopilotCliResolver.CopilotCliInstallUrl}";
-
-        if (!report.IsReady)
-        {
-            var diagnosticsText = includeTechnicalDetails
-                ? report.ToDisplayText(includeWarnings: true)
-                : string.Join(Environment.NewLine, report.Issues.Select(issue => $"- {issue.Title}"));
-            message += "\n\nPrerequisite diagnostics:\n" + diagnosticsText;
-        }
-
-        return message;
-    }
-
-    private static string BuildActionableInitializationMessage(Exception ex, CopilotPrerequisiteReport report, bool includeTechnicalDetails)
-    {
-        if (ex is InvalidOperationException invalidOp &&
-            invalidOp.Message.Contains("protocol version mismatch", StringComparison.OrdinalIgnoreCase))
-        {
-            return BuildProtocolMismatchMessage(report, includeTechnicalDetails);
-        }
-
-        if (!report.IsReady)
-        {
-            var diagnosticsText = includeTechnicalDetails
-                ? report.ToDisplayText(includeWarnings: true)
-                : string.Join(Environment.NewLine, report.Issues.Select(issue => $"- {issue.Title}"));
-
-            return "Copilot CLI prerequisites are not ready.\n\n" +
-                   "Prerequisite diagnostics:\n" +
-                   diagnosticsText;
-        }
-
-        var message = ex.Message;
-        if (message.Contains("not authenticated", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("auth", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Copilot CLI is installed but not authenticated.\n\n" +
-                   "To continue:\n" +
-                   "  1. Run: copilot login\n" +
-                   "  2. Re-run TroubleScout";
-        }
-
-        if (message.Contains("failed to start cli", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("cli process exited", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("communication error with copilot cli", StringComparison.OrdinalIgnoreCase))
-        {
-            var startupFailureMessage = "The Copilot CLI failed during startup.\n\n" +
-                                      "Try:\n" +
-                                      "  - copilot --version\n" +
-                                      "  - copilot login\n" +
-                                      $"  - Install/update Copilot CLI: {CopilotCliResolver.CopilotCliInstallUrl}\n" +
-                                      "  - Re-run TroubleScout";
-
-            if (includeTechnicalDetails)
-            {
-                startupFailureMessage += $"\n\nTechnical details: {message}";
-            }
-
-            return startupFailureMessage;
-        }
-
-        if (message.Contains("node", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("ENOENT", StringComparison.OrdinalIgnoreCase))
-        {
-            return "The Copilot CLI runtime is unavailable.\n\n" +
-                   "Install/update prerequisites:\n" +
-                   $"  1. Install Node.js {CopilotCliResolver.MinSupportedNodeMajorVersion}+ (LTS): winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
-                   "  2. Restart your terminal\n" +
-                   $"  3. Install/update Copilot CLI: {CopilotCliResolver.CopilotCliInstallUrl}\n" +
-                   "  4. copilot login";
-        }
-
-        var result = "TroubleScout could not initialize the Copilot session.\n\n" +
-                     "Try:\n" +
-                     "  - copilot --version\n" +
-                     "  - copilot login\n" +
-                     $"  - winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements\n" +
-                     $"  - Install/update Copilot CLI: {CopilotCliResolver.CopilotCliInstallUrl}";
-
-        if (includeTechnicalDetails)
-        {
-            result += $"\n\nTechnical details: {message}";
-        }
-
-        return result;
-    }
+        => await SessionInitializationDiagnostics.ShowCopilotInitializationFailureAsync(
+            baseMessage,
+            _debugMode,
+            exception,
+            includeDiagnostics);
 
     /// <summary>
     /// Send a message and process the response with streaming
@@ -1356,104 +463,19 @@ public class TroubleshootingSession : IAsyncDisposable
         CancellationToken cancellationToken = default,
         bool showPostAnalysisActionPrompt = false,
         bool forcePostAnalysisActionPrompt = false)
-    {
-        if (_copilotSession == null)
-        {
-            ConsoleUI.ShowError("Not Initialized", "Session not initialized. Call InitializeAsync first.");
-            return false;
-        }
-
-        var turnStopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var toolCountAtEntry = System.Threading.Volatile.Read(ref _toolInvocationCount);
-        var turnOutcome = TurnOutcome.Failed;
-        var promptIndex = promptIndexOverride ?? _historyTracker.GetLatestPromptIndex();
-
-        try
-        {
-            var runner = new CopilotTurnRunner();
-            var result = await runner.RunAsync(new CopilotTurnRequest
-            {
-                Session = new CopilotTurnSessionAdapter(_copilotSession),
-                Prompt = BuildPromptForExecutionSafety(userMessage),
-                CancellationToken = cancellationToken,
-                ToolDescriptions = ToolDescriptions,
-                CreateThinkingIndicator = () => new ConsoleTurnThinkingIndicator(ConsoleUI.CreateLiveThinkingIndicator()),
-                Callbacks = new CopilotTurnCallbacks
-                {
-                    StartReasoningBlock = ConsoleUI.StartReasoningBlock,
-                    WriteReasoningText = ConsoleUI.WriteReasoningText,
-                    EndReasoningBlock = ConsoleUI.EndReasoningBlock,
-                    StartAIResponse = ConsoleUI.StartAIResponse,
-                    WriteAIResponse = text => ConsoleUI.WriteAIResponse(text),
-                    EndAIResponse = ConsoleUI.EndAIResponse,
-                    ShowError = ConsoleUI.ShowError,
-                    ShowCancelled = ConsoleUI.ShowCancelled,
-                    ShowLiveStatusNotice = ConsoleUI.ShowLiveStatusNotice,
-                    RecordMcpToolAction = RecordMcpToolAction,
-                    RecordMcpToolComplete = _historyTracker.RecordMcpToolComplete,
-                    IncrementToolInvocation = () => _toolInvocationCount++
-                }
-            });
-
-            if (result.HasStartedStreaming && !result.HasError && !result.WasCancelled)
-            {
-                await RefreshSessionUsageMetricsAsync(cancellationToken);
-                var statusBarInfo = BuildStatusBarInfo();
-                ConsoleUI.WriteStatusBar(statusBarInfo);
-                _historyTracker.SetPromptStatusBar(promptIndex, statusBarInfo);
-            }
-
-            if (result.WasCancelled)
-            {
-                turnOutcome = TurnOutcome.Cancelled;
-                return false;
-            }
-
-            SetPromptReply(promptIndex, result.ResponseText);
-            _lastAssistantMessage = result.ResponseText;
-
-            var approvalFollowUpHandled = false;
-            if (!result.HasError)
-            {
-                approvalFollowUpHandled = await ProcessPendingApprovalsAsync(cancellationToken);
-            }
-
-            if (!approvalFollowUpHandled
-                && !result.HasError
-                && showPostAnalysisActionPrompt
-                && ShouldOfferPostAnalysisActionPrompt(result.ResponseText, forcePostAnalysisActionPrompt))
-            {
-                turnOutcome = TurnOutcome.Success;
-                return await HandlePostAnalysisActionAsync(cancellationToken);
-            }
-
-            turnOutcome = result.WasCancelled ? TurnOutcome.Cancelled
-                : result.HasError ? TurnOutcome.Failed
-                : TurnOutcome.Success;
-            return result.Success;
-        }
-        catch (OperationCanceledException)
-        {
-            ConsoleUI.EndAIResponse();
-            ConsoleUI.ShowCancelled();
-            turnOutcome = TurnOutcome.Cancelled;
-            return false;
-        }
-        catch (Exception ex)
-        {
-            ConsoleUI.EndAIResponse();
-            ConsoleUI.ShowError("Error", ex.Message);
-            turnOutcome = TurnOutcome.Failed;
-            return false;
-        }
-        finally
-        {
-            turnStopwatch.Stop();
-            var toolDelta = System.Threading.Volatile.Read(ref _toolInvocationCount) - toolCountAtEntry;
-            if (toolDelta < 0) toolDelta = 0;
-            _sessionUsageTracker.RecordCompletedTurn(turnStopwatch.Elapsed, toolDelta, turnOutcome);
-        }
-    }
+        => await SessionMessageCoordinator.SendMessageAsync(
+            userMessage,
+            promptIndexOverride,
+            cancellationToken,
+            showPostAnalysisActionPrompt,
+            forcePostAnalysisActionPrompt,
+            CreateMessageRequest(),
+            (prompt, promptIndex, token, showPrompt, forcePrompt) => SendMessageAsync(
+                prompt,
+                promptIndex,
+                token,
+                showPostAnalysisActionPrompt: showPrompt,
+                forcePostAnalysisActionPrompt: forcePrompt));
 
     internal static async Task RunActivityWatchdogAsync(
         LiveThinkingIndicator indicator,
@@ -1470,167 +492,17 @@ public class TroubleshootingSession : IAsyncDisposable
     internal static string? GetActivityWatchdogStatus(double idleSeconds)
         => CopilotTurnRunner.GetActivityWatchdogStatus(idleSeconds);
 
-    private static string BuildPromptForExecutionSafety(string userMessage)
-    {
-        var promptBuilder = new StringBuilder(userMessage);
-        promptBuilder.Append("\n\n");
-        promptBuilder.Append(PromptTemplateLoader.Render(PromptTemplateIds.TurnResponseFormattingRequirement));
-
-        if (MutatingIntentRegex.IsMatch(userMessage))
-        {
-            promptBuilder.Append("\n\n");
-            promptBuilder.Append(PromptTemplateLoader.Render(PromptTemplateIds.TurnExecutionSafetyRequirement));
-        }
-
-        return promptBuilder.ToString();
-    }
-
-    private static bool ShouldOfferPostAnalysisActionPrompt(string responseText, bool forcePrompt)
-    {
-        if (forcePrompt)
-        {
-            return true;
-        }
-
-        if (string.IsNullOrWhiteSpace(responseText))
-        {
-            return false;
-        }
-
-        if (responseText.Contains("Ready for next action", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return PostAnalysisHeadingRegex.IsMatch(responseText);
-    }
-
-    private static string BuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)
-    {
-        return action switch
-        {
-            PostAnalysisAction.ContinueInvestigating => PromptTemplateLoader.Render(PromptTemplateIds.TurnPostAnalysisContinue),
-            PostAnalysisAction.ApplyFix => PromptTemplateLoader.Render(PromptTemplateIds.TurnPostAnalysisApplyFix),
-            _ => throw new ArgumentOutOfRangeException(nameof(action), action, "Unsupported post-analysis action.")
-        };
-    }
-
-    private static string BuildApprovedCommandFollowUpPrompt(string executionSummary)
-        => PromptTemplateLoader.Render(
-            PromptTemplateIds.TurnApprovedCommandFollowUp,
-            new Dictionary<string, string?>
-            {
-                ["executionSummary"] = executionSummary.Trim()
-            });
-
-    private async Task<bool> HandlePostAnalysisActionAsync(CancellationToken cancellationToken)
-    {
-        var action = ConsoleUI.PromptPostAnalysisAction();
-
-        switch (action)
-        {
-            case PostAnalysisAction.ContinueInvestigating:
-            {
-                var promptIndex = RecordPrompt("TroubleScout action: Continue investigating.");
-                return await SendMessageAsync(
-                    BuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ContinueInvestigating),
-                    promptIndex,
-                    cancellationToken,
-                    showPostAnalysisActionPrompt: true,
-                    forcePostAnalysisActionPrompt: false);
-            }
-            case PostAnalysisAction.ApplyFix:
-            {
-                var promptIndex = RecordPrompt("TroubleScout action: Apply the fix.");
-                return await SendMessageAsync(
-                    BuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ApplyFix),
-                    promptIndex,
-                    cancellationToken,
-                    showPostAnalysisActionPrompt: true,
-                    forcePostAnalysisActionPrompt: false);
-            }
-            default:
-                ConsoleUI.ShowInfo("Stopping here. TroubleScout is ready when you are.");
-                return true;
-        }
-    }
-
-    /// <summary>
-    /// Process any commands that require user approval
-    /// </summary>
     private async Task<bool> ProcessPendingApprovalsAsync(CancellationToken cancellationToken)
-    {
-        var pending = _diagnosticTools.PendingCommands;
-        if (pending.Count == 0)
-        {
-            return false;
-        }
-
-        var commands = pending.Select(p => (p.Command, p.Reason)).ToList();
-        var executedSummaries = new List<string>();
-        
-        if (commands.Count == 1)
-        {
-            var cmd = commands[0];
-            var approval = ConsoleUI.PromptCommandApproval(cmd.Command, cmd.Reason, pending[0].Intent);
-            if (approval == ApprovalResult.Approved)
-            {
-                ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
-                var result = await _diagnosticTools.ExecuteApprovedCommandAsync(pending[0]);
-                ConsoleUI.ShowSuccess("Command executed");
-                executedSummaries.Add($"Command: {cmd.Command}{Environment.NewLine}Result:{Environment.NewLine}{result}");
-            }
-            else
-            {
-                ConsoleUI.ShowWarning("Command skipped by user");
-                _diagnosticTools.LogDeniedCommand(pending[0]);
-                _diagnosticTools.ClearPendingCommands();
-                return false;
-            }
-        }
-        else
-        {
-            var approved = ConsoleUI.PromptBatchApproval(commands);
-
-            var pendingSnapshot = pending.ToList();
-            foreach (var index in approved)
-            {
-                var cmd = pendingSnapshot[index - 1];
-                ConsoleUI.ShowInfo($"Executing: {cmd.Command}");
-                var result = await _diagnosticTools.ExecuteApprovedCommandAsync(cmd);
-                ConsoleUI.ShowSuccess("Command executed");
-                executedSummaries.Add($"Command: {cmd.Command}{Environment.NewLine}Result:{Environment.NewLine}{result}");
-            }
-
-            var approvedSet = new HashSet<int>(approved);
-            for (var i = 0; i < pendingSnapshot.Count; i++)
-            {
-                if (!approvedSet.Contains(i + 1))
-                {
-                    _diagnosticTools.LogDeniedCommand(pendingSnapshot[i]);
-                }
-            }
-
-            _diagnosticTools.ClearPendingCommands();
-        }
-
-        if (executedSummaries.Count == 0)
-        {
-            return false;
-        }
-
-        var promptIndex = RecordPrompt("TroubleScout action: Analyze approved command results.");
-        var followUpPrompt = BuildApprovedCommandFollowUpPrompt(string.Join(
-            $"{Environment.NewLine}{Environment.NewLine}",
-            executedSummaries));
-
-        return await SendMessageAsync(
-            followUpPrompt,
-            promptIndex,
-            cancellationToken,
-            showPostAnalysisActionPrompt: true,
-            forcePostAnalysisActionPrompt: true);
-    }
+        => await new PendingCommandApprovalProcessor(
+                _diagnosticTools,
+                RecordPrompt,
+                (prompt, promptIndex, token, showPrompt, forcePrompt) => SendMessageAsync(
+                    prompt,
+                    promptIndex,
+                    token,
+                    showPostAnalysisActionPrompt: showPrompt,
+                    forcePostAnalysisActionPrompt: forcePrompt))
+            .ProcessAsync(cancellationToken);
 
     /// <summary>
     /// Callback for command approval prompts
@@ -1638,57 +510,6 @@ public class TroubleshootingSession : IAsyncDisposable
     private Task<bool> PromptApprovalAsync(string command, string reason)
     {
         return Task.FromResult(ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved);
-    }
-
-    private static void SaveModelAndProviderState(string model, bool useByokOpenAi)
-    {
-        var settings = AppSettingsStore.Load();
-        settings.LastModel = model;
-        settings.UseByokOpenAi = useByokOpenAi;
-        AppSettingsStore.Save(settings);
-    }
-
-    private static void SaveReasoningEffortState(string? reasoningEffort)
-    {
-        var settings = AppSettingsStore.Load();
-        settings.ReasoningEffort = ReasoningEffortHelper.Normalize(reasoningEffort);
-        AppSettingsStore.Save(settings);
-    }
-
-    private static void SaveByokSettings(bool enabled, string? baseUrl, string? apiKey)
-    {
-        var settings = AppSettingsStore.Load();
-        settings.UseByokOpenAi = enabled;
-        settings.ByokOpenAiBaseUrl = enabled ? baseUrl : null;
-        settings.ByokOpenAiApiKey = enabled ? apiKey : null;
-        AppSettingsStore.Save(settings);
-    }
-
-    private static void SaveMcpRoleSettings(string? monitoringMcpServer, string? ticketingMcpServer)
-    {
-        var settings = AppSettingsStore.Load();
-
-        settings.MonitoringMcpServer = string.IsNullOrWhiteSpace(monitoringMcpServer) ? null : monitoringMcpServer.Trim();
-        settings.TicketingMcpServer = string.IsNullOrWhiteSpace(ticketingMcpServer) ? null : ticketingMcpServer.Trim();
-
-        // Prune persisted MCP approvals that no longer correspond to a mapped role.
-        // Persistence is only offered for monitoring/ticketing servers, so once a
-        // server is unmapped its persisted trust must not silently survive.
-        // (In-memory approvals are reconciled by SeedPersistedMcpApprovals on reload.)
-        if (settings.PersistedApprovedMcpServers is { Count: > 0 } persisted)
-        {
-            var stillMapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer)) stillMapped.Add(settings.MonitoringMcpServer);
-            if (!string.IsNullOrWhiteSpace(settings.TicketingMcpServer)) stillMapped.Add(settings.TicketingMcpServer);
-
-            var pruned = persisted.Where(p => !string.IsNullOrWhiteSpace(p) && stillMapped.Contains(p.Trim())).ToList();
-            if (pruned.Count != persisted.Count)
-            {
-                settings.PersistedApprovedMcpServers = pruned;
-            }
-        }
-
-        AppSettingsStore.Save(settings);
     }
 
     private void ApplySafeCommandsToAllExecutors(IReadOnlyList<string>? safeCommands)
@@ -1786,196 +607,26 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private void ApplySystemPromptSettings(IReadOnlyDictionary<string, string>? overrides, string? append)
     {
-        if (overrides == null)
-        {
-            _configuredSystemPromptOverrides = null;
-        }
-        else
-        {
-            var normalizedOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in overrides)
-            {
-                var normalizedKey = entry.Key?.Trim();
-                if (string.IsNullOrWhiteSpace(normalizedKey) || string.IsNullOrWhiteSpace(entry.Value))
-                {
-                    continue;
-                }
-
-                if (AppSettingsStore.IsDefaultSystemPromptOverride(normalizedKey, entry.Value))
-                {
-                    continue;
-                }
-
-                normalizedOverrides[normalizedKey] = entry.Value;
-            }
-
-            _configuredSystemPromptOverrides = normalizedOverrides.Count > 0 ? normalizedOverrides : null;
-        }
-
-        _configuredSystemPromptAppend = string.IsNullOrWhiteSpace(append) ? null : append;
-    }
-
-    private static async Task<string?> TryOpenSettingsEditorAsync(string settingsPath)
-    {
-        var editorCommand = Environment.GetEnvironmentVariable("EDITOR");
-        if (string.IsNullOrWhiteSpace(editorCommand))
-        {
-            editorCommand = Environment.GetEnvironmentVariable("VISUAL");
-        }
-
-        if (string.IsNullOrWhiteSpace(editorCommand) && OperatingSystem.IsWindows())
-        {
-            editorCommand = "notepad";
-        }
-
-        if (string.IsNullOrWhiteSpace(editorCommand))
-        {
-            return "No editor is configured. Set EDITOR or VISUAL to edit settings automatically.";
-        }
-
-        try
-        {
-            var (fileName, arguments) = ParseCommandWithArguments(editorCommand, settingsPath);
-            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                UseShellExecute = true,
-                CreateNoWindow = false
-            });
-
-            if (process == null)
-            {
-                return $"Could not start editor '{editorCommand}'.";
-            }
-
-            await process.WaitForExitAsync();
-            return null;
-        }
-        catch (Exception ex)
-        {
-            return $"Could not open settings editor: {TrimSingleLine(ex.Message)}";
-        }
-    }
-
-    private static (string FileName, string Arguments) ParseCommandWithArguments(string command, string settingsPath)
-    {
-        var trimmedCommand = command.Trim();
-        string fileName;
-        string arguments;
-
-        if (trimmedCommand.StartsWith('"'))
-        {
-            var closingQuote = trimmedCommand.IndexOf('"', 1);
-            if (closingQuote > 1)
-            {
-                fileName = trimmedCommand[1..closingQuote];
-                arguments = trimmedCommand[(closingQuote + 1)..].Trim();
-            }
-            else
-            {
-                fileName = trimmedCommand.Trim('"');
-                arguments = string.Empty;
-            }
-        }
-        else
-        {
-            var firstSpace = trimmedCommand.IndexOf(' ');
-            if (firstSpace >= 0)
-            {
-                fileName = trimmedCommand[..firstSpace];
-                arguments = trimmedCommand[(firstSpace + 1)..].Trim();
-            }
-            else
-            {
-                fileName = trimmedCommand;
-                arguments = string.Empty;
-            }
-        }
-
-        var settingsArgument = $"\"{settingsPath}\"";
-        return (fileName, string.IsNullOrWhiteSpace(arguments) ? settingsArgument : $"{arguments} {settingsArgument}");
+        var normalized = SettingsWorkflowService.NormalizeSystemPromptSettings(overrides, append);
+        _configuredSystemPromptOverrides = normalized.Overrides;
+        _configuredSystemPromptAppend = normalized.Append;
     }
 
     /// <summary>
     /// Run the interactive session loop
     /// </summary>
     public async Task RunInteractiveLoopAsync()
-    {
-        ConsoleUI.SetExecutionMode(_executionMode);
-        var slashCommandDispatcher = CreateSlashCommandDispatcher();
-
-        while (true)
-        {
-            var input = ConsoleUI.GetUserInput(SlashCommands).Trim();
-
-            if (!string.IsNullOrEmpty(input))
-                ConsoleUI.AddPromptHistory(input);
-
-            if (string.IsNullOrWhiteSpace(input))
-                continue;
-
-            var slashCommandResult = await slashCommandDispatcher.DispatchAsync(input);
-            if (slashCommandResult.Handled)
-            {
-                if (slashCommandResult.ExitRequested)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            // Send message to Copilot
-            var promptIndex = RecordPrompt(input);
-            await RunInteractiveCancelableAiOperationAsync(token => SendMessageAsync(
+        => await InteractiveSessionLoop.RunAsync(
+            _executionMode,
+            SlashCommands,
+            CreateSlashCommandDispatcher,
+            RecordPrompt,
+            (input, promptIndex, token) => SendMessageAsync(
                 input,
                 promptIndex,
                 token,
                 showPostAnalysisActionPrompt: true,
                 forcePostAnalysisActionPrompt: false));
-        }
-    }
-
-    private async Task<T> RunInteractiveCancelableAiOperationAsync<T>(Func<CancellationToken, Task<T>> operation)
-    {
-        using var escCts = new CancellationTokenSource();
-        var escTask = Task.Run(async () =>
-        {
-            try
-            {
-                while (!escCts.Token.IsCancellationRequested)
-                {
-                    if (Console.KeyAvailable && !LiveThinkingIndicator.IsApprovalInProgress)
-                    {
-                        var key = Console.ReadKey(intercept: true);
-                        if (key.Key == ConsoleKey.Escape)
-                        {
-                            escCts.Cancel();
-                            break;
-                        }
-                    }
-
-                    await Task.Delay(50, escCts.Token).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected when the AI finishes before ESC is pressed.
-            }
-        }, CancellationToken.None);
-
-        try
-        {
-            return await operation(escCts.Token);
-        }
-        finally
-        {
-            escCts.Cancel();
-            try { await escTask.WaitAsync(TimeSpan.FromSeconds(1)); }
-            catch (TimeoutException) { /* ignore */ }
-        }
-    }
 
     private bool IsCurrentModel(string modelId)
     {
@@ -2040,71 +691,17 @@ public class TroubleshootingSession : IAsyncDisposable
     }
 
     private static bool LooksLikeUrl(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
-               && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-                   || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
-    }
+        => ByokModelDiscoveryService.LooksLikeUrl(value);
 
     private IReadOnlyList<string> BuildByokModelEndpointCandidates(string baseUrl)
         => _byokProviderManager.BuildByokModelEndpointCandidates(baseUrl);
 
     private async Task<List<ModelInfo>> TryGetByokProviderModelsAsync()
-    {
-        _modelDiscovery.ClearByokPricing();
-
-        if (string.IsNullOrWhiteSpace(_byokOpenAiApiKey) || !LooksLikeUrl(_byokOpenAiBaseUrl))
-        {
-            return [];
-        }
-
-        using var httpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(15)
-        };
-
-        var endpointCandidates = BuildByokModelEndpointCandidates(_byokOpenAiBaseUrl);
-        foreach (var endpoint in endpointCandidates)
-        {
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
-                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {_byokOpenAiApiKey}");
-                request.Headers.TryAddWithoutValidation("Accept", "application/json");
-
-                using var response = await httpClient.SendAsync(request);
-                if (!response.IsSuccessStatusCode)
-                {
-                    continue;
-                }
-
-                await using var stream = await response.Content.ReadAsStreamAsync();
-                using var document = await JsonDocument.ParseAsync(stream);
-
-                var discovery = _byokProviderManager.ParseByokModelsResponse(document.RootElement);
-                if (discovery.Models.Count > 0)
-                {
-                    foreach (var entry in discovery.PricingByModelId)
-                    {
-                        _modelDiscovery.StoreByokPricing(entry.Key, entry.Value);
-                    }
-
-                    return discovery.Models;
-                }
-            }
-            catch
-            {
-                // Try next candidate endpoint.
-            }
-        }
-
-        return [];
-    }
+        => await ByokModelDiscoveryService.TryGetByokProviderModelsAsync(
+            _byokOpenAiApiKey,
+            _byokOpenAiBaseUrl,
+            _byokProviderManager,
+            _modelDiscovery);
 
     private async Task<bool> ConfigureByokOpenAiAsync(string baseUrl, string apiKey, string? model, Action<string>? updateStatus)
         => await _byokProviderManager.ConfigureByokOpenAiAsync(
@@ -2123,7 +720,7 @@ public class TroubleshootingSession : IAsyncDisposable
             TryGetByokProviderModelsAsync,
             PromptByokModelSelection,
             CreateCopilotSessionAsync,
-            SaveByokSettings,
+            SettingsWorkflowService.SaveByokSettings,
             OpenAiApiKeyEnvironmentVariable,
             updateStatus);
 
@@ -2207,32 +804,6 @@ public class TroubleshootingSession : IAsyncDisposable
             forcePostAnalysisActionPrompt: false);
     }
 
-    private ReportSessionSummary BuildReportSessionSummary()
-    {
-        var modelDisplay = SelectedModel ?? "Unknown";
-        var providerDisplay = ActiveProviderDisplayName;
-        var modelsUsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(modelDisplay))
-        {
-            modelsUsed.Add(modelDisplay);
-        }
-
-        return new ReportSessionSummary(
-            CurrentModel: modelDisplay,
-            CurrentProvider: providerDisplay,
-            ModelsUsed: modelsUsed.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList(),
-            ConfiguredMcpServers: _configuredMcpServers.ToList(),
-            UsedMcpServers: _runtimeMcpServers.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
-            MonitoringMcp: _configuredMonitoringMcpServer,
-            TicketingMcp: _configuredTicketingMcpServer,
-            ApprovedMcpServersForSession: _permissionHandler.GetApprovedMcpServersSnapshot().OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
-            PersistedApprovedMcpServers: _permissionHandler.GetPersistedApprovedMcpServersSnapshot().ToList(),
-            ConfiguredSkills: _configuredSkills.ToList(),
-            UsedSkills: _runtimeSkills.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
-            ExecutionMode: _executionMode.ToString(),
-            TargetServer: EffectiveTargetServer);
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (_copilotSession != null)
@@ -2271,608 +842,37 @@ public class TroubleshootingSession : IAsyncDisposable
         GC.SuppressFinalize(this);
     }
 
-    private async Task<bool> CreateCopilotSessionAsync(string? model, Action<string>? updateStatus)
-    {
-        if (_copilotClient == null)
-        {
-            ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
-            return false;
-        }
-
-        updateStatus?.Invoke("Creating AI session...");
-
-        ResetCapabilities();
-        var skillDiscovery = SkillDiscoveryService.DiscoverConfiguredSkills(_skillDirectories, _disabledSkills);
-        _configuredSkills.AddRange(skillDiscovery.SkillNames);
-        _configurationWarnings.AddRange(skillDiscovery.Warnings);
-
-        var mcpConfiguration = McpConfigurationService.LoadServers(_mcpConfigPath);
-        var mcpServers = mcpConfiguration.Servers;
-        _configurationWarnings.AddRange(mcpConfiguration.Warnings);
-        foreach (var serverName in mcpServers.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
-        {
-            _configuredMcpServers.Add(serverName);
-        }
-
-        var config = BuildSessionConfig(model, mcpServers);
-
-        _copilotSession = await _copilotClient.CreateSessionAsync(config);
-        ResetStateForNewAiSession();
-        _selectedReasoningEffort = ReasoningEffortHelper.Normalize(config.ReasoningEffort);
-
-        if (_configurationWarnings.Count > 0)
-        {
-            ConsoleUI.ShowWarning("Capabilities loaded with warnings. Use /status or /capabilities to review details.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(model))
-        {
-            _selectedModel = model;
-            // Persist model and active provider together to avoid stale provider mismatch after restart.
-            SaveModelAndProviderState(model, _useByokOpenAi);
-        }
-
-        return true;
-    }
-
-    private void ResetStateForNewAiSession()
-    {
-        _sessionId = CreateSessionId();
-        _lastUsage = null;
-        _toolInvocationCount = 0;
-        _sessionPremiumRequestCost = null;
-        _sessionUsageTracker.Reset();
-        _permissionHandler.ResetUrlApprovals();
-    }
-
     private static string? GetByokWireApi(string? model)
-    {
-        return IsGpt5FamilyModel(model)
-            ? "responses"
-            : null;
-    }
+        => SessionModelHelpers.GetByokWireApi(model);
 
     private static bool IsGpt5FamilyModel(string? model)
-        => !string.IsNullOrWhiteSpace(model) && Gpt5FamilyModelRegex.IsMatch(model);
-
-    private void HandleSessionLifecycleStateEvent(SessionEvent evt)
-    {
-        CaptureCapabilityUsage(evt);
-
-        switch (evt)
-        {
-            case SessionStartEvent startEvt:
-                if (!string.IsNullOrWhiteSpace(startEvt.Data?.SelectedModel))
-                {
-                    _selectedModel = startEvt.Data.SelectedModel;
-                }
-
-                _selectedReasoningEffort = ReasoningEffortHelper.Normalize(startEvt.Data?.ReasoningEffort);
-
-                if (!string.IsNullOrWhiteSpace(startEvt.Data?.CopilotVersion))
-                {
-                    _copilotVersion = startEvt.Data.CopilotVersion;
-                }
-
-                break;
-
-            case SessionModelChangeEvent modelChangeEvt:
-                if (!string.IsNullOrWhiteSpace(modelChangeEvt.Data?.NewModel))
-                {
-                    _selectedModel = modelChangeEvt.Data.NewModel;
-                }
-
-                _selectedReasoningEffort = ReasoningEffortHelper.Normalize(modelChangeEvt.Data?.ReasoningEffort);
-
-                break;
-
-            case AssistantUsageEvent usageEvt:
-                CaptureUsageMetrics(usageEvt);
-                if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
-                {
-                    _selectedModel = usageEvt.Data.Model;
-                }
-
-                break;
-        }
-    }
-
-    internal SessionConfig BuildSessionConfig(string? model)
-    {
-        var mcpServers = McpConfigurationService.LoadServers(_mcpConfigPath).Servers;
-        return BuildSessionConfig(model, mcpServers);
-    }
-
-    private SessionConfig BuildSessionConfig(string? model, IReadOnlyDictionary<string, McpServerConfig> availableMcpServers)
-    {
-        var provider = _useByokOpenAi
-            ? new ProviderConfig
-            {
-                Type = "openai",
-                BaseUrl = _byokOpenAiBaseUrl,
-                ApiKey = _byokOpenAiApiKey,
-                WireApi = GetByokWireApi(model)
-            }
-            : null;
-
-        return CopilotSessionConfigBuilder.Build(new CopilotSessionConfigOptions(
-            Model: model,
-            ReasoningEffort: ResolveConfiguredReasoningEffort(model),
-            SystemMessage: _systemMessageConfig,
-            UseByokOpenAi: _useByokOpenAi,
-            Tools: _diagnosticTools.GetTools().ToList(),
-            AvailableMcpServers: availableMcpServers,
-            MonitoringMcpServer: _configuredMonitoringMcpServer,
-            TicketingMcpServer: _configuredTicketingMcpServer,
-            OnEvent: HandleSessionLifecycleStateEvent,
-            OnPermissionRequest: _permissionHandler.HandleAsync,
-            ConfigurationWarnings: _configurationWarnings,
-            Provider: provider,
-            SkillDirectories: _skillDirectories,
-            DisabledSkills: _disabledSkills));
-    }
-
-    private string? GetMcpServerRole(string serverName)
-    {
-        if (string.IsNullOrWhiteSpace(serverName))
-        {
-            return null;
-        }
-
-        if (string.Equals(serverName, _configuredMonitoringMcpServer, StringComparison.OrdinalIgnoreCase))
-        {
-            return "monitoring";
-        }
-
-        if (string.Equals(serverName, _configuredTicketingMcpServer, StringComparison.OrdinalIgnoreCase))
-        {
-            return "ticketing";
-        }
-
-        return null;
-    }
+        => SessionModelHelpers.IsGpt5FamilyModel(model);
 
     private async Task<bool> ReconnectAsync(string newServer, Action<string>? updateStatus = null)
-    {
-        if (string.IsNullOrWhiteSpace(newServer))
-        {
-            ConsoleUI.ShowWarning("Server name cannot be empty");
-            return false;
-        }
-
-        newServer = newServer.Trim();
-
-        if (newServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
-        {
-            if (_startupJeaFocusActive
-                && _targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                && !EffectiveTargetServer.Equals(_targetServer, StringComparison.OrdinalIgnoreCase))
-            {
-                _startupJeaFocusActive = false;
-                _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-
-                if (_copilotClient != null && _copilotSession != null)
-                {
-                    updateStatus?.Invoke("Refreshing AI session...");
-                    await _copilotSession.DisposeAsync();
-                    _copilotSession = null;
-
-                    var modelToUse = string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel;
-                    if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
-                    {
-                        return false;
-                    }
-                }
-
-                ConsoleUI.ShowInfo("Primary focus reset to localhost.");
-                return true;
-            }
-
-            ConsoleUI.ShowInfo($"Already connected to {newServer}");
-            return true;
-        }
-
-        updateStatus?.Invoke("Closing current PowerShell session...");
-        _executor.Dispose();
-
-        _startupJeaFocusActive = false;
-        _targetServer = newServer;
-        _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-        _executor = new PowerShellExecutor(_targetServer);
-        _executor.ExecutionMode = _executionMode;
-        _executor.SetCustomSafeCommands(_configuredSafeCommands);
-        _diagnosticTools = CreateDiagnosticTools();
-
-        updateStatus?.Invoke($"Connecting to {_targetServer}...");
-        var (connectionSuccess, connectionError) = await _executor.TestConnectionAsync();
-        if (!connectionSuccess)
-        {
-            ConsoleUI.ShowError("Connection Failed", connectionError ?? $"Unable to connect to {_targetServer}");
-            return false;
-        }
-
-        if (_copilotClient != null)
-        {
-            if (_copilotSession != null)
-            {
-                updateStatus?.Invoke("Closing AI session...");
-                await _copilotSession.DisposeAsync();
-                _copilotSession = null;
-            }
-
-            var modelToUse = string.IsNullOrWhiteSpace(_selectedModel) ? null : _selectedModel;
-
-            if (!await CreateCopilotSessionAsync(modelToUse, updateStatus))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+        => await SessionTargetCoordinator.ReconnectAsync(newServer, CreateTargetRequest(), updateStatus);
 
     private async Task<(bool Success, string? Error)> ConnectAdditionalServerAsync(string serverName, bool skipApproval = false)
-    {
-        var result = await _serverManager.ConnectAdditionalServerAsync(
-            serverName,
-            _targetServer,
-            _executionMode,
-            _configuredSafeCommands,
-            skipApproval);
-        if (result.Success)
-        {
-            _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-        }
-
-        return result;
-    }
+        => await SessionTargetCoordinator.ConnectAdditionalServerAsync(serverName, CreateTargetRequest(), skipApproval);
 
     private async Task<(bool Success, string? Error)> ConnectJeaServerAsync(
         string serverName,
         string configurationName,
         bool skipApproval = false)
-    {
-        var result = await _serverManager.ConnectJeaServerAsync(
-            serverName,
-            configurationName,
-            _targetServer,
-            _executionMode,
-            _configuredSafeCommands,
-            skipApproval);
-        if (result.Success)
-        {
-            _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-        }
-
-        return result;
-    }
+        => await SessionTargetCoordinator.ConnectJeaServerAsync(serverName, configurationName, CreateTargetRequest(), skipApproval);
 
     private PowerShellExecutor? GetExecutorForServer(string serverName)
         => _serverManager.GetExecutorForServer(serverName, _targetServer, _executor);
 
     private async Task<bool> CloseAdditionalServerSessionAsync(string serverName)
-    {
-        var closed = await _serverManager.CloseAdditionalServerSessionAsync(serverName);
-        if (closed)
-        {
-            _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList());
-        }
-
-        return closed;
-    }
-
-    private void SetExecutionMode(ExecutionMode mode)
-    {
-        _executionMode = mode;
-        _executor.ExecutionMode = mode;
-        _serverManager.SetExecutionMode(mode);
-    }
-
-    internal StatusBarInfo BuildStatusBarInfo()
-    {
-        var inputTokens = _lastUsage?.InputTokens ?? _lastUsage?.PromptTokens;
-        var outputTokens = _lastUsage?.OutputTokens ?? _lastUsage?.CompletionTokens;
-        var totalTokens = _lastUsage?.TotalTokens;
-
-        return new StatusBarInfo(
-            Model: SelectedModel,
-            Provider: ActiveProviderDisplayName,
-            InputTokens: inputTokens,
-            OutputTokens: outputTokens,
-            TotalTokens: totalTokens,
-            ToolInvocations: _toolInvocationCount,
-            SessionId: _sessionId)
-        {
-            ReasoningEffort = GetReasoningDisplay(GetSelectedModelInfo()),
-            SessionInputTokens = _sessionUsageTracker.TotalInputTokens > 0 ? _sessionUsageTracker.TotalInputTokens : null,
-            SessionOutputTokens = _sessionUsageTracker.TotalOutputTokens > 0 ? _sessionUsageTracker.TotalOutputTokens : null,
-            SessionCostEstimate = GetSessionCostEstimateDisplay()
-        };
-    }
-
-    private string? GetSessionCostEstimateDisplay()
-    {
-        if (_useByokOpenAi)
-        {
-            return _sessionUsageTracker.GetCostEstimateDisplay();
-        }
-
-        return _sessionPremiumRequestCost is > 0
-            ? $"~{_sessionPremiumRequestCost.Value.ToString("0.#", CultureInfo.InvariantCulture)} premium reqs"
-            : null;
-    }
-
-    public IReadOnlyList<(string Label, string Value)> GetStatusFields(bool includeMcpApprovals = false)
-    {
-        var fields = new List<(string Label, string Value)>();
-
-        // -- Provider section --
-        fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Provider"));
-        fields.Add(("Provider", ActiveProviderDisplayName));
-        fields.Add(("Auth mode", _useByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
-        fields.Add(("GitHub auth", _isGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
-        fields.Add(("BYOK", !string.IsNullOrWhiteSpace(_byokOpenAiApiKey) && LooksLikeUrl(_byokOpenAiBaseUrl) ? "Configured" : "Not configured"));
-        var reasoningDisplay = GetReasoningDisplay(GetSelectedModelInfo());
-        if (!string.IsNullOrWhiteSpace(reasoningDisplay))
-        {
-            fields.Add(("Reasoning", reasoningDisplay));
-        }
-        fields.Add(("Session ID", _sessionId));
-
-        // -- Usage section --
-        if (_toolInvocationCount > 0 || (_lastUsage != null && _lastUsage.HasAny))
-        {
-            fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Usage"));
-        }
-
-        if (_toolInvocationCount > 0)
-        {
-            fields.Add(("Tools used", _toolInvocationCount.ToString()));
-        }
-
-        if (_lastUsage != null && _lastUsage.HasAny)
-        {
-            AddUsageField(fields, "Prompt tokens", _lastUsage.PromptTokens);
-            AddUsageField(fields, "Completion tokens", _lastUsage.CompletionTokens);
-            AddUsageField(fields, "Total tokens", _lastUsage.TotalTokens);
-            AddUsageField(fields, "Input tokens", _lastUsage.InputTokens);
-            AddUsageField(fields, "Output tokens", _lastUsage.OutputTokens);
-            AddContextUsageField(fields, _lastUsage.UsedContextTokens, _lastUsage.MaxContextTokens);
-        }
-
-        // -- Capabilities section --
-        var hasMcpOrSkills =
-            _configuredMcpServers.Any(v => !string.IsNullOrWhiteSpace(v))
-            || _runtimeMcpServers.Count > 0
-            || !string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
-            || !string.IsNullOrWhiteSpace(_configuredTicketingMcpServer)
-            || _configuredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
-            || _runtimeSkills.Count > 0
-            || _configurationWarnings.Count > 0;
-
-        if (hasMcpOrSkills)
-        {
-            fields.Add((UI.ConsoleUI.StatusSectionSeparator, "Capabilities"));
-        }
-
-        AddCapabilityField(fields, "MCP configured", _configuredMcpServers);
-        AddCapabilityField(fields, "MCP used", _runtimeMcpServers.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-        AddCapabilityField(fields, "Monitoring MCP", _configuredMonitoringMcpServer is null ? [] : [_configuredMonitoringMcpServer]);
-        AddCapabilityField(fields, "Ticketing MCP", _configuredTicketingMcpServer is null ? [] : [_configuredTicketingMcpServer]);
-        // Per-session and persisted MCP approvals are intentionally omitted from
-        // the startup status panel and the post-action panel: at startup persisted
-        // approvals are stale-looking (carried over from prior sessions) and the
-        // session list is empty, while monitoring/ticketing servers are auto-
-        // approved by role anyway. They remain available on demand via /status,
-        // which passes includeMcpApprovals: true here, and continue to surface in
-        // the HTML report under "MCP approved (session/persisted)".
-        if (includeMcpApprovals)
-        {
-            AddCapabilityField(fields, "MCP approved (session)", _permissionHandler.GetApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-            AddCapabilityField(fields, "MCP approved (persisted)", _permissionHandler.GetPersistedApprovedMcpServersSnapshot().OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-        }
-        AddCapabilityField(fields, "Skills configured", _configuredSkills);
-        AddCapabilityField(fields, "Skills used", _runtimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-
-        if (_configurationWarnings.Count > 0)
-        {
-            fields.Add(("Capability warnings", string.Join(" | ", _configurationWarnings)));
-        }
-
-        return fields;
-    }
-
-    /// <summary>
-    /// Returns additional targets for the status panel display, excluding the effective primary.
-    /// When a startup JEA session is the effective primary, localhost is excluded.
-    /// </summary>
-    private IReadOnlyList<string>? GetAdditionalTargetsForDisplay()
-    {
-        var all = EffectiveTargetServers;
-        return all.Count > 1 ? all.Skip(1).ToList() : null;
-    }
-
-    private static void AddUsageField(List<(string Label, string Value)> fields, string label, int? value)
-    {
-        if (!value.HasValue)
-            return;
-
-        fields.Add((label, value.Value.ToString("N0", CultureInfo.InvariantCulture)));
-    }
+        => await SessionTargetCoordinator.CloseAdditionalServerSessionAsync(serverName, CreateTargetRequest());
 
     private static void AddContextUsageField(List<(string Label, string Value)> fields, int? usedContext, int? maxContext)
-    {
-        if (!usedContext.HasValue || !maxContext.HasValue || maxContext.Value <= 0)
-        {
-            return;
-        }
-
-        var percentage = usedContext.Value * 100d / maxContext.Value;
-        var value = $"{usedContext.Value.ToString("N0", CultureInfo.InvariantCulture)}/{maxContext.Value.ToString("N0", CultureInfo.InvariantCulture)} ({percentage.ToString("0.#", CultureInfo.InvariantCulture)}%)";
-        fields.Add(("Context", value));
-    }
-
-    private static void AddCapabilityField(List<(string Label, string Value)> fields, string label, IEnumerable<string> values)
-    {
-        var distinct = values
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (distinct.Count == 0)
-            return;
-
-        const int maxItems = 2;
-        var shown = distinct.Take(maxItems);
-        var value = string.Join(", ", shown);
-        if (distinct.Count > maxItems)
-        {
-            value += $" (+{distinct.Count - maxItems} more)";
-        }
-
-        fields.Add((label, value));
-    }
+        => SessionStatusBuilder.AddContextUsageField(fields, usedContext, maxContext);
 
     private ByokPriceInfo? GetActiveByokPricing()
     {
         var pricing = _modelDiscovery.GetActiveByokPricing(_selectedModel, _useByokOpenAi);
-        return pricing == null ? null : ByokPriceInfo.FromService(pricing);
-    }
-
-    private double? GetActivePremiumMultiplier()
-    {
-        if (_useByokOpenAi)
-        {
-            return null;
-        }
-
-        var model = GetSelectedModelInfo();
-        return model?.Billing?.Multiplier;
-    }
-
-    private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
-    {
-        var data = usageEvt.Data;
-        if (data == null)
-            return;
-
-        var usageObj = GetPropertyValue(data, "Usage") ?? data;
-
-        var promptTokens = ReadIntProperty(usageObj, "PromptTokens", "InputTokens", "RequestTokens");
-        var completionTokens = ReadIntProperty(usageObj, "CompletionTokens", "OutputTokens", "ResponseTokens");
-        var totalTokens = ReadIntProperty(usageObj, "TotalTokens", "Tokens");
-
-        var inputTokens = ReadIntProperty(usageObj, "InputTokens", "PromptTokens", "RequestTokens");
-        var outputTokens = ReadIntProperty(usageObj, "OutputTokens", "CompletionTokens", "ResponseTokens");
-
-        var usedContext = ReadIntProperty(usageObj, "UsedTokens", "ContextTokensUsed", "ContextTokens", "UsedContextTokens");
-        var maxContext = ReadIntProperty(usageObj, "MaxTokens", "MaxContextTokens", "ContextWindowTokens", "ContextTokensMax");
-        var freeContext = ReadIntProperty(usageObj, "FreeTokens", "RemainingTokens", "ContextTokensRemaining");
-
-        if (maxContext.HasValue && usedContext.HasValue && !freeContext.HasValue)
-        {
-            freeContext = Math.Max(0, maxContext.Value - usedContext.Value);
-        }
-
-        var snapshot = new CopilotUsageSnapshot(
-            promptTokens,
-            completionTokens,
-            totalTokens,
-            inputTokens,
-            outputTokens,
-            maxContext,
-            usedContext,
-            freeContext);
-
-        if (snapshot.HasAny)
-        {
-            _lastUsage = snapshot;
-
-            var pricing = GetActiveByokPricing();
-            var multiplier = GetActivePremiumMultiplier();
-            _sessionUsageTracker.RecordTurn(
-                snapshot.InputTokens ?? snapshot.PromptTokens,
-                snapshot.OutputTokens ?? snapshot.CompletionTokens,
-                pricing,
-                multiplier);
-        }
-    }
-
-    private async Task RefreshSessionUsageMetricsAsync(CancellationToken cancellationToken)
-    {
-        if (_copilotSession == null || _useByokOpenAi)
-        {
-            return;
-        }
-
-        try
-        {
-            using var metricsTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            metricsTimeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
-
-            var metrics = await _copilotSession.Rpc.Usage.GetMetricsAsync(metricsTimeoutCts.Token);
-            _sessionPremiumRequestCost = metrics.TotalPremiumRequestCost > 0
-                ? metrics.TotalPremiumRequestCost
-                : null;
-        }
-        catch (OperationCanceledException)
-        {
-            // Ignore cancellation/timeout so status-bar rendering cannot stall the session loop.
-        }
-        catch
-        {
-            // Ignore metrics fetch failures and leave the display empty rather than falling back to a guessed premium cost.
-        }
-    }
-
-    private void CaptureCapabilityUsage(SessionEvent evt)
-    {
-        if (evt is ToolExecutionStartEvent toolStart)
-        {
-            var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
-            if (!string.IsNullOrWhiteSpace(mcpServerName))
-            {
-                _runtimeMcpServers.Add(mcpServerName);
-            }
-        }
-
-        if (string.Equals(evt.Type, "skill.invoked", StringComparison.OrdinalIgnoreCase))
-        {
-            var eventData = GetPropertyValue(evt, "Data");
-            var skillName = ReadStringProperty(eventData, "Name", "SkillName", "Id");
-            if (!string.IsNullOrWhiteSpace(skillName))
-            {
-                _runtimeSkills.Add(skillName);
-            }
-        }
-    }
-
-    private static string? ReadStringProperty(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-            return null;
-
-        foreach (var propertyName in propertyNames)
-        {
-            var prop = instance.GetType().GetProperty(propertyName,
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            var value = prop?.GetValue(instance);
-            if (value is string stringValue && !string.IsNullOrWhiteSpace(stringValue))
-            {
-                return stringValue.Trim();
-            }
-        }
-
-        return null;
-    }
-
-    private void ResetCapabilities()
-    {
-        _configuredMcpServers.Clear();
-        _configuredSkills.Clear();
-        _runtimeMcpServers.Clear();
-        _runtimeSkills.Clear();
-        _configurationWarnings.Clear();
+        return pricing;
     }
 
     private string CreateSessionId()
@@ -2881,195 +881,4 @@ public class TroubleshootingSession : IAsyncDisposable
         return $"TS-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{sequence:D3}";
     }
 
-    private static object? GetPropertyValue(object instance, string propertyName)
-    {
-        var prop = instance.GetType().GetProperty(propertyName,
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        return prop?.GetValue(instance);
-    }
-
-    private static bool TryGetJsonPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (property.NameEquals(propertyName) || property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    value = property.Value;
-                    return true;
-                }
-            }
-        }
-
-        value = default;
-        return false;
-    }
-
-    private static string? ReadJsonStringProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (TryGetJsonPropertyIgnoreCase(element, propertyName, out var value) && value.ValueKind == JsonValueKind.String)
-            {
-                var text = value.GetString();
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text.Trim();
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static List<string> ReadJsonStringArrayProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            var result = new List<string>();
-            foreach (var item in value.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.String)
-                    continue;
-
-                var text = item.GetString();
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    result.Add(text.Trim());
-                }
-            }
-
-            return result;
-        }
-
-        return [];
-    }
-
-    private static int? ReadJsonIntProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-                continue;
-
-            if (value.ValueKind == JsonValueKind.Number)
-            {
-                if (value.TryGetInt32(out var intValue))
-                    return intValue;
-                if (value.TryGetInt64(out var longValue))
-                    return (int)longValue;
-                if (value.TryGetDouble(out var doubleValue))
-                    return (int)doubleValue;
-            }
-
-            if (value.ValueKind == JsonValueKind.String
-                && int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
-    }
-
-    private static double? ReadJsonDoubleProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-                continue;
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var doubleValue))
-            {
-                return doubleValue;
-            }
-
-            if (value.ValueKind == JsonValueKind.String
-                && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
-    }
-
-    private static decimal? ReadJsonDecimalProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-                continue;
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var decimalValue))
-            {
-                return decimalValue;
-            }
-
-            if (value.ValueKind == JsonValueKind.String
-                && decimal.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool? ReadJsonBoolProperty(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var propertyName in propertyNames)
-        {
-            if (!TryGetJsonPropertyIgnoreCase(element, propertyName, out var value))
-                continue;
-
-            if (value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                return value.GetBoolean();
-            }
-
-            if (value.ValueKind == JsonValueKind.String
-                && bool.TryParse(value.GetString(), out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
-    }
-
-    private static int? ReadIntProperty(object? instance, params string[] propertyNames)
-    {
-        if (instance == null)
-            return null;
-
-        foreach (var name in propertyNames)
-        {
-            var prop = instance.GetType().GetProperty(name,
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            if (prop == null)
-                continue;
-
-            var value = prop.GetValue(instance);
-            if (value == null)
-                continue;
-
-            if (value is int i)
-                return i;
-            if (value is long l)
-                return (int)l;
-            if (value is double d)
-                return (int)d;
-            if (value is float f)
-                return (int)f;
-        }
-
-        return null;
-    }
 }

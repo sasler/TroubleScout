@@ -18,7 +18,19 @@ namespace TroubleScout.Tests;
 /// </summary>
 public class InvariantGuardsTests
 {
+    private const int TroubleshootingSessionLineCap = 900;
     private static readonly Lazy<string> RepoRootPath = new(FindRepoRoot);
+
+    [Fact]
+    public void TroubleshootingSession_PrimaryFile_StaysUnderLineCap()
+    {
+        var path = Path.Combine(RepoRootPath.Value, "TroubleshootingSession.cs");
+        var lineCount = File.ReadAllLines(path).Length;
+
+        lineCount.Should().BeLessThanOrEqualTo(TroubleshootingSessionLineCap,
+            "TroubleshootingSession.cs should remain a small facade/composition root; " +
+            "move behavior into focused services instead of growing the primary file.");
+    }
 
     [Fact]
     public void PowerShellExecutor_AddScript_IsGuardedByIsJeaSessionCheck()
