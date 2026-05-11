@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.11] - 2026-05-11
+
+### Internal
+
+- ♻️ **Extract Copilot turn runner** - Copilot send/stream/event orchestration now lives in a focused turn runner while `TroubleshootingSession.SendMessageAsync` remains the stable entry point for approvals, status bars, transcript updates, and post-analysis flow.
+
 ## [v1.17.10] - 2026-05-11
 
 ### Internal
