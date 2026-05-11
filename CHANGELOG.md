@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.9] - 2026-05-11
+
+### Internal
+
+- 🧭 **Extract model and BYOK slash commands** - `/model` and `/byok` now flow through `SlashCommandDispatcher.DispatchAsync`, preserving model selection, second-opinion handoff, BYOK setup, and BYOK clearing behavior with focused dispatcher coverage.
+
 ## [v1.17.8] - 2026-05-11
 
 ### Internal

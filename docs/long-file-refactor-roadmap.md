@@ -14,7 +14,7 @@ they are not GitHub pull request numbers.
   `TroubleshootingSession`.
 - [x] Step C: Remaining Low-Risk Slash Commands - Move `/clear`, `/settings`,
   `/login`, and `/mcp-role` out of `RunInteractiveLoopAsync`.
-- [ ] Step D: Model And BYOK Slash Commands - Move `/model` and `/byok` command
+- [x] Step D: Model And BYOK Slash Commands - Move `/model` and `/byok` command
   flows into dedicated command handling.
 - [ ] Step E: MCP, Skills, And Session Config Services - Extract MCP config
   loading, skill discovery, and `SessionConfig` construction into services.

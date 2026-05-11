@@ -1579,6 +1579,308 @@ public class SlashCommandDispatcherTests
         saved.Should().Equal("high", "low");
     }
 
+    [Theory]
+    [InlineData("/byok clear")]
+    [InlineData("/byok off")]
+    [InlineData("/byok disable")]
+    public async Task DispatchAsync_WithByokClear_ShouldClearSettingsRuntimeStateAndCache(string input)
+    {
+        (bool Enabled, string? BaseUrl, string? ApiKey)? saved = null;
+        var runtimeCleared = 0;
+        var cacheInvalidated = 0;
+        var successes = new List<string>();
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            SaveByokSettings = (enabled, baseUrl, apiKey) => saved = (enabled, baseUrl, apiKey),
+            ClearByokRuntimeState = () => runtimeCleared++,
+            InvalidateModelCache = () => cacheInvalidated++,
+            ShowSuccess = successes.Add,
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync(input);
+
+        result.Handled.Should().BeTrue();
+        saved.Should().NotBeNull();
+        saved!.Value.Enabled.Should().BeFalse();
+        saved.Value.BaseUrl.Should().BeNull();
+        saved.Value.ApiKey.Should().BeNull();
+        runtimeCleared.Should().Be(1);
+        cacheInvalidated.Should().Be(1);
+        successes.Should().Contain("Saved BYOK settings cleared for this profile.");
+        messages.Should().Contain("Current session provider remains unchanged until you switch model/provider or restart.");
+        messages.Should().Contain("The OPENAI_API_KEY environment variable (if set) is unchanged.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithByokInteractivePrompt_ShouldConfigureEnteredBaseUrlAndApiKey()
+    {
+        var prompts = new Queue<string>(["https://proxy.example/v1", "sk-test"]);
+        (string BaseUrl, string ApiKey, string? Model)? configured = null;
+        var summaries = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetByokBaseUrl = () => "https://api.openai.com/v1",
+            GetDefaultByokModel = () => "gpt-5",
+            PromptText = () => prompts.Dequeue(),
+            ConfigureByokOpenAi = (baseUrl, apiKey, model, _) =>
+            {
+                configured = (baseUrl, apiKey, model);
+                return Task.FromResult(true);
+            },
+            ShowModelSelectionSummary = () => summaries++
+        });
+
+        var result = await dispatcher.DispatchAsync("/byok");
+
+        result.Handled.Should().BeTrue();
+        configured.Should().Be(("https://proxy.example/v1", "sk-test", "gpt-5"));
+        summaries.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("/byok env https://api.openai.com/v1 gpt-5", "env-secret", "https://api.openai.com/v1", "gpt-5")]
+    [InlineData("/byok sk-test https://aigw.example.org gpt-5", "sk-test", "https://aigw.example.org", "gpt-5")]
+    [InlineData("/byok https://aigw.example.org sk-test gpt-5", "sk-test", "https://aigw.example.org", "gpt-5")]
+    [InlineData("/byok sk-test gpt-4.1", "sk-test", "https://api.openai.com/v1", "gpt-4.1")]
+    public async Task DispatchAsync_WithByokArguments_ShouldParseSupportedForms(
+        string input,
+        string expectedApiKey,
+        string expectedBaseUrl,
+        string expectedModel)
+    {
+        (string BaseUrl, string ApiKey, string? Model)? configured = null;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetByokBaseUrl = () => "https://api.openai.com/v1",
+            GetDefaultByokModel = () => "fallback-model",
+            GetEnvironmentVariable = name => name == "OPENAI_API_KEY" ? "env-secret" : null,
+            ConfigureByokOpenAi = (baseUrl, apiKey, model, _) =>
+            {
+                configured = (baseUrl, apiKey, model);
+                return Task.FromResult(true);
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync(input);
+
+        result.Handled.Should().BeTrue();
+        configured.Should().Be((expectedBaseUrl, expectedApiKey, expectedModel));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithByokMissingApiKey_ShouldWarnAndShowExamples()
+    {
+        var warnings = new List<string>();
+        var messages = new List<string>();
+        var configureCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetEnvironmentVariable = _ => null,
+            ConfigureByokOpenAi = (_, _, _, _) =>
+            {
+                configureCalls++;
+                return Task.FromResult(true);
+            },
+            ShowWarning = warnings.Add,
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/byok env");
+
+        result.Handled.Should().BeTrue();
+        configureCalls.Should().Be(0);
+        warnings.Should().Contain("No API key was provided. Set OPENAI_API_KEY or pass it as /byok <api-key> [base-url] [model].");
+        messages.Should().Contain("Examples:");
+        messages.Should().Contain("  /byok env https://api.openai.com/v1");
+        messages.Should().Contain("  /byok sk-... https://aigw.example.org");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithByokInvalidBaseUrl_ShouldWarnAndNotConfigure()
+    {
+        var warnings = new List<string>();
+        var configureCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetByokBaseUrl = () => "not-a-url",
+            ConfigureByokOpenAi = (_, _, _, _) =>
+            {
+                configureCalls++;
+                return Task.FromResult(true);
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/byok sk-test");
+
+        result.Handled.Should().BeTrue();
+        configureCalls.Should().Be(0);
+        warnings.Should().Contain("Base URL is invalid. Example: https://api.openai.com/v1");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithByokConfigureSuccess_ShouldInvalidateCacheAndShowSummary()
+    {
+        var cacheInvalidated = 0;
+        var summaries = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetByokBaseUrl = () => "https://api.openai.com/v1",
+            ConfigureByokOpenAi = (_, _, _, _) => Task.FromResult(true),
+            InvalidateModelCache = () => cacheInvalidated++,
+            ShowModelSelectionSummary = () => summaries++
+        });
+
+        var result = await dispatcher.DispatchAsync("/byok sk-test");
+
+        result.Handled.Should().BeTrue();
+        cacheInvalidated.Should().Be(1);
+        summaries.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithModelAndNoAvailableModelsAfterRefresh_ShouldWarnUser()
+    {
+        var refreshCalls = 0;
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            HasCopilotClient = () => true,
+            RefreshAvailableModels = () =>
+            {
+                refreshCalls++;
+                return Task.CompletedTask;
+            },
+            GetAvailableModelCount = () => 0,
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/model");
+
+        result.Handled.Should().BeTrue();
+        refreshCalls.Should().Be(1);
+        warnings.Should().Contain("No models available. Authenticate with /login and/or configure BYOK with /byok.");
+        warnings.Should().Contain("No models are available yet. Authenticate GitHub Copilot or configure BYOK, then try /model again.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithModelSelectionCanceled_ShouldKeepCurrentModel()
+    {
+        var messages = new List<string>();
+        var changeCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 1,
+            GetSelectedModelName = () => "gpt-4.1",
+            GetModelSelectionEntries = () => [CreateModelEntry("gpt-5", "GPT 5 (GitHub Copilot)", isCurrent: false)],
+            PromptModelSelection = (_, _) => null,
+            ChangeModel = (_, _) =>
+            {
+                changeCalls++;
+                return Task.FromResult(true);
+            },
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/model");
+
+        result.Handled.Should().BeTrue();
+        messages.Should().Contain("Keeping current model: gpt-4.1");
+        changeCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithModelCleanSessionSwitch_ShouldChangeModelClearHistoryAndShowSummary()
+    {
+        var entry = CreateModelEntry("gpt-5", "GPT 5 (GitHub Copilot)", isCurrent: false);
+        var spinnerLabels = new List<string>();
+        var changedEntries = new List<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>();
+        var historyClears = 0;
+        var summaries = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 1,
+            GetSelectedModelName = () => "gpt-4.1",
+            GetModelSelectionEntries = () => [entry],
+            PromptModelSelection = (_, _) => entry,
+            IsCurrentModelAndSource = _ => false,
+            HasRecordedHistory = () => true,
+            PromptModelSwitchBehavior = (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession,
+            RunWithSpinnerAsync = async (label, action) =>
+            {
+                spinnerLabels.Add(label);
+                return await action(_ => { });
+            },
+            ChangeModel = (selectedEntry, _) =>
+            {
+                changedEntries.Add(selectedEntry);
+                return Task.FromResult(true);
+            },
+            ClearRecordedHistory = () => historyClears++,
+            ShowModelSelectionSummary = () => summaries++
+        });
+
+        var result = await dispatcher.DispatchAsync("/model");
+
+        result.Handled.Should().BeTrue();
+        spinnerLabels.Should().Contain("Switching to GPT 5 (GitHub Copilot)...");
+        changedEntries.Should().ContainSingle().Which.Should().Be(entry);
+        historyClears.Should().Be(1);
+        summaries.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithModelSecondOpinionSwitch_ShouldPreserveHistoryAndRunSecondOpinion()
+    {
+        var entry = CreateModelEntry("gpt-5", "GPT 5 (GitHub Copilot)", isCurrent: false);
+        var prompt = new ReportPromptEntry(DateTimeOffset.UtcNow, "check services", [], "healthy");
+        var historyClears = 0;
+        var selectedModelNameCalls = 0;
+        (string PreviousModel, string SelectedModel, IReadOnlyList<ReportPromptEntry> Prompts)? secondOpinion = null;
+        var messages = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 1,
+            GetSelectedModelName = () => selectedModelNameCalls++ == 0 ? "gpt-4.1" : "gpt-5",
+            GetModelSelectionEntries = () => [entry],
+            PromptModelSelection = (_, _) => entry,
+            IsCurrentModelAndSource = _ => false,
+            HasRecordedHistory = () => true,
+            GetRecordedPrompts = () => [prompt],
+            PromptModelSwitchBehavior = (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ChangeModel = (_, _) => Task.FromResult(true),
+            ClearRecordedHistory = () => historyClears++,
+            RunSecondOpinion = (previousModel, selectedModel, prompts) =>
+            {
+                secondOpinion = (previousModel, selectedModel, prompts);
+                return Task.CompletedTask;
+            },
+            ShowInfo = messages.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/model");
+
+        result.Handled.Should().BeTrue();
+        historyClears.Should().Be(0);
+        secondOpinion.Should().NotBeNull();
+        secondOpinion!.Value.PreviousModel.Should().Be("gpt-4.1");
+        secondOpinion.Value.SelectedModel.Should().Be("gpt-5");
+        secondOpinion.Value.Prompts.Should().ContainSingle().Which.Should().Be(prompt);
+        messages.Should().Contain("Asking gpt-5 for a second opinion using the current session context...");
+    }
+
+    private static global::TroubleScout.TroubleshootingSession.ModelSelectionEntry CreateModelEntry(
+        string modelId,
+        string displayName,
+        bool isCurrent)
+        => new(modelId, displayName, global::TroubleScout.TroubleshootingSession.ModelSource.GitHub)
+        {
+            IsCurrent = isCurrent
+        };
+
     private static ModelInfo CreateReasoningModel() =>
         new()
         {

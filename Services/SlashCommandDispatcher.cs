@@ -40,6 +40,23 @@ internal sealed class SlashCommandHandlers
     internal Func<ModelInfo?> GetSelectedModelInfo { get; init; } = static () => null;
     internal Func<string?> GetSelectedModelName { get; init; } = static () => null;
     internal Func<string?> GetSelectedModelId { get; init; } = static () => null;
+    internal Func<bool> HasCopilotClient { get; init; } = static () => false;
+    internal Func<bool> IsDebugMode { get; init; } = static () => false;
+    internal Func<Task> RefreshAvailableModels { get; init; } = static () => Task.CompletedTask;
+    internal Func<int> GetAvailableModelCount { get; init; } = static () => 0;
+    internal Func<IReadOnlyList<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>> GetModelSelectionEntries { get; init; } = static () => Array.Empty<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>();
+    internal Func<string, IReadOnlyList<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>, global::TroubleScout.TroubleshootingSession.ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
+    internal Func<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
+    internal Func<string, string, global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession;
+    internal Func<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry, Action<string>?, Task<bool>> ChangeModel { get; init; } = static (_, _) => Task.FromResult(false);
+    internal Action ClearRecordedHistory { get; init; } = static () => { };
+    internal Func<string, string, IReadOnlyList<ReportPromptEntry>, Task> RunSecondOpinion { get; init; } = static (_, _, _) => Task.CompletedTask;
+    internal Func<string?> GetByokBaseUrl { get; init; } = static () => null;
+    internal Func<string?> GetDefaultByokModel { get; init; } = static () => null;
+    internal Func<string, string?> GetEnvironmentVariable { get; init; } = Environment.GetEnvironmentVariable;
+    internal Action<bool, string?, string?> SaveByokSettings { get; init; } = static (_, _, _) => { };
+    internal Action ClearByokRuntimeState { get; init; } = static () => { };
+    internal Func<string, string, string?, Action<string>?, Task<bool>> ConfigureByokOpenAi { get; init; } = static (_, _, _, _) => Task.FromResult(false);
     internal Func<string?> GetConfiguredReasoningEffort { get; init; } = static () => null;
     internal Action<string?> ApplyReasoningEffortSetting { get; init; } = static _ => { };
     internal Action<string?> SaveReasoningEffortState { get; init; } = static _ => { };
@@ -101,6 +118,7 @@ internal sealed class SlashCommandHandlers
 
 internal sealed class SlashCommandDispatcher
 {
+    private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
     private readonly SlashCommandHandlers _handlers;
 
     internal SlashCommandDispatcher(SlashCommandHandlers handlers)
@@ -199,6 +217,18 @@ internal sealed class SlashCommandDispatcher
         if (result.Handled)
         {
             return result;
+        }
+
+        if (IsInvocation(parsed.Lower, "/byok"))
+        {
+            await HandleByokCommandAsync(parsed.Trimmed);
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (parsed.FirstToken == "/model")
+        {
+            await HandleModelCommandAsync();
+            return SlashCommandResult.HandledCommand;
         }
 
         if (IsInvocation(parsed.Lower, "/reasoning"))
@@ -512,6 +542,229 @@ internal sealed class SlashCommandDispatcher
     internal static bool IsBareExitCommand(string input)
         => input.Equals("exit", StringComparison.Ordinal)
            || input.Equals("quit", StringComparison.Ordinal);
+
+    private async Task HandleByokCommandAsync(string input)
+    {
+        var byokParts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        if (byokParts.Length > 1 &&
+            (byokParts[1].Equals("clear", StringComparison.OrdinalIgnoreCase)
+             || byokParts[1].Equals("off", StringComparison.OrdinalIgnoreCase)
+             || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
+        {
+            _handlers.SaveByokSettings(false, null, null);
+            _handlers.ClearByokRuntimeState();
+            _handlers.InvalidateModelCache();
+            _handlers.ShowSuccess("Saved BYOK settings cleared for this profile.");
+            _handlers.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
+            _handlers.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
+            return;
+        }
+
+        string? apiKey = null;
+        var byokBaseUrl = _handlers.GetByokBaseUrl();
+        var byokModel = _handlers.GetDefaultByokModel();
+
+        if (byokParts.Length == 1)
+        {
+            _handlers.ShowInfo($"Enter OpenAI-compatible base URL (default: {byokBaseUrl})");
+            var baseUrlInput = _handlers.PromptText().Trim();
+            if (!string.IsNullOrWhiteSpace(baseUrlInput))
+            {
+                byokBaseUrl = baseUrlInput;
+            }
+
+            _handlers.ShowInfo($"Enter API key, or type 'env' to use {OpenAiApiKeyEnvironmentVariable}.");
+            var apiKeyInput = _handlers.PromptText().Trim();
+            apiKey = apiKeyInput.Equals("env", StringComparison.OrdinalIgnoreCase)
+                ? _handlers.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
+                : apiKeyInput;
+        }
+        else
+        {
+            var sourceArg = byokParts[1];
+
+            if (sourceArg.Equals("env", StringComparison.OrdinalIgnoreCase))
+            {
+                apiKey = _handlers.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
+                if (byokParts.Length > 2)
+                {
+                    if (LooksLikeUrl(byokParts[2]))
+                    {
+                        byokBaseUrl = byokParts[2];
+                        if (byokParts.Length > 3)
+                        {
+                            byokModel = byokParts[3];
+                        }
+                    }
+                    else
+                    {
+                        byokModel = byokParts[2];
+                    }
+                }
+            }
+            else
+            {
+                if (byokParts.Length > 2 && LooksLikeUrl(byokParts[2]))
+                {
+                    apiKey = sourceArg;
+                    byokBaseUrl = byokParts[2];
+                    if (byokParts.Length > 3)
+                    {
+                        byokModel = byokParts[3];
+                    }
+                }
+                else if (LooksLikeUrl(sourceArg))
+                {
+                    byokBaseUrl = sourceArg;
+                    if (byokParts.Length > 2)
+                    {
+                        apiKey = byokParts[2];
+                    }
+                    if (byokParts.Length > 3)
+                    {
+                        byokModel = byokParts[3];
+                    }
+                }
+                else
+                {
+                    apiKey = sourceArg;
+                    if (byokParts.Length > 2)
+                    {
+                        byokModel = byokParts[2];
+                    }
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _handlers.ShowWarning($"No API key was provided. Set {OpenAiApiKeyEnvironmentVariable} or pass it as /byok <api-key> [base-url] [model].");
+            _handlers.ShowInfo("Examples:");
+            _handlers.ShowInfo("  /byok env https://api.openai.com/v1");
+            _handlers.ShowInfo("  /byok sk-... https://aigw.example.org");
+            return;
+        }
+
+        if (!LooksLikeUrl(byokBaseUrl))
+        {
+            _handlers.ShowWarning("Base URL is invalid. Example: https://api.openai.com/v1");
+            return;
+        }
+
+        var byokReady = await _handlers.ConfigureByokOpenAi(byokBaseUrl!, apiKey, byokModel, null);
+
+        if (byokReady)
+        {
+            _handlers.InvalidateModelCache();
+            _handlers.ShowModelSelectionSummary();
+        }
+    }
+
+    private async Task HandleModelCommandAsync()
+    {
+        if (_handlers.HasCopilotClient())
+        {
+            try
+            {
+                await _handlers.RefreshAvailableModels();
+
+                if (_handlers.GetAvailableModelCount() == 0)
+                {
+                    _handlers.ShowWarning("No models available. Authenticate with /login and/or configure BYOK with /byok.");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_handlers.IsDebugMode())
+                {
+                    _handlers.ShowWarning($"Could not refresh model list: {TrimSingleLine(ex.Message)}");
+                }
+            }
+        }
+
+        if (_handlers.GetAvailableModelCount() == 0)
+        {
+            _handlers.ShowWarning("No models are available yet. Authenticate GitHub Copilot or configure BYOK, then try /model again.");
+            return;
+        }
+
+        var selectionEntries = _handlers.GetModelSelectionEntries();
+        if (selectionEntries.Count == 0)
+        {
+            _handlers.ShowWarning("No connected provider models are available. Authenticate GitHub Copilot or configure BYOK first.");
+            return;
+        }
+
+        var currentModel = _handlers.GetSelectedModelName() ?? string.Empty;
+        var selectedEntry = _handlers.PromptModelSelection(currentModel, selectionEntries);
+        if (selectedEntry == null)
+        {
+            _handlers.ShowInfo($"Keeping current model: {currentModel}");
+            return;
+        }
+
+        if (_handlers.IsCurrentModelAndSource(selectedEntry))
+        {
+            return;
+        }
+
+        var switchBehavior = global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession;
+        var priorConversation = Array.Empty<ReportPromptEntry>();
+
+        if (_handlers.HasRecordedHistory())
+        {
+            var behaviorChoice = _handlers.PromptModelSwitchBehavior(currentModel, selectedEntry.DisplayName);
+            if (!behaviorChoice.HasValue)
+            {
+                _handlers.ShowInfo($"Keeping current model: {currentModel}");
+                return;
+            }
+
+            switchBehavior = behaviorChoice.Value;
+            if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion)
+            {
+                priorConversation = _handlers.GetRecordedPrompts().ToArray();
+            }
+        }
+
+        var displayName = selectedEntry.DisplayName;
+        var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
+        {
+            return await _handlers.ChangeModel(selectedEntry, updateStatus);
+        });
+
+        if (!success)
+        {
+            return;
+        }
+
+        if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession)
+        {
+            _handlers.ClearRecordedHistory();
+        }
+
+        _handlers.ShowModelSelectionSummary();
+
+        if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
+        {
+            var selectedModel = _handlers.GetSelectedModelName() ?? string.Empty;
+            _handlers.ShowInfo($"Asking {selectedModel} for a second opinion using the current session context...");
+            await _handlers.RunSecondOpinion(currentModel, selectedModel, priorConversation);
+        }
+    }
+
+    private static bool LooksLikeUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+               && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                   || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+    }
 
     private async Task HandleReasoningCommandAsync(string input)
     {

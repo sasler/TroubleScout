@@ -294,6 +294,29 @@ public class TroubleshootingSession : IAsyncDisposable
             GetSelectedModelInfo = GetSelectedModelInfo,
             GetSelectedModelName = () => SelectedModel,
             GetSelectedModelId = () => _selectedModel,
+            HasCopilotClient = () => _copilotClient != null,
+            IsDebugMode = () => _debugMode,
+            RefreshAvailableModels = RefreshAvailableModelsAsync,
+            GetAvailableModelCount = () => _modelDiscovery.AvailableModels.Count,
+            GetModelSelectionEntries = GetModelSelectionEntries,
+            PromptModelSelection = ConsoleUI.PromptModelSelection,
+            IsCurrentModelAndSource = IsCurrentModelAndSource,
+            PromptModelSwitchBehavior = ConsoleUI.PromptModelSwitchBehavior,
+            ChangeModel = ChangeModelAsync,
+            ClearRecordedHistory = ClearRecordedConversationHistory,
+            RunSecondOpinion = async (previousModel, selectedModel, prompts) =>
+                await RunInteractiveCancelableAiOperationAsync(token =>
+                    RequestSecondOpinionAsync(previousModel, selectedModel, prompts, token)),
+            GetByokBaseUrl = () => _byokOpenAiBaseUrl,
+            GetDefaultByokModel = () => _selectedModel ?? _requestedModel,
+            GetEnvironmentVariable = Environment.GetEnvironmentVariable,
+            SaveByokSettings = SaveByokSettings,
+            ClearByokRuntimeState = () =>
+            {
+                _useByokOpenAi = false;
+                _byokOpenAiApiKey = null;
+            },
+            ConfigureByokOpenAi = ConfigureByokOpenAiAsync,
             GetConfiguredReasoningEffort = () => _configuredReasoningEffort,
             ApplyReasoningEffortSetting = ApplyReasoningEffortSetting,
             SaveReasoningEffortState = SaveReasoningEffortState,
@@ -2169,10 +2192,6 @@ public class TroubleshootingSession : IAsyncDisposable
             if (string.IsNullOrWhiteSpace(input))
                 continue;
 
-            // Handle commands
-            var lowerInput = input.ToLowerInvariant();
-            var firstToken = GetFirstInputToken(lowerInput);
-
             var slashCommandResult = await slashCommandDispatcher.DispatchAsync(input);
             if (slashCommandResult.Handled)
             {
@@ -2181,223 +2200,6 @@ public class TroubleshootingSession : IAsyncDisposable
                     break;
                 }
 
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/byok"))
-            {
-                var byokParts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-                if (byokParts.Length > 1 &&
-                    (byokParts[1].Equals("clear", StringComparison.OrdinalIgnoreCase)
-                     || byokParts[1].Equals("off", StringComparison.OrdinalIgnoreCase)
-                     || byokParts[1].Equals("disable", StringComparison.OrdinalIgnoreCase)))
-                {
-                    SaveByokSettings(false, null, null);
-                    // Also update in-memory state so a subsequent /model switch doesn't re-save BYOK=true
-                    _useByokOpenAi = false;
-                    _byokOpenAiApiKey = null;
-                    _modelDiscovery.InvalidateMergedModelListCache();
-                    ConsoleUI.ShowSuccess("Saved BYOK settings cleared for this profile.");
-                    ConsoleUI.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
-                    ConsoleUI.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
-                    continue;
-                }
-
-                string? apiKey = null;
-                var byokBaseUrl = _byokOpenAiBaseUrl;
-                var byokModel = _selectedModel ?? _requestedModel;
-
-                if (byokParts.Length == 1)
-                {
-                    ConsoleUI.ShowInfo($"Enter OpenAI-compatible base URL (default: {_byokOpenAiBaseUrl})");
-                    var baseUrlInput = ConsoleUI.GetUserInput().Trim();
-                    if (!string.IsNullOrWhiteSpace(baseUrlInput))
-                    {
-                        byokBaseUrl = baseUrlInput;
-                    }
-
-                    ConsoleUI.ShowInfo($"Enter API key, or type 'env' to use {OpenAiApiKeyEnvironmentVariable}.");
-                    var apiKeyInput = ConsoleUI.GetUserInput().Trim();
-                    if (apiKeyInput.Equals("env", StringComparison.OrdinalIgnoreCase))
-                    {
-                        apiKey = Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
-                    }
-                    else
-                    {
-                        apiKey = apiKeyInput;
-                    }
-                }
-                else
-                {
-                    var sourceArg = byokParts[1];
-
-                    if (sourceArg.Equals("env", StringComparison.OrdinalIgnoreCase))
-                    {
-                        apiKey = Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
-                        if (byokParts.Length > 2)
-                        {
-                            if (LooksLikeUrl(byokParts[2]))
-                            {
-                                byokBaseUrl = byokParts[2];
-                                if (byokParts.Length > 3)
-                                {
-                                    byokModel = byokParts[3];
-                                }
-                            }
-                            else
-                            {
-                                byokModel = byokParts[2];
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (byokParts.Length > 2 && LooksLikeUrl(byokParts[2]))
-                        {
-                            apiKey = sourceArg;
-                            byokBaseUrl = byokParts[2];
-                            if (byokParts.Length > 3)
-                            {
-                                byokModel = byokParts[3];
-                            }
-                        }
-                        else if (LooksLikeUrl(sourceArg))
-                        {
-                            byokBaseUrl = sourceArg;
-                            if (byokParts.Length > 2)
-                            {
-                                apiKey = byokParts[2];
-                            }
-                            if (byokParts.Length > 3)
-                            {
-                                byokModel = byokParts[3];
-                            }
-                        }
-                        else
-                        {
-                            apiKey = sourceArg;
-                            if (byokParts.Length > 2)
-                            {
-                                byokModel = byokParts[2];
-                            }
-                        }
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(apiKey))
-                {
-                    ConsoleUI.ShowWarning($"No API key was provided. Set {OpenAiApiKeyEnvironmentVariable} or pass it as /byok <api-key> [base-url] [model].");
-                    ConsoleUI.ShowInfo("Examples:");
-                    ConsoleUI.ShowInfo("  /byok env https://api.openai.com/v1");
-                    ConsoleUI.ShowInfo("  /byok sk-... https://aigw.example.org");
-                    continue;
-                }
-
-                if (!LooksLikeUrl(byokBaseUrl))
-                {
-                    ConsoleUI.ShowWarning("Base URL is invalid. Example: https://api.openai.com/v1");
-                    continue;
-                }
-
-                var byokReady = await ConfigureByokOpenAiAsync(byokBaseUrl, apiKey, byokModel, updateStatus: null);
-
-                if (byokReady)
-                {
-                    _modelDiscovery.InvalidateMergedModelListCache();
-                    ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
-                }
-
-                continue;
-            }
-
-            if (firstToken == "/model")
-            {
-                if (_copilotClient != null)
-                {
-                    try
-                    {
-                        await RefreshAvailableModelsAsync();
-
-                        if (_modelDiscovery.AvailableModels.Count == 0)
-                        {
-                            ConsoleUI.ShowWarning("No models available. Authenticate with /login and/or configure BYOK with /byok.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        if (_debugMode)
-                        {
-                            ConsoleUI.ShowWarning($"Could not refresh model list: {TrimSingleLine(ex.Message)}");
-                        }
-                    }
-                }
-
-                if (_modelDiscovery.AvailableModels.Count == 0)
-                {
-                    ConsoleUI.ShowWarning("No models are available yet. Authenticate GitHub Copilot or configure BYOK, then try /model again.");
-                    continue;
-                }
-
-                var selectionEntries = GetModelSelectionEntries();
-                if (selectionEntries.Count == 0)
-                {
-                    ConsoleUI.ShowWarning("No connected provider models are available. Authenticate GitHub Copilot or configure BYOK first.");
-                    continue;
-                }
-
-                var currentModel = SelectedModel;
-                var selectedEntry = ConsoleUI.PromptModelSelection(currentModel, selectionEntries);
-                if (selectedEntry == null)
-                {
-                    ConsoleUI.ShowInfo($"Keeping current model: {currentModel}");
-                    continue;
-                }
-
-                if (!IsCurrentModelAndSource(selectedEntry))
-                {
-                    var switchBehavior = ModelSwitchBehavior.CleanSession;
-                    var priorConversation = Array.Empty<ReportPromptEntry>();
-
-                    if (HasRecordedConversationHistory())
-                    {
-                        var behaviorChoice = ConsoleUI.PromptModelSwitchBehavior(currentModel, selectedEntry.DisplayName);
-                        if (!behaviorChoice.HasValue)
-                        {
-                            ConsoleUI.ShowInfo($"Keeping current model: {currentModel}");
-                            continue;
-                        }
-
-                        switchBehavior = behaviorChoice.Value;
-                        if (switchBehavior == ModelSwitchBehavior.SecondOpinion)
-                        {
-                            priorConversation = GetRecordedPromptSnapshot().ToArray();
-                        }
-                    }
-
-                    var displayName = selectedEntry.DisplayName;
-                    var success = await ConsoleUI.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
-                    {
-                        return await ChangeModelAsync(selectedEntry, updateStatus);
-                    });
-                    
-                    if (success)
-                    {
-                        if (switchBehavior == ModelSwitchBehavior.CleanSession)
-                        {
-                            ClearRecordedConversationHistory();
-                        }
-
-                        ConsoleUI.ShowModelSelectionSummary(SelectedModel, GetSelectedModelDetails());
-
-                        if (switchBehavior == ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
-                        {
-                            ConsoleUI.ShowInfo($"Asking {SelectedModel} for a second opinion using the current session context...");
-                            await RunInteractiveCancelableAiOperationAsync(token =>
-                                RequestSecondOpinionAsync(currentModel, SelectedModel, priorConversation, token));
-                        }
-                    }
-                }
                 continue;
             }
 
