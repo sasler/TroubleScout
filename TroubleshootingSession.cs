@@ -2042,8 +2042,7 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private IReadOnlyList<string> GetAvailableMcpRoleServerNames()
     {
-        var warnings = new List<string>();
-        var servers = LoadMcpServersFromConfig(_mcpConfigPath, warnings);
+        var servers = McpConfigurationService.LoadServers(_mcpConfigPath).Servers;
         var choices = servers.Keys.ToList();
 
         if (!string.IsNullOrWhiteSpace(_configuredMonitoringMcpServer)
@@ -2563,44 +2562,19 @@ public class TroubleshootingSession : IAsyncDisposable
         updateStatus?.Invoke("Creating AI session...");
 
         ResetCapabilities();
-        DiscoverConfiguredSkills();
+        var skillDiscovery = SkillDiscoveryService.DiscoverConfiguredSkills(_skillDirectories, _disabledSkills);
+        _configuredSkills.AddRange(skillDiscovery.SkillNames);
+        _configurationWarnings.AddRange(skillDiscovery.Warnings);
 
-        var mcpServers = LoadMcpServersFromConfig(_mcpConfigPath, _configurationWarnings);
+        var mcpConfiguration = McpConfigurationService.LoadServers(_mcpConfigPath);
+        var mcpServers = mcpConfiguration.Servers;
+        _configurationWarnings.AddRange(mcpConfiguration.Warnings);
         foreach (var serverName in mcpServers.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
         {
             _configuredMcpServers.Add(serverName);
         }
 
-        ValidateConfiguredMcpRole("Monitoring", _configuredMonitoringMcpServer, mcpServers);
-        ValidateConfiguredMcpRole("Ticketing", _configuredTicketingMcpServer, mcpServers);
-
         var config = BuildSessionConfig(model, mcpServers);
-
-        if (_useByokOpenAi)
-        {
-            config.Provider = new ProviderConfig
-            {
-                Type = "openai",
-                BaseUrl = _byokOpenAiBaseUrl,
-                ApiKey = _byokOpenAiApiKey,
-                WireApi = GetByokWireApi(model)
-            };
-        }
-
-        if (mcpServers.Count > 0)
-        {
-            config.McpServers = mcpServers;
-        }
-
-        if (_skillDirectories.Count > 0)
-        {
-            config.SkillDirectories = _skillDirectories.ToList();
-        }
-
-        if (_disabledSkills.Count > 0)
-        {
-            config.DisabledSkills = _disabledSkills.ToList();
-        }
 
         _copilotSession = await _copilotClient.CreateSessionAsync(config);
         ResetStateForNewAiSession();
@@ -2685,121 +2659,37 @@ public class TroubleshootingSession : IAsyncDisposable
 
     internal SessionConfig BuildSessionConfig(string? model)
     {
-        var warnings = new List<string>();
-        var mcpServers = LoadMcpServersFromConfig(_mcpConfigPath, warnings);
+        var mcpServers = McpConfigurationService.LoadServers(_mcpConfigPath).Servers;
         return BuildSessionConfig(model, mcpServers);
     }
 
     private SessionConfig BuildSessionConfig(string? model, IReadOnlyDictionary<string, McpServerConfig> availableMcpServers)
     {
-        return new SessionConfig
-        {
-            Model = model,
-            ReasoningEffort = ResolveConfiguredReasoningEffort(model),
-            SystemMessage = _systemMessageConfig,
-            // Some OpenAI-compatible gateways reject streaming usage options emitted by the SDK.
-            Streaming = !_useByokOpenAi,
-            IncludeSubAgentStreamingEvents = false,
-            Tools = _diagnosticTools.GetTools().ToList(),
-            DefaultAgent = new DefaultAgentConfig
+        var provider = _useByokOpenAi
+            ? new ProviderConfig
             {
-                ExcludedTools = ["web_search"]
-            },
-            CustomAgents = BuildCustomAgentConfigs(availableMcpServers),
-            ClientName = "TroubleScout",
-            OnEvent = HandleSessionLifecycleStateEvent,
-            OnPermissionRequest = _permissionHandler.HandleAsync
-        };
-    }
-
-    private IList<CustomAgentConfig> BuildCustomAgentConfigs(IReadOnlyDictionary<string, McpServerConfig> availableMcpServers)
-    {
-        var agents = new List<CustomAgentConfig>
-        {
-            new CustomAgentConfig
-            {
-                Name = "server-evidence-collector",
-                DisplayName = "Server Evidence Collector",
-                Description = "Collects targeted server and MCP evidence, then returns only the relevant findings.",
-                Infer = true,
-                Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentServerEvidenceCollector)
-            },
-            new CustomAgentConfig
-            {
-                Name = "issue-researcher",
-                DisplayName = "Issue Researcher",
-                Description = "Researches detected errors, symptoms, and event IDs on the web and returns concise findings.",
-                Infer = true,
-                Tools = ["web_search"],
-                Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentIssueResearcher)
+                Type = "openai",
+                BaseUrl = _byokOpenAiBaseUrl,
+                ApiKey = _byokOpenAiApiKey,
+                WireApi = GetByokWireApi(model)
             }
-        };
+            : null;
 
-        var monitoringAgent = BuildRoleScopedAgent(
-            "monitoring-investigator",
-            "Monitoring Investigator",
-            _configuredMonitoringMcpServer,
-            availableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentMonitoringInvestigator)
-        );
-        if (monitoringAgent != null)
-        {
-            agents.Add(monitoringAgent);
-        }
-
-        var ticketingAgent = BuildRoleScopedAgent(
-            "ticket-investigator",
-            "Ticket Investigator",
-            _configuredTicketingMcpServer,
-            availableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentTicketInvestigator)
-        );
-        if (ticketingAgent != null)
-        {
-            agents.Add(ticketingAgent);
-        }
-
-        return agents;
-    }
-
-    private static CustomAgentConfig? BuildRoleScopedAgent(
-        string name,
-        string displayName,
-        string? configuredServerName,
-        IReadOnlyDictionary<string, McpServerConfig> availableMcpServers,
-        string prompt)
-    {
-        if (string.IsNullOrWhiteSpace(configuredServerName)
-            || !availableMcpServers.TryGetValue(configuredServerName, out var serverConfig))
-        {
-            return null;
-        }
-
-        return new CustomAgentConfig
-        {
-            Name = name,
-            DisplayName = displayName,
-            Description = $"Uses the mapped MCP role '{configuredServerName}' and returns concise findings.",
-            Infer = true,
-            McpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase)
-            {
-                [configuredServerName] = serverConfig
-            },
-            Prompt = prompt
-        };
-    }
-
-    private void ValidateConfiguredMcpRole(string roleName, string? configuredServerName, IReadOnlyDictionary<string, McpServerConfig> mcpServers)
-    {
-        if (string.IsNullOrWhiteSpace(configuredServerName))
-        {
-            return;
-        }
-
-        if (!mcpServers.ContainsKey(configuredServerName))
-        {
-            _configurationWarnings.Add($"{roleName} MCP '{configuredServerName}' is not available in the current MCP configuration.");
-        }
+        return CopilotSessionConfigBuilder.Build(new CopilotSessionConfigOptions(
+            Model: model,
+            ReasoningEffort: ResolveConfiguredReasoningEffort(model),
+            SystemMessage: _systemMessageConfig,
+            UseByokOpenAi: _useByokOpenAi,
+            Tools: _diagnosticTools.GetTools().ToList(),
+            AvailableMcpServers: availableMcpServers,
+            MonitoringMcpServer: _configuredMonitoringMcpServer,
+            TicketingMcpServer: _configuredTicketingMcpServer,
+            OnEvent: HandleSessionLifecycleStateEvent,
+            OnPermissionRequest: _permissionHandler.HandleAsync,
+            ConfigurationWarnings: _configurationWarnings,
+            Provider: provider,
+            SkillDirectories: _skillDirectories,
+            DisabledSkills: _disabledSkills));
     }
 
     private string? GetMcpServerRole(string serverName)
@@ -3269,301 +3159,6 @@ public class TroubleshootingSession : IAsyncDisposable
     {
         var sequence = Interlocked.Increment(ref _sessionCounter);
         return $"TS-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{sequence:D3}";
-    }
-
-    private static string ReadSkillNameFromManifest(string manifestPath)
-    {
-        try
-        {
-            using var stream = File.OpenRead(manifestPath);
-            using var doc = JsonDocument.Parse(stream);
-            if (doc.RootElement.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
-            {
-                var name = nameElement.GetString();
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    return name.Trim();
-                }
-            }
-        }
-        catch
-        {
-            // Ignore malformed manifest; caller falls back to folder name.
-        }
-
-        return string.Empty;
-    }
-
-    private void DiscoverConfiguredSkills()
-    {
-        var discoveredSkills = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var directory in _skillDirectories)
-        {
-            if (!Directory.Exists(directory))
-            {
-                _configurationWarnings.Add($"Skills directory not found: {directory}");
-                continue;
-            }
-
-            foreach (var skillDir in Directory.GetDirectories(directory))
-            {
-                var skillMarkdown = Path.Combine(skillDir, "SKILL.md");
-                var skillManifest = Path.Combine(skillDir, "skill.json");
-                if (!File.Exists(skillMarkdown) && !File.Exists(skillManifest))
-                {
-                    continue;
-                }
-
-                var skillName = File.Exists(skillManifest)
-                    ? ReadSkillNameFromManifest(skillManifest)
-                    : string.Empty;
-
-                if (string.IsNullOrWhiteSpace(skillName))
-                {
-                    skillName = Path.GetFileName(skillDir);
-                }
-
-                if (!_disabledSkills.Contains(skillName, StringComparer.OrdinalIgnoreCase))
-                {
-                    discoveredSkills.Add(skillName);
-                }
-            }
-        }
-
-        _configuredSkills.Clear();
-        _configuredSkills.AddRange(discoveredSkills);
-        _configuredSkills.Sort(StringComparer.OrdinalIgnoreCase);
-    }
-
-    internal static Dictionary<string, McpServerConfig> LoadMcpServersFromConfig(string? mcpConfigPath, List<string> warnings)
-    {
-        var result = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase);
-
-        if (string.IsNullOrWhiteSpace(mcpConfigPath))
-        {
-            return result;
-        }
-
-        if (!File.Exists(mcpConfigPath))
-        {
-            warnings.Add($"MCP config file not found: {mcpConfigPath}");
-            return result;
-        }
-
-        try
-        {
-            using var stream = File.OpenRead(mcpConfigPath);
-            using var document = JsonDocument.Parse(stream);
-
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                warnings.Add("MCP config root must be a JSON object.");
-                return result;
-            }
-
-            JsonElement serversElement;
-            if (!root.TryGetProperty("mcpServers", out serversElement) &&
-                !root.TryGetProperty("servers", out serversElement))
-            {
-                warnings.Add("MCP config does not contain 'mcpServers' or 'servers'.");
-                return result;
-            }
-
-            if (serversElement.ValueKind != JsonValueKind.Object)
-            {
-                warnings.Add("MCP config 'mcpServers' or 'servers' must be a JSON object.");
-                return result;
-            }
-
-            foreach (var property in serversElement.EnumerateObject())
-            {
-                var mapped = TryMapMcpServer(property.Name, property.Value, out var warning);
-                if (mapped == null)
-                {
-                    if (!string.IsNullOrWhiteSpace(warning))
-                    {
-                        warnings.Add(warning);
-                    }
-
-                    continue;
-                }
-
-                result[property.Name] = mapped;
-            }
-        }
-        catch (JsonException ex)
-        {
-            warnings.Add($"MCP config JSON parse error: {TrimSingleLine(ex.Message)}");
-        }
-        catch (Exception ex)
-        {
-            warnings.Add($"MCP config load failed: {TrimSingleLine(ex.Message)}");
-        }
-
-        return result;
-    }
-
-    private static McpServerConfig? TryMapMcpServer(string serverName, JsonElement serverElement, out string? warning)
-    {
-        warning = null;
-
-        if (serverElement.ValueKind != JsonValueKind.Object)
-        {
-            warning = $"Skipping MCP server '{serverName}': entry must be an object.";
-            return null;
-        }
-
-        var type = GetOptionalString(serverElement, "type")?.Trim().ToLowerInvariant();
-        if (type is "http" or "sse" or "remote")
-        {
-            var url = GetOptionalString(serverElement, "url");
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                warning = $"Skipping MCP server '{serverName}': remote server requires 'url'.";
-                return null;
-            }
-
-            var remote = new McpHttpServerConfig
-            {
-                Url = url!
-            };
-
-            var headers = GetStringDictionary(serverElement, "headers");
-            if (headers != null)
-            {
-                remote.Headers = headers;
-            }
-
-            var remoteTools = GetStringList(serverElement, "tools");
-            if (remoteTools != null)
-            {
-                remote.Tools = remoteTools;
-            }
-
-            var remoteTimeout = GetOptionalInt(serverElement, "timeout");
-            if (remoteTimeout.HasValue)
-            {
-                remote.Timeout = remoteTimeout.Value;
-            }
-
-            return remote;
-        }
-
-        var command = GetOptionalString(serverElement, "command");
-        if (string.IsNullOrWhiteSpace(command))
-        {
-            warning = $"Skipping MCP server '{serverName}': local/stdio server requires 'command'.";
-            return null;
-        }
-
-        var local = new McpStdioServerConfig
-        {
-            Command = command!
-        };
-
-        var args = GetStringList(serverElement, "args");
-        if (args != null)
-        {
-            local.Args = args;
-        }
-
-        var env = GetStringDictionary(serverElement, "env");
-        if (env != null)
-        {
-            local.Env = env;
-        }
-
-        var cwd = GetOptionalString(serverElement, "cwd");
-        if (!string.IsNullOrWhiteSpace(cwd))
-        {
-            local.Cwd = cwd;
-        }
-
-        var localTools = GetStringList(serverElement, "tools");
-        if (localTools != null)
-        {
-            local.Tools = localTools;
-        }
-
-        var localTimeout = GetOptionalInt(serverElement, "timeout");
-        if (localTimeout.HasValue)
-        {
-            local.Timeout = localTimeout.Value;
-        }
-
-        return local;
-    }
-
-    private static string? GetOptionalString(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
-        {
-            return null;
-        }
-
-        return property.GetString();
-    }
-
-    private static int? GetOptionalInt(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Number)
-        {
-            return null;
-        }
-
-        return property.TryGetInt32(out var value) ? value : null;
-    }
-
-    private static List<string>? GetStringList(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        var list = new List<string>();
-        foreach (var item in property.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var value = item.GetString();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                list.Add(value);
-            }
-        }
-
-        return list.Count == 0 ? null : list;
-    }
-
-    private static Dictionary<string, string>? GetStringDictionary(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in property.EnumerateObject())
-        {
-            if (item.Value.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var value = item.Value.GetString();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                dict[item.Name] = value!;
-            }
-        }
-
-        return dict.Count == 0 ? null : dict;
     }
 
     private static object? GetPropertyValue(object instance, string propertyName)

@@ -16,7 +16,7 @@ they are not GitHub pull request numbers.
   `/login`, and `/mcp-role` out of `RunInteractiveLoopAsync`.
 - [x] Step D: Model And BYOK Slash Commands - Move `/model` and `/byok` command
   flows into dedicated command handling.
-- [ ] Step E: MCP, Skills, And Session Config Services - Extract MCP config
+- [x] Step E: MCP, Skills, And Session Config Services - Extract MCP config
   loading, skill discovery, and `SessionConfig` construction into services.
 - [ ] Step F: Copilot Turn Runner - Extract `SendMessageAsync` streaming/event
   orchestration while keeping the public entry point stable.

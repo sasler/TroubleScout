@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.10] - 2026-05-11
+
+### Internal
+
+- ♻️ **Extract MCP, skills, and session config services** - MCP config loading, skill discovery, and Copilot `SessionConfig` construction now live in focused services while preserving role-scoped subagents, BYOK behavior, capability status, and approval handling.
+
 ## [v1.17.9] - 2026-05-11
 
 ### Internal
