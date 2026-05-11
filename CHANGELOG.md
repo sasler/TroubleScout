@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.9] - 2026-05-11
+
+### Internal
+
+- 🧭 **Extract model and BYOK slash commands** - `/model` and `/byok` now flow through `SlashCommandDispatcher.DispatchAsync`; BYOK setup now uses the same model picker as `/model`, and BYOK sessions use a non-streaming compatibility mode for OpenAI-compatible gateways that reject streaming usage options.
+
 ## [v1.17.8] - 2026-05-11
 
 ### Internal

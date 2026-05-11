@@ -1541,6 +1541,62 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         endpoints.Should().Equal(expected);
     }
 
+    [Theory]
+    [InlineData("gpt-5", "responses")]
+    [InlineData("gpt-5.4-mini", "responses")]
+    [InlineData("Azure/Gpt 5.4 Mini [BYOK]", "responses")]
+    [InlineData("azure/gpt_5_mini", "responses")]
+    [InlineData("gpt-4.1", null)]
+    [InlineData("claude-sonnet-4.6", null)]
+    public void GetByokWireApi_ShouldUseResponsesForGpt5FamilyModels(string model, string? expected)
+    {
+        InvokeGetByokWireApi(model).Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task ConfigureByokOpenAiAsync_ShouldUseProvidedModelSelectionDelegate()
+    {
+        var manager = new ByokProviderManager();
+        var client = new CopilotClient(new CopilotClientOptions());
+        var promptCalls = 0;
+        try
+        {
+            var configured = await manager.ConfigureByokOpenAiAsync(
+                "https://api.openai.com/v1",
+                "sk-test",
+                "gpt-5",
+                client,
+                () => Task.CompletedTask,
+                () => Task.FromResult(new List<ModelInfo>
+                {
+                    new() { Id = "gpt-5", Name = "GPT 5" },
+                    new() { Id = "gpt-5.4-mini", Name = "GPT 5.4 Mini" }
+                }),
+                (currentModel, models) =>
+                {
+                    promptCalls++;
+                    currentModel.Should().Be("gpt-5");
+                    models.Select(model => model.Id).Should().Equal("gpt-5", "gpt-5.4-mini");
+                    return "gpt-5.4-mini";
+                },
+                (model, _) =>
+                {
+                    model.Should().Be("gpt-5.4-mini");
+                    return Task.FromResult(true);
+                },
+                (_, _, _) => { },
+                "OPENAI_API_KEY",
+                updateStatus: null);
+
+            configured.Should().BeTrue();
+            promptCalls.Should().Be(1);
+        }
+        finally
+        {
+            try { await client.DisposeAsync(); } catch { /* SDK cleanup may fail in test context */ }
+        }
+    }
+
     [Fact]
     public void GetModelSelectionEntries_DualSourceModel_ShouldProduceTwoEntries()
     {
@@ -1857,6 +1913,26 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
 
         config.OnEvent.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void BuildSessionConfig_ForByok_ShouldDisableStreamingForOpenAiCompatibleGateways()
+    {
+        SetPrivateField(_session, "_useByokOpenAi", true);
+
+        var config = InvokeBuildSessionConfig(_session, "Azure/Gpt 5.4 Mini [BYOK]");
+
+        config.Streaming.Should().BeFalse();
+    }
+
+    [Fact]
+    public void BuildSessionConfig_ForGitHub_ShouldKeepStreamingEnabled()
+    {
+        SetPrivateField(_session, "_useByokOpenAi", false);
+
+        var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
+
+        config.Streaming.Should().BeTrue();
     }
 
     [Fact]
@@ -2909,6 +2985,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         method.Should().NotBeNull("SaveModelAndProviderState should exist on TroubleshootingSession");
         method!.Invoke(null, [model, useByokOpenAi]);
+    }
+
+    private static string? InvokeGetByokWireApi(string model)
+    {
+        var method = typeof(TroubleshootingSession)
+            .GetMethod("GetByokWireApi", BindingFlags.Static | BindingFlags.NonPublic);
+
+        method.Should().NotBeNull("GetByokWireApi should exist on TroubleshootingSession");
+        return method!.Invoke(null, [model]) as string;
     }
 
     private static void InvokeReloadSafeCommandsFromSettings(TroubleshootingSession session)
