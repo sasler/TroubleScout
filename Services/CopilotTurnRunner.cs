@@ -313,6 +313,8 @@ internal sealed class CopilotTurnRunner
         {
             wasCancelled = true;
             await StopWatchdogAsync();
+            subscription?.Dispose();
+            subscription = null;
             if (hasStartedStreaming)
             {
                 request.Callbacks.EndAIResponse();

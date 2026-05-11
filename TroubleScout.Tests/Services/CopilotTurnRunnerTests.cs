@@ -38,6 +38,26 @@ public class CopilotTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_WhenSendThrowsCancellation_ShouldUnsubscribeBeforeDisposingIndicator()
+    {
+        var session = new FakeTurnSession
+        {
+            SendAsyncHandler = (_, token) => throw new OperationCanceledException(token)
+        };
+        var wasSubscribedWhenIndicatorDisposed = false;
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            createThinkingIndicator: () => new FakeThinkingIndicator
+            {
+                OnDispose = () => wasSubscribedWhenIndicatorDisposed = session.HasActiveSubscription
+            }));
+
+        result.WasCancelled.Should().BeTrue();
+        wasSubscribedWhenIndicatorDisposed.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldAppendAssistantDeltasOnce()
     {
         var output = new StringBuilder();
@@ -164,14 +184,15 @@ public class CopilotTurnRunnerTests
         CancellationToken cancellationToken = default,
         Action<string>? writeAiResponse = null,
         Action<string>? writeReasoningText = null,
-        Action<string, string>? showError = null)
+        Action<string, string>? showError = null,
+        Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
         => new()
         {
             Session = session,
             Prompt = "prompt",
             CancellationToken = cancellationToken,
             ToolDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-            CreateThinkingIndicator = () => new FakeThinkingIndicator(),
+            CreateThinkingIndicator = createThinkingIndicator ?? (() => new FakeThinkingIndicator()),
             Callbacks = new CopilotTurnCallbacks
             {
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
@@ -183,6 +204,8 @@ public class CopilotTurnRunnerTests
     private sealed class FakeTurnSession : ICopilotTurnSession
     {
         private SessionEventHandler? _handler;
+
+        public bool HasActiveSubscription => _handler != null;
 
         public Func<MessageOptions, CancellationToken, Task> SendAsyncHandler { get; set; }
             = (_, _) => Task.CompletedTask;
@@ -201,12 +224,13 @@ public class CopilotTurnRunnerTests
 
     private sealed class FakeThinkingIndicator : ITurnThinkingIndicator
     {
+        public Action? OnDispose { get; init; }
         public TimeSpan Elapsed { get; set; }
         public void Start() { }
         public void UpdateStatus(string status) { }
         public void ShowToolExecution(string toolName) { }
         public void StopForResponse() { }
-        public void Dispose() { }
+        public void Dispose() => OnDispose?.Invoke();
     }
 
     private sealed class DelegateDisposable(Action dispose) : IDisposable
