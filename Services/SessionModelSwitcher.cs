@@ -22,6 +22,12 @@ internal static class SessionModelSwitcher
         SessionModelSwitchRequest request,
         Action<string>? updateStatus = null)
     {
+        if (string.IsNullOrWhiteSpace(newModel))
+        {
+            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
+            return false;
+        }
+
         var targetSource = request.ResolveTargetSource(newModel);
         return await ChangeModelAsync(newModel, targetSource, request, updateStatus);
     }
@@ -41,12 +47,6 @@ internal static class SessionModelSwitcher
         if (request.CopilotClient == null)
         {
             ConsoleUI.ShowError("Not Connected", "Copilot client not initialized");
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            ConsoleUI.ShowError("Invalid Model", "Model cannot be empty.");
             return false;
         }
 
