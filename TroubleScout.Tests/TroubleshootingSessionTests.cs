@@ -2242,7 +2242,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task HandleMcpRoleCommandAsync_WhenInteractiveSelectionIsUsed_ShouldPersistRoles()
+    public async Task SlashCommandDispatcher_McpRoleInteractiveSelection_ShouldPersistRolesAndRefreshSessionState()
     {
         await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
         {
@@ -2263,14 +2263,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             """);
 
             await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
+            var dispatcher = InvokeCreateSlashCommandDispatcher(session);
             var originalOverride = ConsoleUI.McpRolePromptOverride;
 
             try
             {
                 ConsoleUI.McpRolePromptOverride = static (_, _, _) => ("zabbix", "redmine");
 
-                await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role");
+                var result = await dispatcher.DispatchAsync("/mcp-role");
 
+                result.Handled.Should().BeTrue();
                 var settings = AppSettingsStore.Load();
                 settings.MonitoringMcpServer.Should().Be("zabbix");
                 settings.TicketingMcpServer.Should().Be("redmine");
@@ -2281,73 +2283,6 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             {
                 ConsoleUI.McpRolePromptOverride = originalOverride;
             }
-        });
-    }
-
-    [Fact]
-    public async Task HandleMcpRoleCommandAsync_WhenDirectMonitoringAssignmentIsUsed_ShouldPersistRole()
-    {
-        await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
-        {
-            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
-            File.WriteAllText(mcpConfigPath, """
-            {
-              "mcpServers": {
-                "zabbix": {
-                  "type": "http",
-                  "url": "https://monitoring.example/mcp"
-                }
-              }
-            }
-            """);
-
-            await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
-
-            await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role monitoring zabbix");
-
-            var settings = AppSettingsStore.Load();
-            settings.MonitoringMcpServer.Should().Be("zabbix");
-            settings.TicketingMcpServer.Should().BeNull();
-            GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().Be("zabbix");
-        });
-    }
-
-    [Fact]
-    public async Task HandleMcpRoleCommandAsync_WhenClearAllIsUsed_ShouldClearPersistedRoles()
-    {
-        await ExecuteWithTemporarySettingsPathAsync(async tempSettingsPath =>
-        {
-            AppSettingsStore.Save(new AppSettings
-            {
-                MonitoringMcpServer = "zabbix",
-                TicketingMcpServer = "redmine"
-            });
-
-            var mcpConfigPath = Path.Combine(Path.GetDirectoryName(tempSettingsPath)!, "mcp-config.json");
-            File.WriteAllText(mcpConfigPath, """
-            {
-              "mcpServers": {
-                "zabbix": {
-                  "type": "http",
-                  "url": "https://monitoring.example/mcp"
-                },
-                "redmine": {
-                  "type": "http",
-                  "url": "https://ticketing.example/mcp"
-                }
-              }
-            }
-            """);
-
-            await using var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
-
-            await InvokeHandleMcpRoleCommandAsync(session, "/mcp-role clear all");
-
-            var settings = AppSettingsStore.Load();
-            settings.MonitoringMcpServer.Should().BeNull();
-            settings.TicketingMcpServer.Should().BeNull();
-            GetPrivateField<string?>(session, "_configuredMonitoringMcpServer").Should().BeNull();
-            GetPrivateField<string?>(session, "_configuredTicketingMcpServer").Should().BeNull();
         });
     }
 
@@ -2985,14 +2920,13 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method!.Invoke(session, null);
     }
 
-    private static async Task InvokeHandleMcpRoleCommandAsync(TroubleshootingSession session, string input)
+    private static SlashCommandDispatcher InvokeCreateSlashCommandDispatcher(TroubleshootingSession session)
     {
         var method = typeof(TroubleshootingSession)
-            .GetMethod("HandleMcpRoleCommandAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            .GetMethod("CreateSlashCommandDispatcher", BindingFlags.Instance | BindingFlags.NonPublic);
 
-        method.Should().NotBeNull("HandleMcpRoleCommandAsync should exist on TroubleshootingSession");
-        var task = (Task)method!.Invoke(session, [input])!;
-        await task;
+        method.Should().NotBeNull("CreateSlashCommandDispatcher should exist on TroubleshootingSession");
+        return (SlashCommandDispatcher)method!.Invoke(session, null)!;
     }
 
     private static void ExecuteWithTemporarySettingsPath(Action<string> testAction)

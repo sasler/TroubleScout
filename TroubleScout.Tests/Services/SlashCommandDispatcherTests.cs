@@ -903,6 +903,350 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_WithClearSuccess_ShouldResetAndRenderNewSession()
+    {
+        var calls = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ResetConversation = () =>
+            {
+                calls.Add("reset");
+                return Task.FromResult(true);
+            },
+            ClearConsole = () => calls.Add("clear-console"),
+            ShowBanner = () => calls.Add("banner"),
+            ShowStatus = includeApprovals => calls.Add($"status:{includeApprovals}"),
+            GetSessionId = () => "session-123",
+            GetWelcomeHint = () => "welcome hint",
+            ShowWelcomeMessage = hint => calls.Add($"welcome:{hint}"),
+            ShowSuccess = message => calls.Add($"success:{message}")
+        });
+
+        var result = await dispatcher.DispatchAsync("/clear");
+
+        result.Handled.Should().BeTrue();
+        calls.Should().Equal(
+            "reset",
+            "clear-console",
+            "banner",
+            "status:False",
+            "success:Started new session: session-123",
+            "welcome:welcome hint");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithClearFailure_ShouldWarnUser()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ResetConversation = () => Task.FromResult(false),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/clear");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Could not start a new session.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithSettingsSuccess_ShouldOpenReloadApplyThemeInvalidateAndRecreate()
+    {
+        var calls = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            EnsureSettingsFile = () => calls.Add("ensure"),
+            GetSettingsPath = () => @"C:\Temp\settings.json",
+            OpenSettingsEditor = path =>
+            {
+                calls.Add($"open:{path}");
+                return Task.FromResult((string?)null);
+            },
+            ReloadSettings = () => calls.Add("reload"),
+            GetPersistedTheme = () => "mono",
+            SetTheme = theme => calls.Add($"theme:{theme}"),
+            InvalidateModelCache = () => calls.Add("invalidate-models"),
+            RecreateCurrentCopilotSession = () =>
+            {
+                calls.Add("recreate");
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowInfo = message => calls.Add($"info:{message}"),
+            ShowSuccess = message => calls.Add($"success:{message}")
+        });
+
+        var result = await dispatcher.DispatchAsync("/settings");
+
+        result.Handled.Should().BeTrue();
+        calls.Should().Equal(
+            "ensure",
+            @"info:Settings file: C:\Temp\settings.json",
+            @"open:C:\Temp\settings.json",
+            "reload",
+            "theme:mono",
+            "invalidate-models",
+            "recreate",
+            "success:Settings reloaded. Safe command patterns and system prompt settings have been applied.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithSettingsEditorAndRecreateErrors_ShouldWarnBoth()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetSettingsPath = () => "settings.json",
+            OpenSettingsEditor = _ => Task.FromResult((string?)"editor unavailable"),
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"model unavailable")),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/settings");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("editor unavailable");
+        warnings.Should().Contain("Settings were reloaded, but the AI session could not be recreated. Use /login or /model to reconnect. model unavailable");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithLoginSuccess_ShouldInvalidateRunSpinnerAndShowSuccess()
+    {
+        var calls = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            InvalidateModelCache = () => calls.Add("invalidate-models"),
+            RunWithSpinnerAsync = async (label, action) =>
+            {
+                calls.Add($"spinner:{label}");
+                return await action(status => calls.Add($"status:{status}"));
+            },
+            LoginAndCreateGitHubSession = updateStatus =>
+            {
+                updateStatus("logging in");
+                calls.Add("login");
+                return Task.FromResult(true);
+            },
+            ShowSuccess = message => calls.Add($"success:{message}")
+        });
+
+        var result = await dispatcher.DispatchAsync("/login");
+
+        result.Handled.Should().BeTrue();
+        calls.Should().Equal(
+            "invalidate-models",
+            "spinner:Running Copilot login...",
+            "status:logging in",
+            "login",
+            "success:GitHub Copilot login completed and session is ready.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithLoginFailure_ShouldNotShowSuccess()
+    {
+        var successes = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            LoginAndCreateGitHubSession = _ => Task.FromResult(false),
+            ShowSuccess = successes.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/login");
+
+        result.Handled.Should().BeTrue();
+        successes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleInteractiveSelection_ShouldSaveReloadRecreateAndShowStatus()
+    {
+        string? savedMonitoring = null;
+        string? savedTicketing = null;
+        var calls = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableMcpRoleServerNames = () => ["redmine", "zabbix"],
+            PromptMcpRoleSelection = (monitoring, ticketing, servers) =>
+            {
+                monitoring.Should().BeNull();
+                ticketing.Should().BeNull();
+                servers.Should().BeEquivalentTo("redmine", "zabbix");
+                return ("zabbix", "redmine");
+            },
+            SaveMcpRoleSettings = (monitoring, ticketing) =>
+            {
+                savedMonitoring = monitoring;
+                savedTicketing = ticketing;
+                calls.Add("save");
+            },
+            ReloadSettings = () => calls.Add("reload"),
+            RecreateCurrentCopilotSession = () =>
+            {
+                calls.Add("recreate");
+                return Task.FromResult((true, (string?)null));
+            },
+            ShowSuccess = calls.Add,
+            ShowStatus = includeApprovals => calls.Add($"status:{includeApprovals}")
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role");
+
+        result.Handled.Should().BeTrue();
+        savedMonitoring.Should().Be("zabbix");
+        savedTicketing.Should().Be("redmine");
+        calls.Should().Equal(
+            "save",
+            "reload",
+            "recreate",
+            "MCP roles saved. Monitoring: zabbix | Ticketing: redmine",
+            "status:False");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleDirectMonitoringAssignment_ShouldPersistResolvedServer()
+    {
+        string? savedMonitoring = null;
+        string? savedTicketing = "unchanged";
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableMcpRoleServerNames = () => ["Zabbix"],
+            SaveMcpRoleSettings = (monitoring, ticketing) =>
+            {
+                savedMonitoring = monitoring;
+                savedTicketing = ticketing;
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role monitoring zabbix");
+
+        result.Handled.Should().BeTrue();
+        savedMonitoring.Should().Be("Zabbix");
+        savedTicketing.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleClearAll_ShouldClearBothRoles()
+    {
+        string? savedMonitoring = "unchanged";
+        string? savedTicketing = "unchanged";
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetConfiguredMonitoringMcpServer = () => "zabbix",
+            GetConfiguredTicketingMcpServer = () => "redmine",
+            SaveMcpRoleSettings = (monitoring, ticketing) =>
+            {
+                savedMonitoring = monitoring;
+                savedTicketing = ticketing;
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role clear all");
+
+        result.Handled.Should().BeTrue();
+        savedMonitoring.Should().BeNull();
+        savedTicketing.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleUnchanged_ShouldNotSaveAndShouldShowStatus()
+    {
+        var saveCalls = 0;
+        var messages = new List<string>();
+        var statusCalls = new List<bool>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetConfiguredMonitoringMcpServer = () => "zabbix",
+            GetConfiguredTicketingMcpServer = () => "redmine",
+            GetAvailableMcpRoleServerNames = () => ["zabbix", "redmine"],
+            SaveMcpRoleSettings = (_, _) => saveCalls++,
+            ShowInfo = messages.Add,
+            ShowStatus = statusCalls.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role monitoring zabbix");
+
+        result.Handled.Should().BeTrue();
+        saveCalls.Should().Be(0);
+        messages.Should().Contain("MCP roles unchanged. Monitoring: zabbix | Ticketing: redmine");
+        statusCalls.Should().Equal(false);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleInvalidUsage_ShouldWarnAndShowUsage()
+    {
+        var warnings = new List<string>();
+        var infos = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            ShowWarning = warnings.Add,
+            ShowInfo = infos.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role clear");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Specify which role to clear: monitoring, ticketing, or all.");
+        infos.Should().Contain("Usage:");
+        infos.Should().Contain("  /mcp-role clear <monitoring|ticketing|all>");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleUnknownServer_ShouldWarnUser()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableMcpRoleServerNames = () => ["zabbix"],
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role ticketing redmine");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("Unknown MCP server 'redmine'. Use /capabilities to see configured MCP servers.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleNoConfiguredServers_ShouldWarnUser()
+    {
+        var warnings = new List<string>();
+        var promptCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            PromptMcpRoleSelection = (_, _, _) =>
+            {
+                promptCalls++;
+                return (null, null);
+            },
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role");
+
+        result.Handled.Should().BeTrue();
+        promptCalls.Should().Be(0);
+        warnings.Should().Contain("No MCP servers are configured. Add servers in your MCP config first, then use /mcp-role.");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithMcpRoleRecreateFailure_ShouldWarnWithError()
+    {
+        var warnings = new List<string>();
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableMcpRoleServerNames = () => ["zabbix"],
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"model unavailable")),
+            ShowWarning = warnings.Add
+        });
+
+        var result = await dispatcher.DispatchAsync("/mcp-role monitoring zabbix");
+
+        result.Handled.Should().BeTrue();
+        warnings.Should().Contain("MCP roles were saved, but the AI session could not be recreated. Use /login or /model to reconnect. model unavailable");
+    }
+
+    [Fact]
     public void CreateDefaultReportPath_ShouldUseTroubleScoutTempReportsDirectory()
     {
         var reportPath = SlashCommandDispatcher.CreateDefaultReportPath();

@@ -12,7 +12,7 @@ they are not GitHub pull request numbers.
 - [x] Step B: Session Permission Handler - Extract URL approvals, MCP approvals,
   Safe/Yolo permission decisions, and `/mcp-approvals` state operations from
   `TroubleshootingSession`.
-- [ ] Step C: Remaining Low-Risk Slash Commands - Move `/clear`, `/settings`,
+- [x] Step C: Remaining Low-Risk Slash Commands - Move `/clear`, `/settings`,
   `/login`, and `/mcp-role` out of `RunInteractiveLoopAsync`.
 - [ ] Step D: Model And BYOK Slash Commands - Move `/model` and `/byok` command
   flows into dedicated command handling.
