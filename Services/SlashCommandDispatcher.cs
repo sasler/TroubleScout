@@ -53,6 +53,7 @@ internal sealed class SlashCommandHandlers
     internal Func<string, string, IReadOnlyList<ReportPromptEntry>, Task> RunSecondOpinion { get; init; } = static (_, _, _) => Task.CompletedTask;
     internal Func<string?> GetByokBaseUrl { get; init; } = static () => null;
     internal Func<string?> GetDefaultByokModel { get; init; } = static () => null;
+    internal Func<string> GetOpenAiApiKeyEnvironmentVariable { get; init; } = static () => "OPENAI_API_KEY";
     internal Func<string, string?> GetEnvironmentVariable { get; init; } = Environment.GetEnvironmentVariable;
     internal Action<bool, string?, string?> SaveByokSettings { get; init; } = static (_, _, _) => { };
     internal Action ClearByokRuntimeState { get; init; } = static () => { };
@@ -118,7 +119,6 @@ internal sealed class SlashCommandHandlers
 
 internal sealed class SlashCommandDispatcher
 {
-    private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
     private readonly SlashCommandHandlers _handlers;
 
     internal SlashCommandDispatcher(SlashCommandHandlers handlers)
@@ -546,6 +546,7 @@ internal sealed class SlashCommandDispatcher
     private async Task HandleByokCommandAsync(string input)
     {
         var byokParts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var openAiApiKeyEnvironmentVariable = _handlers.GetOpenAiApiKeyEnvironmentVariable();
 
         if (byokParts.Length > 1 &&
             (byokParts[1].Equals("clear", StringComparison.OrdinalIgnoreCase)
@@ -557,7 +558,7 @@ internal sealed class SlashCommandDispatcher
             _handlers.InvalidateModelCache();
             _handlers.ShowSuccess("Saved BYOK settings cleared for this profile.");
             _handlers.ShowInfo("Current session provider remains unchanged until you switch model/provider or restart.");
-            _handlers.ShowInfo($"The {OpenAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
+            _handlers.ShowInfo($"The {openAiApiKeyEnvironmentVariable} environment variable (if set) is unchanged.");
             return;
         }
 
@@ -574,10 +575,10 @@ internal sealed class SlashCommandDispatcher
                 byokBaseUrl = baseUrlInput;
             }
 
-            _handlers.ShowInfo($"Enter API key, or type 'env' to use {OpenAiApiKeyEnvironmentVariable}.");
+            _handlers.ShowInfo($"Enter API key, or type 'env' to use {openAiApiKeyEnvironmentVariable}.");
             var apiKeyInput = _handlers.PromptText().Trim();
             apiKey = apiKeyInput.Equals("env", StringComparison.OrdinalIgnoreCase)
-                ? _handlers.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
+                ? _handlers.GetEnvironmentVariable(openAiApiKeyEnvironmentVariable)
                 : apiKeyInput;
         }
         else
@@ -586,7 +587,7 @@ internal sealed class SlashCommandDispatcher
 
             if (sourceArg.Equals("env", StringComparison.OrdinalIgnoreCase))
             {
-                apiKey = _handlers.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable);
+                apiKey = _handlers.GetEnvironmentVariable(openAiApiKeyEnvironmentVariable);
                 if (byokParts.Length > 2)
                 {
                     if (LooksLikeUrl(byokParts[2]))
@@ -639,7 +640,7 @@ internal sealed class SlashCommandDispatcher
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            _handlers.ShowWarning($"No API key was provided. Set {OpenAiApiKeyEnvironmentVariable} or pass it as /byok <api-key> [base-url] [model].");
+            _handlers.ShowWarning($"No API key was provided. Set {openAiApiKeyEnvironmentVariable} or pass it as /byok <api-key> [base-url] [model].");
             _handlers.ShowInfo("Examples:");
             _handlers.ShowInfo("  /byok env https://api.openai.com/v1");
             _handlers.ShowInfo("  /byok sk-... https://aigw.example.org");

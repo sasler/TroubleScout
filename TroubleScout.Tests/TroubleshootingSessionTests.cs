@@ -1916,7 +1916,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public void BuildSessionConfig_ForByok_ShouldDisableStreamingForOpenAiCompatibleCompatibility()
+    public void BuildSessionConfig_ForByok_ShouldDisableStreamingForOpenAiCompatibleGateways()
     {
         SetPrivateField(_session, "_useByokOpenAi", true);
 

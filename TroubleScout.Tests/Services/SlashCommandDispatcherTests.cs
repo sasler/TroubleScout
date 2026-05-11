@@ -1592,6 +1592,7 @@ public class SlashCommandDispatcherTests
         var messages = new List<string>();
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
+            GetOpenAiApiKeyEnvironmentVariable = () => "TROUBLESCOUT_TEST_API_KEY",
             SaveByokSettings = (enabled, baseUrl, apiKey) => saved = (enabled, baseUrl, apiKey),
             ClearByokRuntimeState = () => runtimeCleared++,
             InvalidateModelCache = () => cacheInvalidated++,
@@ -1610,7 +1611,7 @@ public class SlashCommandDispatcherTests
         cacheInvalidated.Should().Be(1);
         successes.Should().Contain("Saved BYOK settings cleared for this profile.");
         messages.Should().Contain("Current session provider remains unchanged until you switch model/provider or restart.");
-        messages.Should().Contain("The OPENAI_API_KEY environment variable (if set) is unchanged.");
+        messages.Should().Contain("The TROUBLESCOUT_TEST_API_KEY environment variable (if set) is unchanged.");
     }
 
     [Fact]
@@ -1653,9 +1654,10 @@ public class SlashCommandDispatcherTests
         (string BaseUrl, string ApiKey, string? Model)? configured = null;
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
+            GetOpenAiApiKeyEnvironmentVariable = () => "TROUBLESCOUT_TEST_API_KEY",
             GetByokBaseUrl = () => "https://api.openai.com/v1",
             GetDefaultByokModel = () => "fallback-model",
-            GetEnvironmentVariable = name => name == "OPENAI_API_KEY" ? "env-secret" : null,
+            GetEnvironmentVariable = name => name == "TROUBLESCOUT_TEST_API_KEY" ? "env-secret" : null,
             ConfigureByokOpenAi = (baseUrl, apiKey, model, _) =>
             {
                 configured = (baseUrl, apiKey, model);
@@ -1677,6 +1679,7 @@ public class SlashCommandDispatcherTests
         var configureCalls = 0;
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
+            GetOpenAiApiKeyEnvironmentVariable = () => "TROUBLESCOUT_TEST_API_KEY",
             GetEnvironmentVariable = _ => null,
             ConfigureByokOpenAi = (_, _, _, _) =>
             {
@@ -1691,7 +1694,7 @@ public class SlashCommandDispatcherTests
 
         result.Handled.Should().BeTrue();
         configureCalls.Should().Be(0);
-        warnings.Should().Contain("No API key was provided. Set OPENAI_API_KEY or pass it as /byok <api-key> [base-url] [model].");
+        warnings.Should().Contain("No API key was provided. Set TROUBLESCOUT_TEST_API_KEY or pass it as /byok <api-key> [base-url] [model].");
         messages.Should().Contain("Examples:");
         messages.Should().Contain("  /byok env https://api.openai.com/v1");
         messages.Should().Contain("  /byok sk-... https://aigw.example.org");

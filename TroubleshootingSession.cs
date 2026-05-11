@@ -309,6 +309,7 @@ public class TroubleshootingSession : IAsyncDisposable
                     RequestSecondOpinionAsync(previousModel, selectedModel, prompts, token)),
             GetByokBaseUrl = () => _byokOpenAiBaseUrl,
             GetDefaultByokModel = () => _selectedModel ?? _requestedModel,
+            GetOpenAiApiKeyEnvironmentVariable = () => OpenAiApiKeyEnvironmentVariable,
             GetEnvironmentVariable = Environment.GetEnvironmentVariable,
             SaveByokSettings = SaveByokSettings,
             ClearByokRuntimeState = () =>
