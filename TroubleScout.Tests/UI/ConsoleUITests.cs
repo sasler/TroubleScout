@@ -17,6 +17,27 @@ public class ConsoleUICollection { }
 public class ConsoleUITests
 {
     [Fact]
+    public void ConsoleUI_ShouldKeepLargeFeatureAreasSplitIntoFocusedFiles()
+    {
+        var uiDirectory = FindUiDirectory();
+        var expectedFiles = new[]
+        {
+            "ConsoleUI.Approvals.cs",
+            "ConsoleUI.Input.cs",
+            "ConsoleUI.Reasoning.cs",
+            "ConsoleUI.StatusBar.cs",
+            "ConsoleUI.Terminal.cs",
+            "LiveThinkingIndicator.cs"
+        };
+
+        foreach (var fileName in expectedFiles)
+        {
+            File.Exists(Path.Combine(uiDirectory, fileName))
+                .Should().BeTrue($"{fileName} should own one focused ConsoleUI responsibility");
+        }
+    }
+
+    [Fact]
     public void GetRateLabel_ShouldReturnNa_WhenBillingIsMissing()
     {
         // Arrange
@@ -997,6 +1018,23 @@ public class ConsoleUITests
     private static (int StartIndex, int Count) InvokeGetVisibleModelPickerRange(int totalCount, int selectedIndex, int pageSize)
     {
         return ModelPickerUI.GetVisibleModelPickerRange(totalCount, selectedIndex, pageSize);
+    }
+
+    private static string FindUiDirectory()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(dir.FullName, "UI");
+            if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "ConsoleUI.cs")))
+            {
+                return candidate;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate UI source directory.");
     }
 
     #region ShowStatusPanel JEA Connection Mode Tests
