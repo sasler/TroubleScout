@@ -1366,252 +1366,36 @@ public class TroubleshootingSession : IAsyncDisposable
         var turnStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var toolCountAtEntry = System.Threading.Volatile.Read(ref _toolInvocationCount);
         var turnOutcome = TurnOutcome.Failed;
+        var promptIndex = promptIndexOverride ?? _historyTracker.GetLatestPromptIndex();
 
-        IDisposable? subscription = null;
-        LiveThinkingIndicator? thinkingIndicator = null;
-        CancellationTokenSource? watchdogCts = null;
-        Task? watchdogTask = null;
         try
         {
-            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var hasError = false;
-            var wasCancelled = false;
-            var lastEventTimeTicks = DateTime.UtcNow.Ticks;
-
-            // Register cancellation callback to unblock the done TCS
-            using var cancelReg = cancellationToken.Register(() =>
+            var runner = new CopilotTurnRunner();
+            var result = await runner.RunAsync(new CopilotTurnRequest
             {
-                wasCancelled = true;
-                watchdogCts?.Cancel();
-                done.TrySetResult(false);
-            });
-            var hasStartedStreaming = false;
-            var hasStartedReasoning = false;
-            var pendingStreamLineBreak = false;
-            var currentStreamMessageId = string.Empty;
-            var processedDeltaIds = new HashSet<string>();
-            var responseBuffer = new StringBuilder();
-            var promptIndex = promptIndexOverride ?? _historyTracker.GetLatestPromptIndex();
-            
-            // Create a live thinking indicator (manually disposed before recursive calls)
-            thinkingIndicator = ConsoleUI.CreateLiveThinkingIndicator();
-            thinkingIndicator.Start();
-            watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            watchdogTask = RunActivityWatchdogAsync(
-                thinkingIndicator,
-                () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc),
-                () => hasStartedStreaming,
-                watchdogCts.Token);
-
-            // Subscribe to session events for streaming (manually disposed before recursive calls)
-            subscription = _copilotSession.On(evt =>
-            {
-                Interlocked.Exchange(ref lastEventTimeTicks, DateTime.UtcNow.Ticks);
-
-                switch (evt)
+                Session = new CopilotTurnSessionAdapter(_copilotSession),
+                Prompt = BuildPromptForExecutionSafety(userMessage),
+                CancellationToken = cancellationToken,
+                ToolDescriptions = ToolDescriptions,
+                CreateThinkingIndicator = () => new ConsoleTurnThinkingIndicator(ConsoleUI.CreateLiveThinkingIndicator()),
+                Callbacks = new CopilotTurnCallbacks
                 {
-                    case AssistantTurnStartEvent:
-                        // AI has started processing
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        thinkingIndicator.UpdateStatus("Analyzing");
-                        break;
-                    
-                    case AssistantReasoningDeltaEvent reasoningDelta:
-                        if (hasStartedStreaming)
-                            break;
-
-                        var reasoningDeltaText = reasoningDelta.Data?.DeltaContent ?? "";
-                        if (!string.IsNullOrEmpty(reasoningDeltaText))
-                        {
-                            if (!hasStartedReasoning)
-                            {
-                                hasStartedReasoning = true;
-                                thinkingIndicator?.StopForResponse();
-                                ConsoleUI.StartReasoningBlock();
-                            }
-                            ConsoleUI.WriteReasoningText(reasoningDeltaText);
-                        }
-                        break;
-
-                    case AssistantReasoningEvent reasoning:
-                        if (hasStartedStreaming)
-                            break;
-
-                        // Fallback for non-streaming reasoning (full content)
-                        var reasoningText = reasoning.Data?.Content ?? "";
-                        if (!string.IsNullOrEmpty(reasoningText))
-                        {
-                            if (!hasStartedReasoning)
-                            {
-                                hasStartedReasoning = true;
-                                thinkingIndicator?.StopForResponse();
-                                ConsoleUI.StartReasoningBlock();
-                            }
-                            ConsoleUI.WriteReasoningText(reasoningText);
-                        }
-                        break;
-                    
-                    case ToolExecutionStartEvent toolStart:
-                        // Show which tool is being executed
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        var toolName = toolStart.Data?.ToolName ?? "tool";
-                        var mcpServer = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
-                        string toolDisplay;
-                        if (!string.IsNullOrWhiteSpace(mcpServer))
-                        {
-                            toolDisplay = $"MCP [{Markup.Escape(mcpServer)}]: {Markup.Escape(toolName)}";
-                        }
-                        else if (ToolDescriptions.TryGetValue(toolName, out var desc))
-                        {
-                            toolDisplay = desc;
-                        }
-                        else
-                        {
-                            toolDisplay = $"Using {toolName}";
-                        }
-                        thinkingIndicator.ShowToolExecution(toolDisplay);
-                        RecordMcpToolAction(toolStart);
-                        _toolInvocationCount++;
-                        break;
-                    
-                    case ToolExecutionCompleteEvent toolComplete:
-                        _historyTracker.RecordMcpToolComplete(toolComplete);
-                        // Tool finished, back to thinking
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        thinkingIndicator.UpdateStatus("Processing results");
-                        break;
-
-                    case SubagentStartedEvent subagentStarted:
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        thinkingIndicator.UpdateStatus($"Delegating to {subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "sub-agent"}");
-                        break;
-
-                    case SubagentCompletedEvent:
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        thinkingIndicator.UpdateStatus("Processing delegated results");
-                        break;
-
-                    case SubagentFailedEvent:
-                        if (hasStartedStreaming)
-                        {
-                            pendingStreamLineBreak = true;
-                        }
-                        thinkingIndicator.UpdateStatus("Delegated task failed");
-                        break;
-                     
-                    case AssistantMessageDeltaEvent delta:
-                        // Skip if we've already processed this event (deduplicate)
-                        if (!processedDeltaIds.Add(delta.Id.ToString()))
-                            break;
-
-                        var deltaMessageId = ReadStringProperty(delta.Data, "MessageId", "Id");
-                        if (!string.IsNullOrWhiteSpace(deltaMessageId))
-                        {
-                            if (!string.IsNullOrWhiteSpace(currentStreamMessageId)
-                                && !currentStreamMessageId.Equals(deltaMessageId, StringComparison.Ordinal)
-                                && responseBuffer.Length > 0)
-                            {
-                                pendingStreamLineBreak = true;
-                            }
-
-                            currentStreamMessageId = deltaMessageId;
-                        }
-                        
-                        // First streaming chunk - stop the spinner and start response
-                        if (!hasStartedStreaming)
-                        {
-                            hasStartedStreaming = true;
-                            if (hasStartedReasoning)
-                            {
-                                ConsoleUI.EndReasoningBlock();
-                            }
-                            thinkingIndicator.StopForResponse();
-                            ConsoleUI.StartAIResponse();
-                        }
-                        // Streaming message chunk - print incrementally
-                        var deltaText = delta.Data?.DeltaContent ?? "";
-                        if (pendingStreamLineBreak && responseBuffer.Length > 0)
-                        {
-                            ConsoleUI.WriteAIResponse(Environment.NewLine);
-                            responseBuffer.AppendLine();
-                            pendingStreamLineBreak = false;
-                        }
-                        responseBuffer.Append(deltaText);
-                        ConsoleUI.WriteAIResponse(deltaText);
-                        break;
-                    
-                    case AssistantMessageEvent msg:
-                        // Final message received (non-streaming fallback)
-                        if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
-                        {
-                            if (hasStartedReasoning)
-                            {
-                                ConsoleUI.EndReasoningBlock();
-                            }
-                            thinkingIndicator.StopForResponse();
-                            ConsoleUI.StartAIResponse();
-                            ConsoleUI.WriteAIResponse(msg.Data.Content);
-                            responseBuffer.Append(msg.Data.Content);
-                            hasStartedStreaming = true;
-                        }
-                        break;
-                    
-                    case SessionErrorEvent errorEvent:
-                        thinkingIndicator.StopForResponse();
-                        ConsoleUI.EndAIResponse();
-                        ConsoleUI.ShowError("Session Error", errorEvent.Data?.Message ?? "Unknown error");
-                        hasError = true;
-                        done.TrySetResult(false);
-                        break;
-                    
-                    case SessionIdleEvent:
-                        // Session finished processing
-                        done.TrySetResult(true);
-                        break;
+                    StartReasoningBlock = ConsoleUI.StartReasoningBlock,
+                    WriteReasoningText = ConsoleUI.WriteReasoningText,
+                    EndReasoningBlock = ConsoleUI.EndReasoningBlock,
+                    StartAIResponse = ConsoleUI.StartAIResponse,
+                    WriteAIResponse = text => ConsoleUI.WriteAIResponse(text),
+                    EndAIResponse = ConsoleUI.EndAIResponse,
+                    ShowError = ConsoleUI.ShowError,
+                    ShowCancelled = ConsoleUI.ShowCancelled,
+                    ShowLiveStatusNotice = ConsoleUI.ShowLiveStatusNotice,
+                    RecordMcpToolAction = RecordMcpToolAction,
+                    RecordMcpToolComplete = _historyTracker.RecordMcpToolComplete,
+                    IncrementToolInvocation = () => _toolInvocationCount++
                 }
             });
 
-            var prompt = BuildPromptForExecutionSafety(userMessage);
-
-            // Send the message (pass cancellationToken so the SDK can cancel the in-flight RPC)
-            await _copilotSession.SendAsync(new MessageOptions { Prompt = prompt }, cancellationToken);
-            
-            // Wait for completion
-            await done.Task;
-            watchdogCts.Cancel();
-            try { await watchdogTask.WaitAsync(TimeSpan.FromSeconds(2)); }
-            catch { /* ignore */ }
-            watchdogCts.Dispose();
-            watchdogCts = null;
-            watchdogTask = null;
-            
-            // Explicitly dispose subscription BEFORE processing approvals
-            // This prevents duplicate event handling when SendMessageAsync is called recursively
-            subscription.Dispose();
-            subscription = null;
-
-            if (hasStartedStreaming)
-            {
-                ConsoleUI.EndAIResponse();
-            }
-
-            // Show compact status bar after response completes
-            if (hasStartedStreaming && !hasError && !wasCancelled)
+            if (result.HasStartedStreaming && !result.HasError && !result.WasCancelled)
             {
                 await RefreshSessionUsageMetricsAsync(cancellationToken);
                 var statusBarInfo = BuildStatusBarInfo();
@@ -1619,50 +1403,37 @@ public class TroubleshootingSession : IAsyncDisposable
                 _historyTracker.SetPromptStatusBar(promptIndex, statusBarInfo);
             }
 
-            // Handle cancellation
-            if (wasCancelled)
+            if (result.WasCancelled)
             {
-                thinkingIndicator.Dispose();
-                thinkingIndicator = null;
-                ConsoleUI.ShowCancelled();
                 turnOutcome = TurnOutcome.Cancelled;
                 return false;
             }
 
-            SetPromptReply(promptIndex, responseBuffer.ToString());
-            _lastAssistantMessage = responseBuffer.ToString();
-            
-            // Dispose thinking indicator before processing approvals
-            thinkingIndicator.Dispose();
-            thinkingIndicator = null;
+            SetPromptReply(promptIndex, result.ResponseText);
+            _lastAssistantMessage = result.ResponseText;
 
             var approvalFollowUpHandled = false;
-
-            // Handle any pending approval commands (may call SendMessageAsync recursively)
-            if (!hasError && !wasCancelled)
+            if (!result.HasError)
             {
                 approvalFollowUpHandled = await ProcessPendingApprovalsAsync(cancellationToken);
             }
 
             if (!approvalFollowUpHandled
-                && !hasError
-                && !wasCancelled
+                && !result.HasError
                 && showPostAnalysisActionPrompt
-                && ShouldOfferPostAnalysisActionPrompt(responseBuffer.ToString(), forcePostAnalysisActionPrompt))
+                && ShouldOfferPostAnalysisActionPrompt(result.ResponseText, forcePostAnalysisActionPrompt))
             {
                 turnOutcome = TurnOutcome.Success;
                 return await HandlePostAnalysisActionAsync(cancellationToken);
             }
 
-            var success = !hasError && !wasCancelled;
-            turnOutcome = wasCancelled ? TurnOutcome.Cancelled
-                : hasError ? TurnOutcome.Failed
+            turnOutcome = result.WasCancelled ? TurnOutcome.Cancelled
+                : result.HasError ? TurnOutcome.Failed
                 : TurnOutcome.Success;
-            return success;
+            return result.Success;
         }
         catch (OperationCanceledException)
         {
-            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowCancelled();
             turnOutcome = TurnOutcome.Cancelled;
@@ -1670,7 +1441,6 @@ public class TroubleshootingSession : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            watchdogCts?.Cancel();
             ConsoleUI.EndAIResponse();
             ConsoleUI.ShowError("Error", ex.Message);
             turnOutcome = TurnOutcome.Failed;
@@ -1678,11 +1448,6 @@ public class TroubleshootingSession : IAsyncDisposable
         }
         finally
         {
-            watchdogCts?.Cancel();
-            watchdogCts?.Dispose();
-            subscription?.Dispose();
-            thinkingIndicator?.Dispose();
-
             turnStopwatch.Stop();
             var toolDelta = System.Threading.Volatile.Read(ref _toolInvocationCount) - toolCountAtEntry;
             if (toolDelta < 0) toolDelta = 0;
@@ -1695,60 +1460,15 @@ public class TroubleshootingSession : IAsyncDisposable
         Func<DateTime> getLastEventTime,
         Func<bool> hasStartedStreaming,
         CancellationToken cancellationToken)
-    {
-        const int checkIntervalMs = 2000;
-        string? lastWatchdogStatus = null;
-
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                await Task.Delay(checkIntervalMs, cancellationToken);
-
-                var idleSeconds = (DateTime.UtcNow - getLastEventTime()).TotalSeconds;
-                var nextWatchdogStatus = GetActivityWatchdogStatus(idleSeconds);
-
-                if (!string.Equals(nextWatchdogStatus, lastWatchdogStatus, StringComparison.Ordinal))
-                {
-                    if (nextWatchdogStatus is not null)
-                    {
-                        if (hasStartedStreaming())
-                        {
-                            ConsoleUI.ShowLiveStatusNotice($"{nextWatchdogStatus} ({LiveThinkingIndicator.FormatElapsed((int)indicator.Elapsed.TotalSeconds)})");
-                        }
-                        else
-                        {
-                            indicator.UpdateStatus(nextWatchdogStatus);
-                        }
-                    }
-
-                    lastWatchdogStatus = nextWatchdogStatus;
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-    }
+        => await CopilotTurnRunner.RunActivityWatchdogAsync(
+            new ConsoleTurnThinkingIndicator(indicator),
+            getLastEventTime,
+            hasStartedStreaming,
+            ConsoleUI.ShowLiveStatusNotice,
+            cancellationToken);
 
     internal static string? GetActivityWatchdogStatus(double idleSeconds)
-    {
-        const int slowWarningSeconds = 15;
-        const int staleWarningSeconds = 30;
-
-        if (idleSeconds >= staleWarningSeconds)
-        {
-            return "Connection seems slow";
-        }
-
-        if (idleSeconds >= slowWarningSeconds)
-        {
-            return "Waiting for response";
-        }
-
-        return null;
-    }
+        => CopilotTurnRunner.GetActivityWatchdogStatus(idleSeconds);
 
     private static string BuildPromptForExecutionSafety(string userMessage)
     {

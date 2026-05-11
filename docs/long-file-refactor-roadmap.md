@@ -18,7 +18,7 @@ they are not GitHub pull request numbers.
   flows into dedicated command handling.
 - [x] Step E: MCP, Skills, And Session Config Services - Extract MCP config
   loading, skill discovery, and `SessionConfig` construction into services.
-- [ ] Step F: Copilot Turn Runner - Extract `SendMessageAsync` streaming/event
+- [x] Step F: Copilot Turn Runner - Extract `SendMessageAsync` streaming/event
   orchestration while keeping the public entry point stable.
 - [ ] Step G: Console UI Split - Split terminal lifetime/progress, input
   editing/history, status bar rendering, approval prompts, and thinking

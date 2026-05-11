@@ -96,11 +96,11 @@ public class InvariantGuardsTests
     public void TroubleshootingSession_SendAsync_PassesCancellationToken()
     {
         // ESC cancellation must reach the SDK so the in-flight RPC actually
-        // aborts — not just the UI. The call site in SendMessageAsync passes
-        // the cancellation token straight to CopilotSession.SendAsync.
-        var source = ReadRepoFile("TroubleshootingSession.cs");
+        // aborts — not just the UI. The turn runner passes the cancellation
+        // token straight to the SDK session adapter.
+        var source = ReadRepoFile(Path.Combine("Services", "CopilotTurnRunner.cs"));
         source.Should().MatchRegex(
-            @"_copilotSession\.SendAsync\([^;]*cancellationToken[^;]*\);",
+            @"Session\.SendAsync\([^;]*request\.CancellationToken[^;]*\);",
             "the cancellation token must flow into CopilotSession.SendAsync so ESC " +
             "cancellation reaches the SDK, not just the TUI.");
     }
