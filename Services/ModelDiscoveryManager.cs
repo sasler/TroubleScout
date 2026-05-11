@@ -4,6 +4,7 @@ using GitHub.Copilot.SDK;
 
 namespace TroubleScout.Services;
 
+[Flags]
 internal enum ModelSource
 {
     None = 0,
@@ -20,6 +21,12 @@ internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSou
 }
 
 internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
+
+internal enum ModelSwitchBehavior
+{
+    CleanSession,
+    SecondOpinion
+}
 
 internal sealed class ModelDiscoveryManager
 {

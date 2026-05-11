@@ -44,11 +44,11 @@ internal sealed class SlashCommandHandlers
     internal Func<bool> IsDebugMode { get; init; } = static () => false;
     internal Func<Task> RefreshAvailableModels { get; init; } = static () => Task.CompletedTask;
     internal Func<int> GetAvailableModelCount { get; init; } = static () => 0;
-    internal Func<IReadOnlyList<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>> GetModelSelectionEntries { get; init; } = static () => Array.Empty<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>();
-    internal Func<string, IReadOnlyList<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry>, global::TroubleScout.TroubleshootingSession.ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
-    internal Func<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
-    internal Func<string, string, global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession;
-    internal Func<global::TroubleScout.TroubleshootingSession.ModelSelectionEntry, Action<string>?, Task<bool>> ChangeModel { get; init; } = static (_, _) => Task.FromResult(false);
+    internal Func<IReadOnlyList<ModelSelectionEntry>> GetModelSelectionEntries { get; init; } = static () => Array.Empty<ModelSelectionEntry>();
+    internal Func<string, IReadOnlyList<ModelSelectionEntry>, ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
+    internal Func<ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
+    internal Func<string, string, ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => ModelSwitchBehavior.CleanSession;
+    internal Func<ModelSelectionEntry, Action<string>?, Task<bool>> ChangeModel { get; init; } = static (_, _) => Task.FromResult(false);
     internal Action ClearRecordedHistory { get; init; } = static () => { };
     internal Func<string, string, IReadOnlyList<ReportPromptEntry>, Task> RunSecondOpinion { get; init; } = static (_, _, _) => Task.CompletedTask;
     internal Func<string?> GetByokBaseUrl { get; init; } = static () => null;
@@ -710,7 +710,7 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        var switchBehavior = global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession;
+        var switchBehavior = ModelSwitchBehavior.CleanSession;
         var priorConversation = Array.Empty<ReportPromptEntry>();
 
         if (_handlers.HasRecordedHistory())
@@ -723,7 +723,7 @@ internal sealed class SlashCommandDispatcher
             }
 
             switchBehavior = behaviorChoice.Value;
-            if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion)
+            if (switchBehavior == ModelSwitchBehavior.SecondOpinion)
             {
                 priorConversation = _handlers.GetRecordedPrompts().ToArray();
             }
@@ -740,14 +740,14 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.CleanSession)
+        if (switchBehavior == ModelSwitchBehavior.CleanSession)
         {
             _handlers.ClearRecordedHistory();
         }
 
         _handlers.ShowModelSelectionSummary();
 
-        if (switchBehavior == global::TroubleScout.TroubleshootingSession.ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
+        if (switchBehavior == ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
         {
             var selectedModel = _handlers.GetSelectedModelName() ?? string.Empty;
             _handlers.ShowInfo($"Asking {selectedModel} for a second opinion using the current session context...");

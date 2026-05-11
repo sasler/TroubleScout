@@ -96,7 +96,7 @@ public class ConsoleUITests
 
             var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
 
-            result.Should().Be(TroubleshootingSession.ModelSwitchBehavior.CleanSession);
+            result.Should().Be(ModelSwitchBehavior.CleanSession);
         }
         finally
         {
@@ -119,7 +119,7 @@ public class ConsoleUITests
 
             var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
 
-            result.Should().Be(TroubleshootingSession.ModelSwitchBehavior.SecondOpinion);
+            result.Should().Be(ModelSwitchBehavior.SecondOpinion);
         }
         finally
         {

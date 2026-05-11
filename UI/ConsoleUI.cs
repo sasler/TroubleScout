@@ -584,12 +584,12 @@ public static partial class ConsoleUI
     public static string? PromptModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
         => ModelPickerUI.PromptModelSelection(currentModel, models);
 
-    internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
+    internal static ModelSelectionEntry? PromptModelSelection(
         string currentModel,
-        IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
+        IReadOnlyList<ModelSelectionEntry> entries)
         => ModelPickerUI.PromptModelSelection(currentModel, entries);
 
-    internal static TroubleshootingSession.ModelSwitchBehavior? PromptModelSwitchBehavior(
+    internal static ModelSwitchBehavior? PromptModelSwitchBehavior(
         string currentModel,
         string selectedModel)
         => ModelPickerUI.PromptModelSwitchBehavior(currentModel, selectedModel);

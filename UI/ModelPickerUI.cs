@@ -2,6 +2,7 @@ using System.Globalization;
 using GitHub.Copilot.SDK;
 using Spectre.Console;
 using Spectre.Console.Rendering;
+using TroubleScout.Services;
 
 namespace TroubleScout.UI;
 
@@ -13,7 +14,7 @@ internal static class ModelPickerUI
         string RateLabel,
         string DetailSummary,
         bool IsCurrent,
-        TroubleshootingSession.ModelSource? SourceHint);
+        ModelSource? SourceHint);
 
     public static string? PromptModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
     {
@@ -30,9 +31,9 @@ internal static class ModelPickerUI
         return PromptModelSelectionCore(currentModel, choices)?.ModelId;
     }
 
-    internal static TroubleshootingSession.ModelSelectionEntry? PromptModelSelection(
+    internal static ModelSelectionEntry? PromptModelSelection(
         string currentModel,
-        IReadOnlyList<TroubleshootingSession.ModelSelectionEntry> entries)
+        IReadOnlyList<ModelSelectionEntry> entries)
     {
         var choices = entries
             .Select(entry => new ModelPickerChoice(
@@ -55,13 +56,13 @@ internal static class ModelPickerUI
             && entry.Source == selectedChoice.SourceHint);
     }
 
-    internal static TroubleshootingSession.ModelSwitchBehavior? PromptModelSwitchBehavior(
+    internal static ModelSwitchBehavior? PromptModelSwitchBehavior(
         string currentModel,
         string selectedModel)
     {
         if (ConsoleUI.IsInputRedirectedResolver())
         {
-            return TroubleshootingSession.ModelSwitchBehavior.CleanSession;
+            return ModelSwitchBehavior.CleanSession;
         }
 
         const string cleanLabel = "Start a new clean session";
@@ -94,8 +95,8 @@ internal static class ModelPickerUI
 
             return selected switch
             {
-                cleanLabel => TroubleshootingSession.ModelSwitchBehavior.CleanSession,
-                secondOpinionLabel => TroubleshootingSession.ModelSwitchBehavior.SecondOpinion,
+                cleanLabel => ModelSwitchBehavior.CleanSession,
+                secondOpinionLabel => ModelSwitchBehavior.SecondOpinion,
                 _ => null
             };
         }
@@ -232,8 +233,8 @@ internal static class ModelPickerUI
 
             var sourceLabel = choice.SourceHint switch
             {
-                TroubleshootingSession.ModelSource.Byok => "[yellow]BYOK[/]",
-                TroubleshootingSession.ModelSource.GitHub => "[green]GitHub[/]",
+                ModelSource.Byok => "[yellow]BYOK[/]",
+                ModelSource.GitHub => "[green]GitHub[/]",
                 _ => "[grey]--[/]"
             };
 
