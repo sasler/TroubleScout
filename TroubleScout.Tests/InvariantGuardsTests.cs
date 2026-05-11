@@ -154,12 +154,12 @@ public class InvariantGuardsTests
     }
 
     [Fact]
-    public void TroubleshootingSession_KeepsSubAgentStreamingDisabled()
+    public void CopilotSessionConfigBuilder_KeepsSubAgentStreamingDisabled()
     {
         // Re-asserting the AGENTS.md rule from a different angle than the
         // existing assertion in TroubleshootingSessionTests so neither test
         // can silently drift.
-        var source = ReadRepoFile("TroubleshootingSession.cs");
+        var source = ReadRepoFile(Path.Combine("Services", "CopilotSessionConfigBuilder.cs"));
         source.Should().MatchRegex(
             @"IncludeSubAgentStreamingEvents\s*=\s*false",
             "AGENTS.md requires IncludeSubAgentStreamingEvents to stay false until the " +
