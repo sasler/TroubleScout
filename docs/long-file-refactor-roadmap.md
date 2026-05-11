@@ -20,7 +20,7 @@ they are not GitHub pull request numbers.
   loading, skill discovery, and `SessionConfig` construction into services.
 - [x] Step F: Copilot Turn Runner - Extract `SendMessageAsync` streaming/event
   orchestration while keeping the public entry point stable.
-- [ ] Step G: Console UI Split - Split terminal lifetime/progress, input
+- [x] Step G: Console UI Split - Split terminal lifetime/progress, input
   editing/history, status bar rendering, approval prompts, and thinking
   indicator helpers behind the existing `ConsoleUI` facade.
 - [ ] Step H: Secondary Large-File Cleanup - Split `ReportHtmlBuilder` and

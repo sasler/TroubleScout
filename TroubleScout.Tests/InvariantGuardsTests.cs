@@ -126,7 +126,7 @@ public class InvariantGuardsTests
         // Every approval/selection prompt is invoked while the LiveThinkingIndicator
         // may be running. Without PauseForApproval/ResumeAfterApproval the spinner
         // keeps writing over the prompt and the user can't see (or answer) it.
-        var source = ReadRepoFile("UI", "ConsoleUI.cs");
+        var source = ReadRepoFiles(Path.Combine("UI", "ConsoleUI*.cs"));
 
         var promptMethodNames = new[]
         {
@@ -237,6 +237,20 @@ public class InvariantGuardsTests
         var path = Path.Combine(new[] { RepoRootPath.Value }.Concat(relativeSegments).ToArray());
         File.Exists(path).Should().BeTrue($"expected source file at {path}");
         return File.ReadAllText(path);
+    }
+
+    private static string ReadRepoFiles(string relativePattern)
+    {
+        var directory = Path.Combine(RepoRootPath.Value, Path.GetDirectoryName(relativePattern) ?? string.Empty);
+        var pattern = Path.GetFileName(relativePattern);
+        Directory.Exists(directory).Should().BeTrue($"expected source directory at {directory}");
+
+        var files = Directory.GetFiles(directory, pattern)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        files.Should().NotBeEmpty($"expected at least one source file matching {relativePattern}");
+
+        return string.Join(Environment.NewLine, files.Select(File.ReadAllText));
     }
 
     private static string FindRepoRoot()

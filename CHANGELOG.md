@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.12] - 2026-05-11
+
+### Internal
+
+- ♻️ **Split Console UI internals** - `ConsoleUI` remains the stable facade while terminal lifetime/progress handling, prompt input/history, status bar rendering, approval prompts, reasoning output, and the live thinking indicator now live in focused UI files.
+
 ## [v1.17.11] - 2026-05-11
 
 ### Internal
