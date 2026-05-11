@@ -19,6 +19,7 @@ internal sealed class ByokProviderManager
         CopilotClient? copilotClient,
         Func<Task> disposeCurrentSessionAsync,
         Func<Task<List<ModelInfo>>> tryGetByokProviderModelsAsync,
+        Func<string, IReadOnlyList<ModelInfo>, string?> promptModelSelection,
         Func<string?, Action<string>?, Task<bool>> createCopilotSessionAsync,
         Action<bool, string?, string?> saveByokSettings,
         string openAiApiKeyEnvironmentVariable,
@@ -61,7 +62,7 @@ internal sealed class ByokProviderManager
                 ? model
                 : discoveredModels[0].Id;
 
-            var selectedModel = ConsoleUI.PromptModelSelection(preferredModel, discoveredModels);
+            var selectedModel = promptModelSelection(preferredModel!, discoveredModels);
             if (string.IsNullOrWhiteSpace(selectedModel))
             {
                 ConsoleUI.ShowWarning("BYOK model selection was canceled.");

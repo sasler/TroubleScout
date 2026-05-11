@@ -17,7 +17,7 @@ Add new entries here as they land. When cutting a release, rename this section t
 
 ### Internal
 
-- 🧭 **Extract model and BYOK slash commands** - `/model` and `/byok` now flow through `SlashCommandDispatcher.DispatchAsync`, preserving model selection, second-opinion handoff, BYOK setup, and BYOK clearing behavior with focused dispatcher coverage.
+- 🧭 **Extract model and BYOK slash commands** - `/model` and `/byok` now flow through `SlashCommandDispatcher.DispatchAsync`; BYOK setup now uses the same model picker as `/model`, and BYOK sessions use a non-streaming compatibility mode for OpenAI-compatible gateways that reject streaming usage options.
 
 ## [v1.17.8] - 2026-05-11
 

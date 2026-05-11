@@ -435,6 +435,9 @@ public class TroubleshootingSession : IAsyncDisposable
     private static readonly Regex CliModelIdRegex = new(
         "\"((?:claude|gpt|gemini)-[a-z0-9][a-z0-9.-]*)\"",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex Gpt5FamilyModelRegex = new(
+        "(^|[^a-z0-9])gpt[\\s._-]*5($|[^a-z0-9])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public string TargetServer => _targetServer;
     public string ConnectionMode => _executor.GetConnectionMode();
@@ -2398,10 +2401,20 @@ public class TroubleshootingSession : IAsyncDisposable
                 }
             },
             TryGetByokProviderModelsAsync,
+            PromptByokModelSelection,
             CreateCopilotSessionAsync,
             SaveByokSettings,
             OpenAiApiKeyEnvironmentVariable,
             updateStatus);
+
+    private string? PromptByokModelSelection(string currentModel, IReadOnlyList<ModelInfo> models)
+    {
+        var entries = models
+            .Select(model => BuildModelSelectionEntry(model, ToModelDisplayName(model.Id), ModelSource.Byok))
+            .ToList();
+
+        return ConsoleUI.PromptModelSelection(currentModel, entries)?.ModelId;
+    }
 
     private async Task<bool> LoginAndCreateGitHubSessionAsync(Action<string>? updateStatus)
         => await _byokProviderManager.LoginAndCreateGitHubSessionAsync(
@@ -2619,10 +2632,13 @@ public class TroubleshootingSession : IAsyncDisposable
 
     private static string? GetByokWireApi(string? model)
     {
-        return !string.IsNullOrWhiteSpace(model) && model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
+        return IsGpt5FamilyModel(model)
             ? "responses"
             : null;
     }
+
+    private static bool IsGpt5FamilyModel(string? model)
+        => !string.IsNullOrWhiteSpace(model) && Gpt5FamilyModelRegex.IsMatch(model);
 
     private void HandleSessionLifecycleStateEvent(SessionEvent evt)
     {
@@ -2680,7 +2696,8 @@ public class TroubleshootingSession : IAsyncDisposable
             Model = model,
             ReasoningEffort = ResolveConfiguredReasoningEffort(model),
             SystemMessage = _systemMessageConfig,
-            Streaming = true,
+            // Some OpenAI-compatible gateways reject streaming usage options emitted by the SDK.
+            Streaming = !_useByokOpenAi,
             IncludeSubAgentStreamingEvents = false,
             Tools = _diagnosticTools.GetTools().ToList(),
             DefaultAgent = new DefaultAgentConfig
