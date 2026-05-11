@@ -317,6 +317,24 @@ public class TroubleshootingSession : IAsyncDisposable
             PromptCommandApproval = (command, reason) =>
                 ConsoleUI.PromptCommandApproval(command, reason) == ApprovalResult.Approved,
             PromptText = () => ConsoleUI.GetUserInput(),
+            ResetConversation = () => ResetConversationAsync(),
+            ClearConsole = Console.Clear,
+            ShowBanner = () => ConsoleUI.ShowBanner(),
+            ShowWelcomeMessage = ConsoleUI.ShowWelcomeMessage,
+            GetWelcomeHint = GetWelcomeHint,
+            GetSessionId = () => _sessionId,
+            EnsureSettingsFile = () => _ = AppSettingsStore.Load(),
+            GetSettingsPath = () => AppSettingsStore.SettingsPath,
+            OpenSettingsEditor = TryOpenSettingsEditorAsync,
+            ReloadSettings = ReloadSafeCommandsFromSettings,
+            GetPersistedTheme = () => AppSettingsStore.Load().Theme,
+            InvalidateModelCache = _modelDiscovery.InvalidateMergedModelListCache,
+            LoginAndCreateGitHubSession = LoginAndCreateGitHubSessionAsync,
+            GetConfiguredMonitoringMcpServer = () => _configuredMonitoringMcpServer,
+            GetConfiguredTicketingMcpServer = () => _configuredTicketingMcpServer,
+            GetAvailableMcpRoleServerNames = GetAvailableMcpRoleServerNames,
+            PromptMcpRoleSelection = ConsoleUI.PromptMcpRoleSelection,
+            SaveMcpRoleSettings = SaveMcpRoleSettings,
             RefreshServerContext = () =>
                 _systemMessageConfig = CreateSystemMessage(_targetServer, _serverManager.Executors.Keys.ToList()),
             RecreateCurrentCopilotSession = RecreateCurrentCopilotSessionAsync,
@@ -1995,143 +2013,6 @@ public class TroubleshootingSession : IAsyncDisposable
             : null;
     }
 
-    private async Task HandleMcpRoleCommandAsync(string input)
-    {
-        var availableServers = GetAvailableMcpRoleServerNames();
-        var monitoring = _configuredMonitoringMcpServer;
-        var ticketing = _configuredTicketingMcpServer;
-        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-
-        if (parts.Length == 1)
-        {
-            if (availableServers.Count == 0 && string.IsNullOrWhiteSpace(monitoring) && string.IsNullOrWhiteSpace(ticketing))
-            {
-                ConsoleUI.ShowWarning("No MCP servers are configured. Add servers in your MCP config first, then use /mcp-role.");
-                return;
-            }
-
-            (monitoring, ticketing) = ConsoleUI.PromptMcpRoleSelection(monitoring, ticketing, availableServers);
-        }
-        else
-        {
-            if (!TryApplyDirectMcpRoleCommand(parts, availableServers, ref monitoring, ref ticketing, out var usageError))
-            {
-                ConsoleUI.ShowWarning(usageError);
-                ConsoleUI.ShowInfo("Usage:");
-                ConsoleUI.ShowInfo("  /mcp-role");
-                ConsoleUI.ShowInfo("  /mcp-role monitoring <server|none>");
-                ConsoleUI.ShowInfo("  /mcp-role ticketing <server|none>");
-                ConsoleUI.ShowInfo("  /mcp-role clear <monitoring|ticketing|all>");
-                return;
-            }
-        }
-
-        if (McpRoleValuesEqual(monitoring, _configuredMonitoringMcpServer)
-            && McpRoleValuesEqual(ticketing, _configuredTicketingMcpServer))
-        {
-            ConsoleUI.ShowInfo($"MCP roles unchanged. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
-            ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-            return;
-        }
-
-        SaveMcpRoleSettings(monitoring, ticketing);
-        ReloadSafeCommandsFromSettings();
-        var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
-
-        if (sessionReloadSucceeded)
-        {
-            ConsoleUI.ShowSuccess($"MCP roles saved. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
-            ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-        }
-        else
-        {
-            var message = "MCP roles were saved, but the AI session could not be recreated. Use /login or /model to reconnect.";
-            if (!string.IsNullOrWhiteSpace(sessionReloadError))
-            {
-                message += $" {sessionReloadError}";
-            }
-
-            ConsoleUI.ShowWarning(message);
-        }
-    }
-
-    private bool TryApplyDirectMcpRoleCommand(
-        string[] parts,
-        IReadOnlyList<string> availableServers,
-        ref string? monitoring,
-        ref string? ticketing,
-        out string error)
-    {
-        error = "Invalid /mcp-role command.";
-        if (parts.Length < 2)
-        {
-            return false;
-        }
-
-        var action = parts[1].Trim().ToLowerInvariant();
-        if (action == "clear")
-        {
-            if (parts.Length < 3)
-            {
-                error = "Specify which role to clear: monitoring, ticketing, or all.";
-                return false;
-            }
-
-            switch (parts[2].Trim().ToLowerInvariant())
-            {
-                case "monitoring":
-                    monitoring = null;
-                    return true;
-                case "ticketing":
-                    ticketing = null;
-                    return true;
-                case "all":
-                    monitoring = null;
-                    ticketing = null;
-                    return true;
-                default:
-                    error = "Use /mcp-role clear <monitoring|ticketing|all>.";
-                    return false;
-            }
-        }
-
-        if (action is not "monitoring" and not "ticketing")
-        {
-            error = "Use /mcp-role monitoring <server|none> or /mcp-role ticketing <server|none>.";
-            return false;
-        }
-
-        if (parts.Length < 3)
-        {
-            error = $"Specify the MCP server name to assign to the {action} role, or 'none' to clear it.";
-            return false;
-        }
-
-        if (!TryResolveRequestedMcpRoleValue(parts[2], availableServers, out var resolvedValue, out error))
-        {
-            return false;
-        }
-
-        if (action == "monitoring")
-        {
-            monitoring = resolvedValue;
-        }
-        else
-        {
-            ticketing = resolvedValue;
-        }
-
-        return true;
-    }
-
-    private static bool McpRoleValuesEqual(string? left, string? right)
-    {
-        return string.Equals(
-            left?.Trim(),
-            right?.Trim(),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
     private IReadOnlyList<string> GetAvailableMcpRoleServerNames()
     {
         var warnings = new List<string>();
@@ -2155,33 +2036,6 @@ public class TroubleshootingSession : IAsyncDisposable
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static bool TryResolveRequestedMcpRoleValue(
-        string requestedValue,
-        IReadOnlyList<string> availableServers,
-        out string? resolvedValue,
-        out string error)
-    {
-        var trimmed = requestedValue.Trim();
-        if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
-        {
-            resolvedValue = null;
-            error = string.Empty;
-            return true;
-        }
-
-        var match = availableServers.FirstOrDefault(server => server.Equals(trimmed, StringComparison.OrdinalIgnoreCase));
-        if (match != null)
-        {
-            resolvedValue = match;
-            error = string.Empty;
-            return true;
-        }
-
-        resolvedValue = null;
-        error = $"Unknown MCP server '{trimmed}'. Use /capabilities to see configured MCP servers.";
-        return false;
     }
 
     private void ApplySystemPromptSettings(IReadOnlyDictionary<string, string>? overrides, string? append)
@@ -2325,81 +2179,6 @@ public class TroubleshootingSession : IAsyncDisposable
                 if (slashCommandResult.ExitRequested)
                 {
                     break;
-                }
-
-                continue;
-            }
-
-            if (firstToken == "/clear")
-            {
-                var resetSucceeded = await ResetConversationAsync();
-                if (resetSucceeded)
-                {
-                    Console.Clear();
-                    ConsoleUI.ShowBanner();
-                    ConsoleUI.ShowStatusPanel(EffectiveTargetServer, EffectiveConnectionMode, _copilotSession != null, SelectedModel, _executionMode, GetStatusFields(), GetAdditionalTargetsForDisplay(), DefaultSessionTarget);
-                    ConsoleUI.ShowSuccess($"Started new session: {_sessionId}");
-                    ConsoleUI.ShowWelcomeMessage(GetWelcomeHint());
-                }
-                else
-                {
-                    ConsoleUI.ShowWarning("Could not start a new session.");
-                }
-
-                continue;
-            }
-
-            if (firstToken == "/settings")
-            {
-                // Ensure the settings file exists before launching the editor on first use.
-                _ = AppSettingsStore.Load();
-                ConsoleUI.ShowInfo($"Settings file: {AppSettingsStore.SettingsPath}");
-                var editorError = await TryOpenSettingsEditorAsync(AppSettingsStore.SettingsPath);
-                if (!string.IsNullOrWhiteSpace(editorError))
-                {
-                    ConsoleUI.ShowWarning(editorError);
-                }
-
-                ReloadSafeCommandsFromSettings();
-                ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(AppSettingsStore.Load().Theme);
-                _modelDiscovery.InvalidateMergedModelListCache();
-                var (sessionReloadSucceeded, sessionReloadError) = await RecreateCurrentCopilotSessionAsync();
-
-                if (sessionReloadSucceeded)
-                {
-                    ConsoleUI.ShowSuccess("Settings reloaded. Safe command patterns and system prompt settings have been applied.");
-                }
-                else
-                {
-                    var message = "Settings were reloaded, but the AI session could not be recreated. Use /login or /model to reconnect.";
-                    if (!string.IsNullOrWhiteSpace(sessionReloadError))
-                    {
-                        message += $" {sessionReloadError}";
-                    }
-
-                    ConsoleUI.ShowWarning(message);
-                }
-
-                continue;
-            }
-
-            if (IsSlashCommandInvocation(lowerInput, "/mcp-role"))
-            {
-                await HandleMcpRoleCommandAsync(input);
-                continue;
-            }
-
-            if (firstToken == "/login")
-            {
-                _modelDiscovery.InvalidateMergedModelListCache();
-                var loginSucceeded = await ConsoleUI.RunWithSpinnerAsync("Running Copilot login...", async updateStatus =>
-                {
-                    return await LoginAndCreateGitHubSessionAsync(updateStatus);
-                });
-
-                if (loginSucceeded)
-                {
-                    ConsoleUI.ShowSuccess("GitHub Copilot login completed and session is ready.");
                 }
 
                 continue;

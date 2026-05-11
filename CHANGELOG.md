@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.8] - 2026-05-11
+
+### Internal
+
+- 🧭 **Extract remaining low-risk slash commands** - `/clear`, `/settings`, `/login`, and `/mcp-role` now flow through `SlashCommandDispatcher.DispatchAsync`, preserving session reset, live settings reload, Copilot login, and MCP role mapping behavior with focused dispatcher coverage.
+
 ## [v1.17.7] - 2026-05-10
 
 ### Internal

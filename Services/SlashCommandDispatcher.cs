@@ -53,6 +53,24 @@ internal sealed class SlashCommandHandlers
     internal Func<string, string, bool, Task<(bool Success, string? Error)>> ConnectJeaServer { get; init; } = static (_, _, _) => Task.FromResult((false, (string?)null));
     internal Func<string, string, bool> PromptCommandApproval { get; init; } = static (_, _) => false;
     internal Func<string> PromptText { get; init; } = static () => string.Empty;
+    internal Func<Task<bool>> ResetConversation { get; init; } = static () => Task.FromResult(false);
+    internal Action ClearConsole { get; init; } = static () => { };
+    internal Action ShowBanner { get; init; } = static () => { };
+    internal Action<string?> ShowWelcomeMessage { get; init; } = static _ => { };
+    internal Func<string?> GetWelcomeHint { get; init; } = static () => null;
+    internal Func<string> GetSessionId { get; init; } = static () => "n/a";
+    internal Action EnsureSettingsFile { get; init; } = static () => { };
+    internal Func<string> GetSettingsPath { get; init; } = static () => AppSettingsStore.SettingsPath;
+    internal Func<string, Task<string?>> OpenSettingsEditor { get; init; } = static _ => Task.FromResult((string?)null);
+    internal Action ReloadSettings { get; init; } = static () => { };
+    internal Func<string?> GetPersistedTheme { get; init; } = static () => null;
+    internal Action InvalidateModelCache { get; init; } = static () => { };
+    internal Func<Action<string>, Task<bool>> LoginAndCreateGitHubSession { get; init; } = static _ => Task.FromResult(false);
+    internal Func<string?> GetConfiguredMonitoringMcpServer { get; init; } = static () => null;
+    internal Func<string?> GetConfiguredTicketingMcpServer { get; init; } = static () => null;
+    internal Func<IReadOnlyList<string>> GetAvailableMcpRoleServerNames { get; init; } = static () => Array.Empty<string>();
+    internal Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)> PromptMcpRoleSelection { get; init; } = static (monitoring, ticketing, _) => (monitoring, ticketing);
+    internal Action<string?, string?> SaveMcpRoleSettings { get; init; } = static (_, _) => { };
     internal Action RefreshServerContext { get; init; } = static () => { };
     internal Func<Task<(bool Success, string? Error)>> RecreateCurrentCopilotSession { get; init; } = static () => Task.FromResult((true, (string?)null));
     internal Action ShowModelSelectionSummary { get; init; } = static () => { };
@@ -189,6 +207,30 @@ internal sealed class SlashCommandDispatcher
             return SlashCommandResult.HandledCommand;
         }
 
+        if (parsed.FirstToken == "/clear")
+        {
+            await HandleClearCommandAsync();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (parsed.FirstToken == "/settings")
+        {
+            await HandleSettingsCommandAsync();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (parsed.FirstToken == "/login")
+        {
+            await HandleLoginCommandAsync();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/mcp-role"))
+        {
+            await HandleMcpRoleCommandAsync(parsed.Trimmed);
+            return SlashCommandResult.HandledCommand;
+        }
+
         if (IsInvocation(parsed.Lower, "/report"))
         {
             HandleReportCommand();
@@ -214,6 +256,235 @@ internal sealed class SlashCommandDispatcher
         }
 
         return SlashCommandResult.NotHandled;
+    }
+
+    private async Task HandleClearCommandAsync()
+    {
+        var resetSucceeded = await _handlers.ResetConversation();
+        if (resetSucceeded)
+        {
+            _handlers.ClearConsole();
+            _handlers.ShowBanner();
+            _handlers.ShowStatus(false);
+            _handlers.ShowSuccess($"Started new session: {_handlers.GetSessionId()}");
+            _handlers.ShowWelcomeMessage(_handlers.GetWelcomeHint());
+        }
+        else
+        {
+            _handlers.ShowWarning("Could not start a new session.");
+        }
+    }
+
+    private async Task HandleSettingsCommandAsync()
+    {
+        _handlers.EnsureSettingsFile();
+
+        var settingsPath = _handlers.GetSettingsPath();
+        _handlers.ShowInfo($"Settings file: {settingsPath}");
+
+        var editorError = await _handlers.OpenSettingsEditor(settingsPath);
+        if (!string.IsNullOrWhiteSpace(editorError))
+        {
+            _handlers.ShowWarning(editorError);
+        }
+
+        _handlers.ReloadSettings();
+        _handlers.SetTheme(AppSettingsStore.NormalizeTheme(_handlers.GetPersistedTheme()));
+        _handlers.InvalidateModelCache();
+
+        var (sessionReloadSucceeded, sessionReloadError) = await _handlers.RecreateCurrentCopilotSession();
+        if (sessionReloadSucceeded)
+        {
+            _handlers.ShowSuccess("Settings reloaded. Safe command patterns and system prompt settings have been applied.");
+        }
+        else
+        {
+            var message = "Settings were reloaded, but the AI session could not be recreated. Use /login or /model to reconnect.";
+            if (!string.IsNullOrWhiteSpace(sessionReloadError))
+            {
+                message += $" {sessionReloadError}";
+            }
+
+            _handlers.ShowWarning(message);
+        }
+    }
+
+    private async Task HandleLoginCommandAsync()
+    {
+        _handlers.InvalidateModelCache();
+        var loginSucceeded = await _handlers.RunWithSpinnerAsync("Running Copilot login...", async updateStatus =>
+        {
+            return await _handlers.LoginAndCreateGitHubSession(updateStatus);
+        });
+
+        if (loginSucceeded)
+        {
+            _handlers.ShowSuccess("GitHub Copilot login completed and session is ready.");
+        }
+    }
+
+    private async Task HandleMcpRoleCommandAsync(string input)
+    {
+        var availableServers = _handlers.GetAvailableMcpRoleServerNames();
+        var monitoring = _handlers.GetConfiguredMonitoringMcpServer();
+        var ticketing = _handlers.GetConfiguredTicketingMcpServer();
+        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 1)
+        {
+            if (availableServers.Count == 0 && string.IsNullOrWhiteSpace(monitoring) && string.IsNullOrWhiteSpace(ticketing))
+            {
+                _handlers.ShowWarning("No MCP servers are configured. Add servers in your MCP config first, then use /mcp-role.");
+                return;
+            }
+
+            (monitoring, ticketing) = _handlers.PromptMcpRoleSelection(monitoring, ticketing, availableServers);
+        }
+        else
+        {
+            if (!TryApplyDirectMcpRoleCommand(parts, availableServers, ref monitoring, ref ticketing, out var usageError))
+            {
+                _handlers.ShowWarning(usageError);
+                _handlers.ShowInfo("Usage:");
+                _handlers.ShowInfo("  /mcp-role");
+                _handlers.ShowInfo("  /mcp-role monitoring <server|none>");
+                _handlers.ShowInfo("  /mcp-role ticketing <server|none>");
+                _handlers.ShowInfo("  /mcp-role clear <monitoring|ticketing|all>");
+                return;
+            }
+        }
+
+        if (McpRoleValuesEqual(monitoring, _handlers.GetConfiguredMonitoringMcpServer())
+            && McpRoleValuesEqual(ticketing, _handlers.GetConfiguredTicketingMcpServer()))
+        {
+            _handlers.ShowInfo($"MCP roles unchanged. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
+            _handlers.ShowStatus(false);
+            return;
+        }
+
+        _handlers.SaveMcpRoleSettings(monitoring, ticketing);
+        _handlers.ReloadSettings();
+        var (sessionReloadSucceeded, sessionReloadError) = await _handlers.RecreateCurrentCopilotSession();
+
+        if (sessionReloadSucceeded)
+        {
+            _handlers.ShowSuccess($"MCP roles saved. Monitoring: {monitoring ?? "none"} | Ticketing: {ticketing ?? "none"}");
+            _handlers.ShowStatus(false);
+        }
+        else
+        {
+            var message = "MCP roles were saved, but the AI session could not be recreated. Use /login or /model to reconnect.";
+            if (!string.IsNullOrWhiteSpace(sessionReloadError))
+            {
+                message += $" {sessionReloadError}";
+            }
+
+            _handlers.ShowWarning(message);
+        }
+    }
+
+    private static bool TryApplyDirectMcpRoleCommand(
+        string[] parts,
+        IReadOnlyList<string> availableServers,
+        ref string? monitoring,
+        ref string? ticketing,
+        out string error)
+    {
+        error = "Invalid /mcp-role command.";
+        if (parts.Length < 2)
+        {
+            return false;
+        }
+
+        var action = parts[1].Trim().ToLowerInvariant();
+        if (action == "clear")
+        {
+            if (parts.Length < 3)
+            {
+                error = "Specify which role to clear: monitoring, ticketing, or all.";
+                return false;
+            }
+
+            switch (parts[2].Trim().ToLowerInvariant())
+            {
+                case "monitoring":
+                    monitoring = null;
+                    return true;
+                case "ticketing":
+                    ticketing = null;
+                    return true;
+                case "all":
+                    monitoring = null;
+                    ticketing = null;
+                    return true;
+                default:
+                    error = "Use /mcp-role clear <monitoring|ticketing|all>.";
+                    return false;
+            }
+        }
+
+        if (action is not "monitoring" and not "ticketing")
+        {
+            error = "Use /mcp-role monitoring <server|none> or /mcp-role ticketing <server|none>.";
+            return false;
+        }
+
+        if (parts.Length < 3)
+        {
+            error = $"Specify the MCP server name to assign to the {action} role, or 'none' to clear it.";
+            return false;
+        }
+
+        if (!TryResolveRequestedMcpRoleValue(parts[2], availableServers, out var resolvedValue, out error))
+        {
+            return false;
+        }
+
+        if (action == "monitoring")
+        {
+            monitoring = resolvedValue;
+        }
+        else
+        {
+            ticketing = resolvedValue;
+        }
+
+        return true;
+    }
+
+    private static bool McpRoleValuesEqual(string? left, string? right)
+    {
+        return string.Equals(
+            left?.Trim(),
+            right?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryResolveRequestedMcpRoleValue(
+        string requestedValue,
+        IReadOnlyList<string> availableServers,
+        out string? resolvedValue,
+        out string error)
+    {
+        var trimmed = requestedValue.Trim();
+        if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedValue = null;
+            error = string.Empty;
+            return true;
+        }
+
+        var match = availableServers.FirstOrDefault(server => server.Equals(trimmed, StringComparison.OrdinalIgnoreCase));
+        if (match != null)
+        {
+            resolvedValue = match;
+            error = string.Empty;
+            return true;
+        }
+
+        resolvedValue = null;
+        error = $"Unknown MCP server '{trimmed}'. Use /capabilities to see configured MCP servers.";
+        return false;
     }
 
     internal static string GetFirstToken(string input)
