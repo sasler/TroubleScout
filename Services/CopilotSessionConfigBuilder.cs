@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 
 namespace TroubleScout.Services;
@@ -12,8 +12,8 @@ internal sealed record CopilotSessionConfigOptions(
     IReadOnlyDictionary<string, McpServerConfig> AvailableMcpServers,
     string? MonitoringMcpServer,
     string? TicketingMcpServer,
-    SessionEventHandler OnEvent,
-    PermissionRequestHandler OnPermissionRequest,
+    Action<SessionEvent> OnEvent,
+    Func<PermissionRequest, PermissionInvocation, Task<PermissionRequestResult>> OnPermissionRequest,
     ICollection<string>? ConfigurationWarnings = null,
     ProviderConfig? Provider = null,
     IReadOnlyList<string>? SkillDirectories = null,
@@ -34,7 +34,7 @@ internal static class CopilotSessionConfigBuilder
             // Some OpenAI-compatible gateways reject streaming usage options emitted by the SDK.
             Streaming = !options.UseByokOpenAi,
             IncludeSubAgentStreamingEvents = false,
-            Tools = options.Tools.ToList(),
+            Tools = options.Tools.Cast<AIFunctionDeclaration>().ToList(),
             DefaultAgent = new DefaultAgentConfig
             {
                 ExcludedTools = ["web_search"]

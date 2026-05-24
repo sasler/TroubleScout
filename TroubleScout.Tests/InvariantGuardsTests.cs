@@ -133,6 +133,19 @@ public class InvariantGuardsTests
     }
 
     [Fact]
+    public void SessionInitialization_UsesCopilotSdkV1RuntimeConnection()
+    {
+        var source = ReadRepoFile(Path.Combine("Services", "SessionInitializationCoordinator.cs"));
+
+        source.Should().Contain("CopilotLogLevel.Info",
+            "Copilot SDK v1 uses a typed log-level value instead of the old string API.");
+        source.Should().Contain("RuntimeConnection.ForStdio(path: cliPath)",
+            "Copilot SDK v1 replaced CopilotClientOptions.CliPath with RuntimeConnection.");
+        source.Should().NotContain(".CliPath",
+            "the removed CopilotClientOptions.CliPath property must not be reintroduced.");
+    }
+
+    [Fact]
     public void ConsoleUI_ApprovalPrompts_AllPauseAndResumeLiveIndicator()
     {
         // Every approval/selection prompt is invoked while the LiveThinkingIndicator

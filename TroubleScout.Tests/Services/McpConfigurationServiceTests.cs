@@ -1,5 +1,5 @@
 using FluentAssertions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.Services;
 using Xunit;
 
@@ -65,6 +65,29 @@ public class McpConfigurationServiceTests
         result.Servers.Keys.Should().Contain(["remote-server", "local-server"]);
         result.Servers["remote-server"].Should().BeOfType<McpHttpServerConfig>();
         result.Servers["local-server"].Should().BeOfType<McpStdioServerConfig>();
+    }
+
+    [Fact]
+    public void LoadServers_WithSseRemoteServer_ShouldParseRemoteUrl()
+    {
+        using var temp = TemporaryDirectory.Create();
+        var filePath = Path.Combine(temp.Path, "mcp-config.json");
+        File.WriteAllText(filePath, """
+        {
+            "mcpServers": {
+                "sse-server": {
+                    "type": "sse",
+                    "url": "https://example.com/sse"
+                }
+            }
+        }
+        """);
+
+        var result = McpConfigurationService.LoadServers(filePath);
+
+        result.Warnings.Should().BeEmpty();
+        var server = result.Servers["sse-server"].Should().BeOfType<McpHttpServerConfig>().Subject;
+        server.Url.Should().Be("https://example.com/sse");
     }
 
     [Fact]

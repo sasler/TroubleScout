@@ -1,5 +1,5 @@
 using System.Text.Json;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace TroubleScout.Services;
 
@@ -158,7 +158,7 @@ internal static class McpConfigurationService
         var cwd = GetOptionalString(serverElement, "cwd");
         if (!string.IsNullOrWhiteSpace(cwd))
         {
-            local.Cwd = cwd;
+            local.WorkingDirectory = cwd;
         }
 
         var localTools = GetStringList(serverElement, "tools");

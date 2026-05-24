@@ -13,6 +13,12 @@ Add new entries here as they land. When cutting a release, rename this section t
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->
 
+## [v1.17.14] - 2026-05-24
+
+### Changed
+
+- ⬆️ **Upgrade to GitHub.Copilot.SDK `1.0.0-beta.6`** - TroubleScout now targets the latest Copilot SDK public-preview beta while preserving streaming turns, MCP/URL/shell approvals, BYOK model metadata, skills, and status reporting.
+
 ## [v1.17.13] - 2026-05-11
 
 ### Internal

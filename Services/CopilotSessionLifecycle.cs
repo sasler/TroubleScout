@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -33,8 +33,8 @@ internal sealed record SessionConfigBuildRequest(
     IReadOnlyDictionary<string, McpServerConfig> AvailableMcpServers,
     string? MonitoringMcpServer,
     string? TicketingMcpServer,
-    SessionEventHandler OnEvent,
-    PermissionRequestHandler OnPermissionRequest,
+    Action<SessionEvent> OnEvent,
+    Func<PermissionRequest, PermissionInvocation, Task<PermissionRequestResult>> OnPermissionRequest,
     ICollection<string> ConfigurationWarnings,
     ProviderConfig? Provider,
     IReadOnlyList<string> SkillDirectories,

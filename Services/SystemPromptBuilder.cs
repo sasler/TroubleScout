@@ -1,5 +1,5 @@
 using System.Text;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace TroubleScout.Services;
 

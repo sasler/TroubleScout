@@ -1,7 +1,7 @@
 using FluentAssertions;
 using System.Reflection;
 using System.Globalization;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Spectre.Console;
 using TroubleScout.Services;
 using TroubleScout.UI;
@@ -47,6 +47,21 @@ public class ConsoleUITests
         var actual = InvokeGetRateLabel(model);
 
         // Assert
+        actual.Should().Be("n/a");
+    }
+
+    [Fact]
+    public void GetRateLabel_ShouldReturnNa_WhenBillingMultiplierIsMissing()
+    {
+        var model = new ModelInfo
+        {
+            Id = "model-a",
+            Name = "Model A",
+            Billing = new ModelBilling()
+        };
+
+        var actual = InvokeGetRateLabel(model);
+
         actual.Should().Be("n/a");
     }
 

@@ -6,15 +6,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!-- GitHub.Copilot.SDK 1.0.0-beta.6 omits the generated props file that normally
+         supplies this value to its MSBuild targets. Keep this explicit until upstream
+         package metadata includes GitHub.Copilot.SDK.props again. -->
+    <CopilotCliVersion>1.0.51</CopilotCliVersion>
     <CopilotCliDownloadTimeout>600000</CopilotCliDownloadTimeout>
     <!-- CopilotSkipCliDownload must remain false for all configurations.
          The npm JS wrapper (@github/copilot) does not support the headless flag that SDK v0.1.29+
          always passes on startup, causing an immediate crash. The native binary (win-x64/win-arm64)
          downloaded here is required even in Debug builds. -->
     <CopilotSkipCliDownload>false</CopilotSkipCliDownload>
-    <Version>1.17.13</Version>
-    <AssemblyVersion>1.17.13.0</AssemblyVersion>
-    <FileVersion>1.17.13.0</FileVersion>
+    <Version>1.17.14</Version>
+    <AssemblyVersion>1.17.14.0</AssemblyVersion>
+    <FileVersion>1.17.14.0</FileVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -33,7 +37,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="GitHub.Copilot.SDK" Version="0.3.0" />
+    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.0-beta.6" />
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.5.4" />
     <!-- GitHub.Copilot.SDK transitively pulls in Nerdbank.MessagePack 1.0.2,
          which has GHSA-2cwq-pwfr-wcw3. Pin a patched version until the

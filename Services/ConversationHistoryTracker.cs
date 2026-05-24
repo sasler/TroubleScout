@@ -1,5 +1,5 @@
 using System.Text.Json;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.Tools;
 using TroubleScout.UI;
 

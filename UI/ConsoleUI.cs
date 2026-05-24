@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using TroubleScout.Services;

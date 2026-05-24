@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using System.Text;
 
 namespace TroubleScout.Services;
