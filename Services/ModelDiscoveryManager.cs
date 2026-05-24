@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace TroubleScout.Services;
 
@@ -422,9 +422,9 @@ internal sealed class ModelDiscoveryManager
             return byokPrice.DisplayText!;
         }
 
-        if (model.Billing != null)
+        if (model.Billing?.Multiplier is { } multiplier)
         {
-            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
+            return $"{multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
         }
 
         return "n/a";

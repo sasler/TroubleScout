@@ -1,6 +1,6 @@
 using System.ComponentModel;
 using System.Collections.ObjectModel;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.AI;
 using TroubleScout.Services;
 using TroubleScout.UI;

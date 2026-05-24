@@ -1,5 +1,5 @@
 using FluentAssertions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using System.Reflection;
 using System.Globalization;
 using System.Text.Json;
@@ -7,8 +7,8 @@ using TroubleScout;
 using TroubleScout.Services;
 using TroubleScout.UI;
 using Xunit;
-using PermissionDecisionApproveForSession = GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSession;
-using PermissionDecisionApproveForSessionApprovalMcp = GitHub.Copilot.SDK.Rpc.PermissionDecisionApproveForSessionApprovalMcp;
+using PermissionDecisionApproveForSession = GitHub.Copilot.Rpc.PermissionDecisionApproveForSession;
+using PermissionDecisionApproveForSessionApprovalMcp = GitHub.Copilot.Rpc.PermissionDecisionApproveForSessionApprovalMcp;
 
 namespace TroubleScout.Tests;
 
@@ -2739,6 +2739,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         }
     }
 
+    [Fact]
+    public void GetModelRateLabel_ShouldReturnNa_WhenBillingMultiplierIsMissing()
+    {
+        var model = new ModelInfo
+        {
+            Id = "gpt-4.1",
+            Name = "GPT 4.1",
+            Billing = new ModelBilling()
+        };
+
+        var actual = InvokeGetModelRateLabel(_session, model, "GitHub");
+
+        actual.Should().Be("n/a");
+    }
+
     #endregion
 
     private static SessionConfig InvokeBuildSessionConfig(TroubleshootingSession session, string? model)
@@ -2775,7 +2790,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         };
     }
 
-    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string? toolName, object? args)
+    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string? toolName, object? args, bool readOnly = false)
     {
         return new PermissionRequestMcp
         {
@@ -2784,7 +2799,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             ToolName = toolName ?? string.Empty,
             ToolTitle = toolName ?? string.Empty,
             Args = args,
-            ReadOnly = true
+            ReadOnly = readOnly
         };
     }
 
@@ -3731,7 +3746,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void SDK_AssistantReasoningDeltaEvent_ShouldExist()
     {
         // Assert — the SDK exposes the delta event type used for streaming reasoning
-        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaEvent);
+        var type = typeof(GitHub.Copilot.AssistantReasoningDeltaEvent);
         type.Should().NotBeNull();
         type.Name.Should().Be("AssistantReasoningDeltaEvent");
     }
@@ -3740,7 +3755,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void SDK_AssistantReasoningDeltaData_ShouldHaveDeltaContentProperty()
     {
         // Assert — DeltaContent property exists for incremental reasoning text
-        var prop = typeof(GitHub.Copilot.SDK.AssistantReasoningDeltaData)
+        var prop = typeof(GitHub.Copilot.AssistantReasoningDeltaData)
             .GetProperty("DeltaContent");
         prop.Should().NotBeNull("AssistantReasoningDeltaData should have a DeltaContent property");
     }
@@ -3749,7 +3764,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void SDK_AssistantReasoningEvent_ShouldStillExistAsFallback()
     {
         // Assert — the full (non-streaming) reasoning event should remain in the SDK
-        var type = typeof(GitHub.Copilot.SDK.AssistantReasoningEvent);
+        var type = typeof(GitHub.Copilot.AssistantReasoningEvent);
         type.Should().NotBeNull();
     }
 

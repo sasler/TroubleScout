@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Spectre.Console;
 using TroubleScout.Services;
 using TroubleScout.Tools;

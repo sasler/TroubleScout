@@ -1,5 +1,5 @@
 using FluentAssertions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.Services;
 using Xunit;
 

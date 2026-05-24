@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.UI;
 
 namespace TroubleScout.Services;

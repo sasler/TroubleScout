@@ -1,5 +1,5 @@
 using System.Globalization;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using TroubleScout.Services;
@@ -384,9 +384,9 @@ internal static class ModelPickerUI
 
     internal static string GetRateLabel(ModelInfo model)
     {
-        if (model.Billing != null)
+        if (model.Billing?.Multiplier is { } multiplier)
         {
-            return $"{model.Billing.Multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
+            return $"{multiplier.ToString("0.##", CultureInfo.InvariantCulture)}x premium";
         }
 
         return "n/a";

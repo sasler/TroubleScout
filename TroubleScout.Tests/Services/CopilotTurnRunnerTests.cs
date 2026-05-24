@@ -1,6 +1,6 @@
 using System.Text;
 using FluentAssertions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.Services;
 using Xunit;
 
@@ -25,7 +25,11 @@ public class CopilotTurnRunnerTests
     {
         var session = new FakeTurnSession
         {
-            SendAsyncHandler = (_, token) => Task.Delay(TimeSpan.FromSeconds(30), token)
+            SendAsyncHandler = async (_, token) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), token);
+                return "message-id";
+            }
         };
         using var cts = new CancellationTokenSource();
         var runTask = CreateRunner().RunAsync(CreateRequest(session, cancellationToken: cts.Token));
@@ -36,6 +40,26 @@ public class CopilotTurnRunnerTests
         result.WasCancelled.Should().BeTrue();
         result.Success.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task RunAsync_WhenCancelledAfterSend_ShouldAbortActiveTurn()
+    {
+        var session = new FakeTurnSession
+        {
+            SendAsyncHandler = (_, _) => Task.FromResult("message-id")
+        };
+        using var cts = new CancellationTokenSource();
+
+        var runTask = CreateRunner().RunAsync(CreateRequest(session, cancellationToken: cts.Token));
+
+        await cts.CancelAsync();
+
+        var result = await runTask.WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.WasCancelled.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
 
     [Fact]
     public async Task RunAsync_WhenSendThrowsCancellation_ShouldUnsubscribeBeforeDisposingIndicator()
@@ -75,7 +99,7 @@ public class CopilotTurnRunnerTests
             session.Emit(delta);
             session.Emit(delta);
             session.Emit(CreateIdle());
-            return Task.CompletedTask;
+            return Task.FromResult("message-id");
         };
 
         var result = await CreateRunner().RunAsync(CreateRequest(session, writeAiResponse: text => output.Append(text)));
@@ -94,7 +118,7 @@ public class CopilotTurnRunnerTests
             session.Emit(CreateDelta("first", "message-1"));
             session.Emit(CreateDelta("second", "message-2"));
             session.Emit(CreateIdle());
-            return Task.CompletedTask;
+            return Task.FromResult("message-id");
         };
 
         var result = await CreateRunner().RunAsync(CreateRequest(session));
@@ -120,7 +144,7 @@ public class CopilotTurnRunnerTests
                 }
             });
             session.Emit(CreateIdle());
-            return Task.CompletedTask;
+            return Task.FromResult("message-id");
         };
 
         var result = await CreateRunner().RunAsync(CreateRequest(
@@ -147,7 +171,7 @@ public class CopilotTurnRunnerTests
                     Message = "boom"
                 }
             });
-            return Task.CompletedTask;
+            return Task.FromResult("message-id");
         };
 
         var result = await CreateRunner().RunAsync(CreateRequest(
@@ -203,21 +227,29 @@ public class CopilotTurnRunnerTests
 
     private sealed class FakeTurnSession : ICopilotTurnSession
     {
-        private SessionEventHandler? _handler;
+        private Action<SessionEvent>? _handler;
 
         public bool HasActiveSubscription => _handler != null;
 
-        public Func<MessageOptions, CancellationToken, Task> SendAsyncHandler { get; set; }
-            = (_, _) => Task.CompletedTask;
+        public Func<MessageOptions, CancellationToken, Task<string>> SendAsyncHandler { get; set; }
+            = (_, _) => Task.FromResult("message-id");
 
-        public IDisposable On(SessionEventHandler handler)
+        public int AbortCallCount { get; private set; }
+
+        public IDisposable On(Action<SessionEvent> handler)
         {
             _handler = handler;
             return new DelegateDisposable(() => _handler = null);
         }
 
-        public Task SendAsync(MessageOptions options, CancellationToken cancellationToken)
+        public Task<string> SendAsync(MessageOptions options, CancellationToken cancellationToken)
             => SendAsyncHandler(options, cancellationToken);
+
+        public Task AbortAsync(CancellationToken cancellationToken)
+        {
+            AbortCallCount++;
+            return Task.CompletedTask;
+        }
 
         public void Emit(SessionEvent evt) => _handler?.Invoke(evt);
     }

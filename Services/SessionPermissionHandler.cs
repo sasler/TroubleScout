@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.UI;
 
 namespace TroubleScout.Services;
@@ -258,7 +258,7 @@ internal sealed class SessionPermissionHandler
             return Approved();
         }
 
-        if (McpReadOnlyHeuristic.IsReadOnlyToolName(toolName))
+        if (request is PermissionRequestMcp { ReadOnly: true } || McpReadOnlyHeuristic.IsReadOnlyToolName(toolName))
         {
             return Approved();
         }

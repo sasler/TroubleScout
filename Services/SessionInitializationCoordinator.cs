@@ -1,4 +1,4 @@
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.UI;
 
 namespace TroubleScout.Services;
@@ -112,10 +112,10 @@ internal static class SessionInitializationCoordinator
             copilotInitializationStarted = true;
 
             var cliPath = CopilotCliResolver.TryResolvePreferredCopilotCliPath();
-            var clientOptions = new CopilotClientOptions { LogLevel = "info" };
+            var clientOptions = new CopilotClientOptions { LogLevel = CopilotLogLevel.Info };
             if (!string.IsNullOrWhiteSpace(cliPath))
             {
-                clientOptions.CliPath = cliPath;
+                clientOptions.Connection = RuntimeConnection.ForStdio(path: cliPath);
             }
 
             var copilotClient = new CopilotClient(clientOptions);

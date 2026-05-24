@@ -1,6 +1,6 @@
 using System.Reflection;
 using System.Text;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Spectre.Console;
 using TroubleScout.UI;
 
@@ -8,16 +8,20 @@ namespace TroubleScout.Services;
 
 internal interface ICopilotTurnSession
 {
-    IDisposable On(SessionEventHandler handler);
-    Task SendAsync(MessageOptions options, CancellationToken cancellationToken);
+    IDisposable On(Action<SessionEvent> handler);
+    Task<string> SendAsync(MessageOptions options, CancellationToken cancellationToken);
+    Task AbortAsync(CancellationToken cancellationToken);
 }
 
 internal sealed class CopilotTurnSessionAdapter(CopilotSession session) : ICopilotTurnSession
 {
-    public IDisposable On(SessionEventHandler handler) => session.On(handler);
+    public IDisposable On(Action<SessionEvent> handler) => session.On<SessionEvent>(handler);
 
-    public Task SendAsync(MessageOptions options, CancellationToken cancellationToken)
+    public Task<string> SendAsync(MessageOptions options, CancellationToken cancellationToken)
         => session.SendAsync(options, cancellationToken);
+
+    public Task AbortAsync(CancellationToken cancellationToken)
+        => session.AbortAsync(cancellationToken);
 }
 
 internal interface ITurnThinkingIndicator : IDisposable
@@ -91,6 +95,7 @@ internal sealed class CopilotTurnRunner
         var processedDeltaIds = new HashSet<string>();
         var responseBuffer = new StringBuilder();
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
+        Task? abortTask = null;
 
         try
         {
@@ -98,6 +103,7 @@ internal sealed class CopilotTurnRunner
             {
                 wasCancelled = true;
                 watchdogCts?.Cancel();
+                abortTask = AbortActiveTurnAsync();
                 done.TrySetResult(false);
             });
 
@@ -284,6 +290,7 @@ internal sealed class CopilotTurnRunner
 
             await request.Session.SendAsync(new MessageOptions { Prompt = request.Prompt }, request.CancellationToken);
             await done.Task;
+            await AwaitAbortIfNeededAsync();
             await StopWatchdogAsync();
 
             subscription.Dispose();
@@ -312,6 +319,7 @@ internal sealed class CopilotTurnRunner
         catch (OperationCanceledException)
         {
             wasCancelled = true;
+            await AwaitAbortIfNeededAsync();
             await StopWatchdogAsync();
             subscription?.Dispose();
             subscription = null;
@@ -345,6 +353,27 @@ internal sealed class CopilotTurnRunner
             watchdogCts?.Dispose();
             watchdogCts = null;
             watchdogTask = null;
+        }
+
+        async Task AbortActiveTurnAsync()
+        {
+            try
+            {
+                await request.Session.AbortAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // Cancellation should not surface a secondary abort failure to the user.
+            }
+        }
+
+        async Task AwaitAbortIfNeededAsync()
+        {
+            var pendingAbort = abortTask;
+            if (pendingAbort != null)
+            {
+                await pendingAbort;
+            }
         }
     }
 

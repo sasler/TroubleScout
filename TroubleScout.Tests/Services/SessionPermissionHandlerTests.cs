@@ -1,5 +1,5 @@
 using FluentAssertions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout.Services;
 using TroubleScout.UI;
 using Xunit;
@@ -67,6 +67,29 @@ public class SessionPermissionHandlerTests
             });
 
         var result = await handler.HandleAsync(new PermissionRequest { Kind = "write" }, new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task HandleAsync_CustomToolV1Kind_ShouldAutoApproveWithoutOuterPrompt()
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptCommandApproval: (_, _, _) =>
+        {
+            promptCount++;
+            return ApprovalResult.Denied;
+        });
+
+        var result = await handler.HandleAsync(
+            new PermissionRequestCustomTool
+            {
+                Kind = "custom_tool",
+                ToolName = "run_powershell",
+                ToolDescription = "Run a PowerShell diagnostic command"
+            },
+            new PermissionInvocation());
 
         result.Kind.Should().Be(PermissionRequestResultKind.Approved);
         promptCount.Should().Be(0);
@@ -155,6 +178,24 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_McpReadOnlyMetadata_ShouldAutoApproveNonHeuristicToolName()
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptMcpApproval: (_, _, _, _) =>
+        {
+            promptCount++;
+            return McpApprovalResult.Deny;
+        });
+
+        var readOnly = await handler.HandleAsync(
+            CreateMcpPermissionRequest("inventory", "fetchAssetInventory", "{}", readOnly: true),
+            new PermissionInvocation());
+
+        readOnly.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(0);
+    }
+
+    [Fact]
     public void SeedPersistedMcpApprovals_ShouldOnlySeedMappedRolesAndClearSeededApprovals()
     {
         WithTemporarySettingsPath(_ =>
@@ -214,7 +255,7 @@ public class SessionPermissionHandlerTests
         };
     }
 
-    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string? toolName, object? args)
+    private static PermissionRequestMcp CreateMcpPermissionRequest(string serverName, string? toolName, object? args, bool readOnly = false)
     {
         return new PermissionRequestMcp
         {
@@ -223,7 +264,7 @@ public class SessionPermissionHandlerTests
             ToolName = toolName ?? string.Empty,
             ToolTitle = toolName ?? string.Empty,
             Args = args,
-            ReadOnly = true
+            ReadOnly = readOnly
         };
     }
 

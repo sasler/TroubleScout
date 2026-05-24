@@ -1,6 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using TroubleScout;
 using TroubleScout.Services;
 using Xunit;

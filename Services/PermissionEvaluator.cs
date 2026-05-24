@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 namespace TroubleScout.Services;
 
@@ -147,6 +147,7 @@ internal static class PermissionEvaluator
             "file-read" => "read",
             "file-write" => "write",
             "url-fetch" => "url",
+            "custom_tool" => "custom-tool",
             _ => normalized
         };
     }
