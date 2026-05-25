@@ -6,6 +6,7 @@ using Xunit;
 
 namespace TroubleScout.Tests.Services;
 
+#pragma warning disable CS0618 // Test fixtures exercise child event attribution exposed by the SDK.
 public class CopilotTurnRunnerTests
 {
     [Theory]
@@ -262,6 +263,39 @@ public class CopilotTurnRunnerTests
             && message.Contains("2", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task RunAsync_SubagentMessage_ShouldAuditWithoutRenderingIntoRootResponse()
+    {
+        var output = new StringBuilder();
+        var captured = new List<(string Parent, string Text)>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantMessageDeltaEvent
+            {
+                Id = Guid.NewGuid(),
+                Data = new AssistantMessageDeltaData
+                {
+                    MessageId = "child-message",
+                    ParentToolCallId = "sub-1",
+                    DeltaContent = "delegated finding"
+                }
+            });
+            session.Emit(CreateDelta("root reply", "root-message"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeAiResponse: text => output.Append(text),
+            recordSubagentMessageDelta: (parent, text) => captured.Add((parent, text))));
+
+        result.ResponseText.Should().Be("root reply");
+        output.ToString().Should().Be("root reply");
+        captured.Should().ContainSingle().Which.Should().Be(("sub-1", "delegated finding"));
+    }
+
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
         {
@@ -288,6 +322,7 @@ public class CopilotTurnRunnerTests
         Action<string>? writeReasoningText = null,
         Action<string, string>? showError = null,
         Action<string>? showLiveStatusNotice = null,
+        Action<string, string>? recordSubagentMessageDelta = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
         => new()
         {
@@ -301,7 +336,8 @@ public class CopilotTurnRunnerTests
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
                 ShowError = showError ?? ((_, _) => { }),
-                ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { })
+                ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
+                RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { })
             }
         };
 
@@ -350,3 +386,4 @@ public class CopilotTurnRunnerTests
         public void Dispose() => dispose();
     }
 }
+#pragma warning restore CS0618

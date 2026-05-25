@@ -174,8 +174,8 @@ A short reference is shown below. The full per-command documentation lives in
 | `/mcp-role` | Configure monitoring and ticketing MCP role mappings. |
 | `/model` | Choose another model or provider. |
 | `/reasoning [auto or effort]` | Set reasoning effort for the current model when supported. |
-| `/mode <strict or auto>` | Change the PowerShell execution mode. `auto` reviews only unknown read-only command candidates with the configured approval subagent. |
-| `/agent-model [role] [model or inherit]` | Select cheaper active-provider models for delegated evidence, research, MCP-role, and approval work. |
+| `/mode <strict or auto>` | Change the PowerShell execution mode. `auto` reviews only unknown read-only command candidates in a no-tools safety session using the selected subagent model. |
+| `/agent-model [model or inherit]` | Select the active-provider model for delegated investigation and Auto safety review. |
 | `/server server1 [server2 ...]` | Connect to one or more additional servers, using spaces or commas. |
 | `/jea [server] [configurationName]` | Connect to a JEA constrained endpoint. |
 | `/login` | Run GitHub Copilot login inside TroubleScout. |
@@ -291,7 +291,7 @@ the app with `/settings`, which reloads after you save.
 | `ByokOpenAiApiKey` | string | Plain API key (only when DPAPI encryption is unavailable). Avoid hand-editing. |
 | `ByokOpenAiApiKeyEncrypted` | string | DPAPI-encrypted API key, set automatically by `/byok`. |
 | `SafeCommands` | string[] | PowerShell command patterns proven read-only in Strict and Auto modes (defaults include `Get-*`, `Select-*`, `Sort-*`, `Where-*`, `Measure-*`, and output-only `Format-*` commands). Replace, don't append. |
-| `AgentModelProfiles` | object | Per-provider (`github`/`byok`) role model overrides for `evidence`, `research`, `monitoring`, `ticketing`, and `approval`. |
+| `AgentModelProfiles` | object | Per-provider (`github`/`byok`) selected `subagent` model for delegated investigation and Auto safety review. |
 | `GitHubBillingDisplayMode` | string | `ai-credits` or `premium-requests-legacy`; unset profiles default to AI Credits on and after June 1, 2026. |
 | `SystemPromptOverrides` | object<string, string> | Replace specific system-prompt sections by key. |
 | `SystemPromptAppend` | string | Free-form text appended to the end of the system prompt. |

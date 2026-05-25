@@ -137,10 +137,10 @@ public partial class TroubleshootingSession : IAsyncDisposable
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
         if (_executionMode == ExecutionMode.Auto
-            && !AppSettingsStore.GetAgentModelsForProvider(settings, useByokOpenAi).ContainsKey("approval"))
+            && !AppSettingsStore.GetAgentModelsForProvider(settings, useByokOpenAi).ContainsKey(AppSettingsStore.SubagentModelRole))
         {
             _executionMode = ExecutionMode.Strict;
-            ConsoleUI.ShowWarning("Auto mode requires an explicit approval subagent model for the active provider. Starting in strict mode; configure one with /agent-model approval <model>.");
+            ConsoleUI.ShowWarning("Auto mode requires an explicit subagent model for the active provider. Starting in strict mode; configure one with /agent-model <model>.");
         }
         _autoCommandApprovalEvaluator = new DelegateAutoCommandApprovalEvaluator(EvaluateUnknownCommandAsync);
         _permissionHandler = new SessionPermissionHandler(

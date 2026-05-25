@@ -50,7 +50,7 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(config);
 
         config.Mode.Should().Be(SystemMessageMode.Customize);
-        content.Should().Contain("Delegate high-volume server evidence collection");
+        content.Should().Contain("Delegate high-volume evidence and supporting research");
         content.Should().Contain("Constrain log/event time ranges");
     }
 
@@ -123,10 +123,7 @@ public class SystemPromptTests : IDisposable
 
         content.Should().Contain("Monitoring MCP server: zabbix");
         content.Should().Contain("Ticketing MCP server: redmine");
-        content.Should().Contain("Delegate targeted server diagnostic evidence collection to the server-evidence-collector sub-agent.");
-        content.Should().Contain("Delegate monitoring lookups to the monitoring-focused sub-agent");
-        content.Should().Contain("Delegate ticket history lookups to the ticket-focused sub-agent");
-        content.Should().Contain("Delegate external issue and remediation research to the issue-researcher sub-agent");
+        content.Should().Contain("Delegate targeted diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
     }
 
     [Fact]
@@ -142,9 +139,8 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("Ticketing MCP server: redmine");
-        content.Should().Contain("Delegate ticket history lookups to the ticket-focused sub-agent");
+        content.Should().Contain("Delegate targeted diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
         content.Should().NotContain("Monitoring MCP server:");
-        content.Should().NotContain("Delegate monitoring lookups to the monitoring-focused sub-agent");
     }
 
     [Fact]

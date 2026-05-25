@@ -136,11 +136,11 @@ public class SlashCommandDispatcherTests
         dispatcher.Dispatch("/mode auto");
 
         setCalls.Should().Be(0);
-        warnings.Should().Contain(message => message.Contains("/agent-model approval", StringComparison.Ordinal));
+        warnings.Should().Contain(message => message.Contains("/agent-model <model>", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task DispatchAsync_WithAgentModel_ShouldPersistActiveProviderModelAndRecreateSession()
+    public async Task DispatchAsync_WithAgentModel_ShouldPersistUnifiedSubagentModelAndRecreateSession()
     {
         (string Role, string? Model)? saved = null;
         var recreateCalls = 0;
@@ -157,10 +157,10 @@ public class SlashCommandDispatcherTests
             }
         });
 
-        var result = await dispatcher.DispatchAsync("/agent-model evidence gpt-5-mini");
+        var result = await dispatcher.DispatchAsync("/agent-model gpt-5-mini");
 
         result.Handled.Should().BeTrue();
-        saved.Should().Be(("evidence", "gpt-5-mini"));
+        saved.Should().Be(("subagent", "gpt-5-mini"));
         recreateCalls.Should().Be(1);
     }
 

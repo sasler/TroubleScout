@@ -248,7 +248,7 @@ public sealed class SessionTranscriptServiceTests : IDisposable
         transcript.Prompts[0].Actions[0].Command.Should().Be("Get-Service");
         transcript.Prompts[0].StatusBar!.Model.Should().Be("gpt-5");
         transcript.Summary!.CurrentModel.Should().Be("gpt-5");
-        transcript.Summary.AgentModels.Should().ContainKey("evidence").WhoseValue.Should().Be("gpt-4.1");
+        transcript.Summary.AgentModels.Should().ContainKey("subagent").WhoseValue.Should().Be("gpt-4.1");
         transcript.Summary.GitHubBillingDisplayMode.Should().Be("ai-credits");
         transcript.Summary.SubagentCalls.Should().Be(2);
         transcript.Summary.SubagentTokens.Should().Be(44);
@@ -290,7 +290,7 @@ public sealed class SessionTranscriptServiceTests : IDisposable
             ExecutionMode: "Strict",
             TargetServer: "localhost")
         {
-            AgentModels = new Dictionary<string, string> { ["evidence"] = "gpt-4.1" },
+            AgentModels = new Dictionary<string, string> { ["subagent"] = "gpt-4.1" },
             GitHubBillingDisplayMode = "ai-credits",
             SubagentCalls = 2,
             SubagentTokens = 44

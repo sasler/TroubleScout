@@ -81,7 +81,7 @@ internal static class SettingsWorkflowService
 
         if (string.IsNullOrWhiteSpace(model))
         {
-            models.Remove(role);
+            models.Remove(AppSettingsStore.SubagentModelRole);
             if (models.Count == 0)
             {
                 settings.AgentModelProfiles.Remove(provider);
@@ -89,7 +89,8 @@ internal static class SettingsWorkflowService
         }
         else
         {
-            models[role] = model.Trim();
+            models.Clear();
+            models[AppSettingsStore.SubagentModelRole] = model.Trim();
         }
 
         AppSettingsStore.Save(settings);

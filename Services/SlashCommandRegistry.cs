@@ -47,12 +47,12 @@ internal static class SlashCommandRegistry
         new(Diagnostics, "/mode <strict|auto>", "Set the PowerShell execution mode for the current session.", ["/mode"],
             [
                 "- `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.",
-                "- `auto`: unknown command candidates can be evaluated by the configured approval subagent; known mutations still require approval."
+                "- `auto`: unknown command candidates can be evaluated in a no-tools safety session using the selected subagent model; known mutations still require approval."
             ]),
 
         new(Configuration, "/model", "Choose another AI model and session handoff mode interactively.", ["/model"]),
-        new(Configuration, "/agent-model [role] [model|inherit]", "Configure per-provider models for evidence, research, monitoring, ticketing, and approval subagents.", ["/agent-model"],
-            ["The `approval` role must have an explicit model before `/mode auto` can be enabled."]),
+        new(Configuration, "/agent-model [model|inherit]", "Configure the active-provider model used for delegated investigation and Auto safety review.", ["/agent-model"],
+            ["An explicit subagent model must be selected before `/mode auto` can be enabled."]),
         new(Configuration, "/reasoning [auto|<effort>]", "Set the reasoning effort for the current model when supported.", ["/reasoning"],
             ["With no argument, prompts interactively."]),
         new(Configuration, "/settings", "Open `settings.json` in the default editor, then reload prompt and safety configuration after the editor exits.", ["/settings"]),

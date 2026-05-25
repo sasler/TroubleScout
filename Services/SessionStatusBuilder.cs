@@ -65,6 +65,7 @@ internal static class SessionStatusBuilder
         fields.Add((ConsoleUI.StatusSectionSeparator, "Provider"));
         fields.Add(("Provider", snapshot.ActiveProviderDisplayName ?? "default"));
         fields.Add(("Auth mode", snapshot.UseByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
+        fields.Add(("Subagent model", snapshot.AgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var subagentModel) ? subagentModel : "inherit"));
         fields.Add(("GitHub auth", snapshot.IsGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(snapshot.ByokApiKey) && LooksLikeUrl(snapshot.ByokBaseUrl) ? "Configured" : "Not configured"));
         if (!string.IsNullOrWhiteSpace(snapshot.ReasoningDisplay))
@@ -120,8 +121,7 @@ internal static class SessionStatusBuilder
             || !string.IsNullOrWhiteSpace(snapshot.ConfiguredTicketingMcpServer)
             || snapshot.ConfiguredSkills.Any(v => !string.IsNullOrWhiteSpace(v))
             || snapshot.RuntimeSkills.Count > 0
-            || snapshot.ConfigurationWarnings.Count > 0
-            || snapshot.AgentModels.Count > 0;
+            || snapshot.ConfigurationWarnings.Count > 0;
 
         if (hasMcpOrSkills)
         {
@@ -139,11 +139,6 @@ internal static class SessionStatusBuilder
         }
         AddCapabilityField(fields, "Skills configured", snapshot.ConfiguredSkills);
         AddCapabilityField(fields, "Skills used", snapshot.RuntimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-        if (snapshot.AgentModels.Count > 0)
-        {
-            fields.Add(("Agent models", string.Join(", ", snapshot.AgentModels.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key}={entry.Value}"))));
-        }
-
         if (snapshot.ConfigurationWarnings.Count > 0)
         {
             fields.Add(("Capability warnings", string.Join(" | ", snapshot.ConfigurationWarnings)));

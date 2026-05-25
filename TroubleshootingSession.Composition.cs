@@ -242,7 +242,7 @@ public partial class TroubleshootingSession
     private async Task<AutoCommandApprovalDecision?> EvaluateUnknownCommandAsync(string command, CancellationToken cancellationToken)
     {
         var models = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi);
-        if (_copilotClient == null || !models.TryGetValue("approval", out var approvalModel) || string.IsNullOrWhiteSpace(approvalModel))
+        if (_copilotClient == null || !models.TryGetValue(AppSettingsStore.SubagentModelRole, out var approvalModel) || string.IsNullOrWhiteSpace(approvalModel))
         {
             return null;
         }
@@ -412,7 +412,7 @@ public partial class TroubleshootingSession
             GetExecutionMode = () => _executionMode,
             SetExecutionMode = SetExecutionMode,
             SetConsoleExecutionMode = ConsoleUI.SetExecutionMode,
-            CanEnableAutoMode = () => AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi).ContainsKey("approval"),
+            CanEnableAutoMode = () => AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi).ContainsKey(AppSettingsStore.SubagentModelRole),
             GetTheme = () => ConsoleUI.CurrentTheme,
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = SettingsWorkflowService.PersistThemeSetting,

@@ -105,7 +105,7 @@ Set the PowerShell execution mode for the current session.
 
 - `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.
 
-- `auto`: unknown command candidates can be evaluated by the configured approval subagent; known mutations still require approval.
+- `auto`: unknown command candidates can be evaluated in a no-tools safety session using the selected subagent model; known mutations still require approval.
 
 ## Configuration
 
@@ -113,11 +113,11 @@ Set the PowerShell execution mode for the current session.
 
 Choose another AI model and session handoff mode interactively.
 
-### `/agent-model [role] [model|inherit]`
+### `/agent-model [model|inherit]`
 
-Configure per-provider models for evidence, research, monitoring, ticketing, and approval subagents.
+Configure the active-provider model used for delegated investigation and Auto safety review.
 
-The `approval` role must have an explicit model before `/mode auto` can be enabled.
+An explicit subagent model must be selected before `/mode auto` can be enabled.
 
 ### `/reasoning [auto|<effort>]`
 

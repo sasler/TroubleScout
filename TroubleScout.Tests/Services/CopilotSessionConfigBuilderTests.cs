@@ -15,7 +15,7 @@ public class CopilotSessionConfigBuilderTests
         config.Model.Should().Be("gpt-4.1");
         config.ClientName.Should().Be("TroubleScout");
         config.Streaming.Should().BeTrue();
-        config.IncludeSubAgentStreamingEvents.Should().BeFalse();
+        config.IncludeSubAgentStreamingEvents.Should().BeTrue();
         config.OnEvent.Should().NotBeNull();
         config.OnPermissionRequest.Should().NotBeNull();
         config.DefaultAgent.Should().NotBeNull();
@@ -35,39 +35,33 @@ public class CopilotSessionConfigBuilderTests
     }
 
     [Fact]
-    public void Build_ShouldConfigureFoundationSubagents()
+    public void Build_ShouldConfigureSingleDelegatedTroubleshootingSubagent()
     {
         var config = CopilotSessionConfigBuilder.Build(CreateOptions());
 
         config.CustomAgents.Should().NotBeNull();
-        config.CustomAgents.Should().Contain(agent => agent.Name == "server-evidence-collector"
+        config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent"
             && agent.Infer == true
-            && string.Equals(agent.DisplayName, "Server Evidence Collector", StringComparison.Ordinal));
-        var evidenceCollector = config.CustomAgents!.Single(agent => agent.Name == "server-evidence-collector");
-        evidenceCollector.Tools.Should().Contain(["get_system_info", "get_event_logs", "run_powershell"]);
-
-        var issueResearcher = config.CustomAgents!.Single(agent => agent.Name == "issue-researcher");
-        issueResearcher.Infer.Should().BeTrue();
-        issueResearcher.Tools.Should().Equal("web_search");
+            && string.Equals(agent.DisplayName, "Troubleshooting Subagent", StringComparison.Ordinal));
+        var subagent = config.CustomAgents!.Single();
+        subagent.Tools.Should().Contain(["get_system_info", "get_event_logs", "run_powershell", "web_search"]);
     }
 
     [Fact]
-    public void Build_WithRoleModelOverrides_ShouldApplyModelsToMatchingAgents()
+    public void Build_WithSubagentModelOverride_ShouldApplyModelToDelegatedAgent()
     {
         var config = CopilotSessionConfigBuilder.Build(CreateOptions(
             agentModels: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                ["evidence"] = "gpt-5-mini",
-                ["research"] = "gpt-4.1"
+                ["subagent"] = "gpt-5-mini"
             }));
 
-        var agents = config.CustomAgents!;
-        agents.Single(agent => agent.Name == "server-evidence-collector").Model.Should().Be("gpt-5-mini");
-        agents.Single(agent => agent.Name == "issue-researcher").Model.Should().Be("gpt-4.1");
+        config.CustomAgents!.Should().ContainSingle()
+            .Which.Model.Should().Be("gpt-5-mini");
     }
 
     [Fact]
-    public void Build_WhenMonitoringAndTicketingRolesConfigured_ShouldAddRoleScopedAgents()
+    public void Build_WhenMonitoringAndTicketingRolesConfigured_ShouldGrantMappedServersToSingleSubagent()
     {
         var mcpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase)
         {
@@ -80,14 +74,9 @@ public class CopilotSessionConfigBuilderTests
             monitoringMcpServer: "zabbix",
             ticketingMcpServer: "redmine"));
 
-        var customAgents = config.CustomAgents!;
-        var monitoringAgent = customAgents.Single(agent => agent.Name == "monitoring-investigator");
-        monitoringAgent.McpServers.Should().NotBeNull();
-        monitoringAgent.McpServers!.Keys.Should().Equal("zabbix");
-
-        var ticketingAgent = customAgents.Single(agent => agent.Name == "ticket-investigator");
-        ticketingAgent.McpServers.Should().NotBeNull();
-        ticketingAgent.McpServers!.Keys.Should().Equal("redmine");
+        var subagent = config.CustomAgents!.Should().ContainSingle().Which;
+        subagent.McpServers.Should().NotBeNull();
+        subagent.McpServers!.Keys.Should().BeEquivalentTo("zabbix", "redmine");
     }
 
     [Fact]
@@ -101,7 +90,7 @@ public class CopilotSessionConfigBuilderTests
 
         warnings.Should().ContainSingle()
             .Which.Should().Be("Monitoring MCP 'missing-zabbix' is not available in the current MCP configuration.");
-        config.CustomAgents.Should().NotContain(agent => agent.Name == "monitoring-investigator");
+        config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent");
     }
 
     private static CopilotSessionConfigOptions CreateOptions(

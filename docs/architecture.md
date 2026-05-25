@@ -90,7 +90,7 @@ Proven read-only commands (`Get-*` and output-shaping pipelines) auto-execute vi
 (`get_*`, `list_*`, `search_*`, `find_*`, `describe_*`, `read_*`, `query_*`,
 `inspect_*`) auto-execute via `McpReadOnlyHeuristic`. In `auto` mode, only
 parseable PowerShell commands that remain unknown after deterministic
-classification can be checked by the configured no-tools approval subagent.
+classification can be checked in a no-tools safety session using the selected subagent model.
 Sensitive commands such
 as `Get-Credential` and `Get-Secret` are blocked outright.
 

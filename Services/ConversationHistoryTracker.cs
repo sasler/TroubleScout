@@ -12,6 +12,8 @@ internal sealed class ConversationHistoryTracker
     private int _lastPromptIndex = -1;
     private readonly Dictionary<string, McpActionLocation> _pendingMcpActions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, McpActionLocation> _pendingSubagentActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, McpActionLocation> _pendingSubagentToolActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _subagentReturnedFindings = new(StringComparer.Ordinal);
 
     private readonly record struct McpActionLocation(int PromptIndex, int ActionIndex);
 
@@ -212,6 +214,117 @@ internal sealed class ConversationHistoryTracker
             success: false,
             error: failed.Data?.Error);
 
+    internal void RecordSubagentToolAction(ToolExecutionStartEvent toolStart)
+    {
+        var data = toolStart.Data;
+        var parentToolCallId = ReadStringProperty(data, "ParentToolCallId");
+        if (data == null || string.IsNullOrWhiteSpace(parentToolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentActions.TryGetValue(parentToolCallId, out var parentLocation)
+                || parentLocation.PromptIndex < 0
+                || parentLocation.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var parentActions = _reportPrompts[parentLocation.PromptIndex].Actions;
+            if (parentLocation.ActionIndex < 0 || parentLocation.ActionIndex >= parentActions.Count)
+            {
+                return;
+            }
+
+            var parent = parentActions[parentLocation.ActionIndex];
+            var toolCallId = data.ToolCallId;
+            var mcpServerName = ReadStringProperty(data, "McpServerName", "MCPServerName", "ServerName");
+            parentActions.Add(new ReportActionEntry(
+                DateTimeOffset.Now,
+                string.IsNullOrWhiteSpace(mcpServerName) ? parent.Target : mcpServerName,
+                data.ToolName ?? data.McpToolName ?? "unknown-tool",
+                string.Empty,
+                "Delegated",
+                "Subagent Tool")
+            {
+                Arguments = FormatArgumentsForReport(data.Arguments),
+                ToolCallId = toolCallId
+            });
+
+            if (!string.IsNullOrWhiteSpace(toolCallId))
+            {
+                _pendingSubagentToolActions[toolCallId] = new McpActionLocation(parentLocation.PromptIndex, parentActions.Count - 1);
+            }
+        }
+    }
+
+    internal void RecordSubagentToolComplete(ToolExecutionCompleteEvent toolComplete)
+    {
+        var data = toolComplete.Data;
+        if (data == null || string.IsNullOrWhiteSpace(data.ToolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentToolActions.Remove(data.ToolCallId, out var location)
+                || location.PromptIndex < 0
+                || location.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var actions = _reportPrompts[location.PromptIndex].Actions;
+            if (location.ActionIndex < 0 || location.ActionIndex >= actions.Count)
+            {
+                return;
+            }
+
+            var existing = actions[location.ActionIndex];
+            actions[location.ActionIndex] = existing with
+            {
+                Output = ExtractOutput(data) ?? string.Empty,
+                Success = data.Success,
+                SafetyApproval = data.Success ? "Delegated" : "Failed"
+            };
+        }
+    }
+
+    internal void RecordSubagentMessageDelta(string parentToolCallId, string content)
+    {
+        if (string.IsNullOrWhiteSpace(parentToolCallId) || string.IsNullOrEmpty(content))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            _subagentReturnedFindings[parentToolCallId] =
+                _subagentReturnedFindings.TryGetValue(parentToolCallId, out var current)
+                    ? current + content
+                    : content;
+        }
+    }
+
+    internal void RecordSubagentMessage(string parentToolCallId, string content)
+    {
+        if (string.IsNullOrWhiteSpace(parentToolCallId) || string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_subagentReturnedFindings.ContainsKey(parentToolCallId))
+            {
+                _subagentReturnedFindings[parentToolCallId] = content;
+            }
+        }
+    }
+
     internal void ClearRecordedConversationHistory()
     {
         lock (_reportLock)
@@ -220,6 +333,8 @@ internal sealed class ConversationHistoryTracker
             _lastPromptIndex = -1;
             _pendingMcpActions.Clear();
             _pendingSubagentActions.Clear();
+            _pendingSubagentToolActions.Clear();
+            _subagentReturnedFindings.Clear();
         }
     }
 
@@ -232,6 +347,8 @@ internal sealed class ConversationHistoryTracker
             _lastPromptIndex = _reportPrompts.Count - 1;
             _pendingMcpActions.Clear();
             _pendingSubagentActions.Clear();
+            _pendingSubagentToolActions.Clear();
+            _subagentReturnedFindings.Clear();
         }
     }
 
@@ -281,7 +398,7 @@ internal sealed class ConversationHistoryTracker
 
         lock (_reportLock)
         {
-            if (!_pendingSubagentActions.Remove(toolCallId, out var location)
+            if (!_pendingSubagentActions.TryGetValue(toolCallId, out var location)
                 || location.PromptIndex < 0
                 || location.PromptIndex >= _reportPrompts.Count)
             {
@@ -309,12 +426,35 @@ internal sealed class ConversationHistoryTracker
             }
 
             var current = actions[location.ActionIndex];
+            if (!string.IsNullOrWhiteSpace(current.Output))
+            {
+                parts.Insert(0, current.Output);
+            }
+
             actions[location.ActionIndex] = current with
             {
                 Output = string.Join(", ", parts),
                 SafetyApproval = success ? "Delegated" : "Failed",
                 Success = success
             };
+
+            if (_subagentReturnedFindings.Remove(toolCallId, out var returnedFindings)
+                && !string.IsNullOrWhiteSpace(returnedFindings))
+            {
+                actions.Add(new ReportActionEntry(
+                    DateTimeOffset.Now,
+                    current.Target,
+                    "Returned findings",
+                    returnedFindings.Trim(),
+                    success ? "Delegated" : "Failed",
+                    "Subagent Result")
+                {
+                    Success = success,
+                    ToolCallId = toolCallId
+                });
+            }
+
+            _pendingSubagentActions.Remove(toolCallId);
         }
     }
 

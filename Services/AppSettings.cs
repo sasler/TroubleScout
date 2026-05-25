@@ -29,7 +29,7 @@ public static class AppSettingsStore
     internal const string ByokProviderProfile = "byok";
     internal const string AiCreditsBillingMode = "ai-credits";
     internal const string LegacyPremiumRequestsBillingMode = "premium-requests-legacy";
-    internal static readonly string[] SupportedAgentRoles = ["evidence", "research", "monitoring", "ticketing", "approval"];
+    internal const string SubagentModelRole = "subagent";
     private static string? _settingsPath;
     internal static readonly string[] DefaultSafeCommands =
     [
@@ -111,7 +111,7 @@ public static class AppSettingsStore
         - Only read-only Get-* commands execute automatically
         - Proven read-only diagnostic tools execute automatically in all modes
         - In Strict mode, mutations and unknown commands require user confirmation
-        - In Auto mode, only parseable commands not classified deterministically may be reviewed by the configured approval sub-agent; mutations still require user confirmation
+        - In Auto mode, only parseable commands not classified deterministically may be reviewed by the configured subagent model; mutations still require user confirmation
         - For ANY mutating task, you MUST call the run_powershell tool with the exact command
         - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
         - Never claim a command was executed unless run_powershell returned execution output
@@ -502,20 +502,21 @@ public static class AppSettingsStore
                 continue;
             }
 
-            var roles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in profile.Value)
-            {
-                var role = entry.Key.Trim().ToLowerInvariant();
-                var model = NormalizeOptionalValue(entry.Value);
-                if (SupportedAgentRoles.Contains(role, StringComparer.OrdinalIgnoreCase) && model != null)
-                {
-                    roles[role] = model;
-                }
-            }
+            var configuredModels = profile.Value
+                .Where(entry => NormalizeOptionalValue(entry.Value) != null)
+                .ToDictionary(entry => entry.Key.Trim().ToLowerInvariant(), entry => entry.Value.Trim(), StringComparer.OrdinalIgnoreCase);
+            var subagentModel = configuredModels.TryGetValue(SubagentModelRole, out var selectedModel)
+                ? selectedModel
+                : new[] { "approval", "evidence", "research", "monitoring", "ticketing" }
+                    .Select(role => configuredModels.TryGetValue(role, out var legacyModel) ? legacyModel : null)
+                    .FirstOrDefault(model => model != null);
 
-            if (roles.Count > 0)
+            if (!string.IsNullOrWhiteSpace(subagentModel))
             {
-                normalized[provider] = roles;
+                normalized[provider] = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [SubagentModelRole] = subagentModel
+                };
             }
         }
 

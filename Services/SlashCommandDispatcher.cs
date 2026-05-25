@@ -768,76 +768,55 @@ internal sealed class SlashCommandDispatcher
 
     private async Task HandleAgentModelCommandAsync(string input)
     {
-        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-        var role = parts.Length > 1 ? parts[1].Trim().ToLowerInvariant() : null;
-        if (string.IsNullOrWhiteSpace(role))
+        var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        var selectedModel = parts.Length > 1 ? parts[1].Trim() : null;
+        if (string.IsNullOrWhiteSpace(selectedModel))
         {
             var configured = _handlers.GetAgentModelOverrides();
-            _handlers.ShowInfo($"Agent model profile: {(_handlers.UseByokOpenAi() ? "byok" : "github")}");
-            foreach (var supportedRole in AppSettingsStore.SupportedAgentRoles)
+            _handlers.ShowInfo(
+                $"Subagent model ({(_handlers.UseByokOpenAi() ? "byok" : "github")}): " +
+                (configured.TryGetValue(AppSettingsStore.SubagentModelRole, out var value) ? value : "inherit"));
+            await _handlers.RefreshAvailableModels();
+            var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+            var choices = _handlers.GetModelSelectionEntries().Where(entry => entry.Source == activeSource).ToList();
+            if (choices.Count == 0)
             {
-                _handlers.ShowInfo($"  {supportedRole}: {(configured.TryGetValue(supportedRole, out var value) ? value : "inherit")}");
+                _handlers.ShowWarning("No models are available for the active provider.");
+                return;
             }
-            _handlers.ShowInfo("Enter role to configure (evidence, research, monitoring, ticketing, approval), or press Enter to stop:");
-            role = _handlers.PromptText().Trim().ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(role))
+
+            var current = configured.TryGetValue(AppSettingsStore.SubagentModelRole, out var existing) ? existing : string.Empty;
+            selectedModel = _handlers.PromptModelSelection(current, choices)?.ModelId;
+            if (string.IsNullOrWhiteSpace(selectedModel))
             {
                 return;
             }
         }
 
-        if (!AppSettingsStore.SupportedAgentRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
-        {
-            _handlers.ShowWarning($"Unknown agent role '{role}'. Supported roles: {string.Join(", ", AppSettingsStore.SupportedAgentRoles)}.");
-            return;
-        }
-
-        string? selectedModel = parts.Length > 2 ? parts[2].Trim() : null;
         if (string.Equals(selectedModel, "inherit", StringComparison.OrdinalIgnoreCase))
         {
-            if (role == "approval" && _handlers.GetExecutionMode() == ExecutionMode.Auto)
+            if (_handlers.GetExecutionMode() == ExecutionMode.Auto)
             {
-                _handlers.ShowWarning("The approval role cannot inherit or be cleared while auto mode is enabled.");
+                _handlers.ShowWarning("The subagent model cannot inherit or be cleared while auto mode is enabled.");
                 return;
             }
 
-            _handlers.SaveAgentModelOverride(role, null);
-            _handlers.ShowSuccess($"Agent model for '{role}' now inherits the primary model.");
+            _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, null);
+            _handlers.ShowSuccess("The subagent now inherits the primary model.");
         }
         else
         {
-            if (string.IsNullOrWhiteSpace(selectedModel))
+            await _handlers.RefreshAvailableModels();
+            var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+            if (!_handlers.GetModelSelectionEntries().Any(entry =>
+                    entry.Source == activeSource && entry.ModelId.Equals(selectedModel, StringComparison.OrdinalIgnoreCase)))
             {
-                await _handlers.RefreshAvailableModels();
-                var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
-                var choices = _handlers.GetModelSelectionEntries().Where(entry => entry.Source == activeSource).ToList();
-                if (choices.Count == 0)
-                {
-                    _handlers.ShowWarning("No models are available for the active provider.");
-                    return;
-                }
-
-                var current = _handlers.GetAgentModelOverrides().TryGetValue(role, out var existing) ? existing : string.Empty;
-                selectedModel = _handlers.PromptModelSelection(current, choices)?.ModelId;
-                if (string.IsNullOrWhiteSpace(selectedModel))
-                {
-                    return;
-                }
-            }
-            else
-            {
-                await _handlers.RefreshAvailableModels();
-                var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
-                if (!_handlers.GetModelSelectionEntries().Any(entry =>
-                        entry.Source == activeSource && entry.ModelId.Equals(selectedModel, StringComparison.OrdinalIgnoreCase)))
-                {
-                    _handlers.ShowWarning($"Model '{selectedModel}' is not available from the active provider.");
-                    return;
-                }
+                _handlers.ShowWarning($"Model '{selectedModel}' is not available from the active provider.");
+                return;
             }
 
-            _handlers.SaveAgentModelOverride(role, selectedModel);
-            _handlers.ShowSuccess($"Agent model for '{role}' set to '{selectedModel}' for the active provider.");
+            _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, selectedModel);
+            _handlers.ShowSuccess($"Subagent model set to '{selectedModel}' for the active provider.");
         }
 
         var (recreated, error) = await _handlers.RecreateCurrentCopilotSession();
@@ -1264,7 +1243,7 @@ internal sealed class SlashCommandDispatcher
 
         if (requestedMode == ExecutionMode.Auto && !_handlers.CanEnableAutoMode())
         {
-            _handlers.ShowWarning("Auto mode requires an explicit approval subagent model for the active provider. Configure one with /agent-model approval <model>.");
+            _handlers.ShowWarning("Auto mode requires an explicit subagent model for the active provider. Configure one with /agent-model <model>.");
             return;
         }
 

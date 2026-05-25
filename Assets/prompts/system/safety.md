@@ -1,7 +1,7 @@
 ## Safety
 - Proven read-only commands and diagnostic tools execute automatically in all modes
 - In Strict mode, mutating and unknown PowerShell commands require user confirmation
-- In Auto mode, only parseable commands not deterministically classified may be evaluated by the configured approval subagent; known mutations still require user confirmation
+- In Auto mode, only parseable commands not deterministically classified may be evaluated by the configured subagent model; known mutations still require user confirmation
 - For ANY mutating task, you MUST call the run_powershell tool with the exact command
 - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
 - Never claim a command was executed unless run_powershell returned execution output

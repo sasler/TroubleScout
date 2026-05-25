@@ -179,22 +179,19 @@ internal static class SystemPromptBuilder
         {
             var roleLines = new StringBuilder();
             roleLines.AppendLine("## MCP Role Guidance");
-            roleLines.AppendLine("- Delegate targeted server diagnostic evidence collection to the server-evidence-collector sub-agent.");
+            roleLines.AppendLine("- Delegate targeted diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
 
             if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer))
             {
                 roleLines.AppendLine($"- Monitoring MCP server: {SanitizeServerNameForPrompt(settings.MonitoringMcpServer)}");
-                roleLines.AppendLine("- Delegate monitoring lookups to the monitoring-focused sub-agent when the monitoring role is configured.");
             }
 
             if (!string.IsNullOrWhiteSpace(settings.TicketingMcpServer))
             {
                 roleLines.AppendLine($"- Ticketing MCP server: {SanitizeServerNameForPrompt(settings.TicketingMcpServer)}");
-                roleLines.AppendLine("- Delegate ticket history lookups to the ticket-focused sub-agent when the ticketing role is configured.");
             }
 
             roleLines.AppendLine("- When monitoring alerts, dashboards, incidents, or ticket history are relevant, consult the mapped MCP role early in the investigation.");
-            roleLines.AppendLine("- Delegate external issue and remediation research to the issue-researcher sub-agent when web research could materially improve the diagnosis.");
             roleLines.AppendLine("- Keep delegated results concise and bring back only findings that materially affect the diagnosis.");
             roleLines.AppendLine();
             mcpRoleGuidance = roleLines.ToString();
@@ -203,8 +200,7 @@ internal static class SystemPromptBuilder
         {
             mcpRoleGuidance = """
                 ## Delegation Guidance
-                - Delegate targeted server log, event, service, process, disk, network, and performance evidence collection to the server-evidence-collector sub-agent.
-                - Delegate external issue and remediation research to the issue-researcher sub-agent when web research materially improves the diagnosis.
+                - Delegate targeted diagnostic and research lookups to the troubleshooting subagent.
                 - Keep delegated results concise and return only evidence that affects the diagnosis.
 
                 """;

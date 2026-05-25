@@ -138,14 +138,14 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_ThenLoad_ShouldPersistPerProviderAgentModelsAndBillingMode()
+    public void Save_ThenLoad_ShouldPersistPerProviderSubagentModelAndBillingMode()
     {
         var settings = new AppSettings
         {
             AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
             {
-                ["github"] = new() { ["evidence"] = "gpt-5-mini", ["approval"] = "gpt-4.1" },
-                ["byok"] = new() { ["evidence"] = "cheap-byok-model" }
+                ["github"] = new() { ["subagent"] = "gpt-5-mini" },
+                ["byok"] = new() { ["subagent"] = "cheap-byok-model" }
             },
             GitHubBillingDisplayMode = "ai-credits"
         };
@@ -153,8 +153,8 @@ public class AppSettingsStoreTests : IDisposable
         AppSettingsStore.Save(settings);
         var loaded = AppSettingsStore.Load();
 
-        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: false)["approval"].Should().Be("gpt-4.1");
-        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: true)["evidence"].Should().Be("cheap-byok-model");
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: false)["subagent"].Should().Be("gpt-5-mini");
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: true)["subagent"].Should().Be("cheap-byok-model");
         loaded.GitHubBillingDisplayMode.Should().Be("ai-credits");
     }
 

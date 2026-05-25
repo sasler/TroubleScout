@@ -59,6 +59,10 @@ internal sealed class CopilotTurnCallbacks
     public Action<SubagentStartedEvent> RecordSubagentStarted { get; init; } = static _ => { };
     public Action<SubagentCompletedEvent> RecordSubagentCompleted { get; init; } = static _ => { };
     public Action<SubagentFailedEvent> RecordSubagentFailed { get; init; } = static _ => { };
+    public Action<ToolExecutionStartEvent> RecordSubagentToolAction { get; init; } = static _ => { };
+    public Action<ToolExecutionCompleteEvent> RecordSubagentToolComplete { get; init; } = static _ => { };
+    public Action<string, string> RecordSubagentMessageDelta { get; init; } = static (_, _) => { };
+    public Action<string, string> RecordSubagentMessage { get; init; } = static (_, _) => { };
     public Action IncrementToolInvocation { get; init; } = static () => { };
 }
 
@@ -181,12 +185,28 @@ internal sealed class CopilotTurnRunner
                         }
 
                         thinkingIndicator.ShowToolExecution(BuildToolDisplay(toolStart, request.ToolDescriptions));
-                        request.Callbacks.RecordMcpToolAction(toolStart);
+                        var startParentToolCallId = ReadStringProperty(toolStart.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(startParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentToolAction(toolStart);
+                        }
+                        else
+                        {
+                            request.Callbacks.RecordMcpToolAction(toolStart);
+                        }
                         request.Callbacks.IncrementToolInvocation();
                         break;
 
                     case ToolExecutionCompleteEvent toolComplete:
-                        request.Callbacks.RecordMcpToolComplete(toolComplete);
+                        var completeParentToolCallId = ReadStringProperty(toolComplete.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(completeParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentToolComplete(toolComplete);
+                        }
+                        else
+                        {
+                            request.Callbacks.RecordMcpToolComplete(toolComplete);
+                        }
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
@@ -263,6 +283,13 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
+                        var deltaParentToolCallId = ReadStringProperty(delta.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(deltaParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentMessageDelta(deltaParentToolCallId, delta.Data?.DeltaContent ?? string.Empty);
+                            break;
+                        }
+
                         var deltaMessageId = ReadStringProperty(delta.Data, "MessageId", "Id");
                         if (!string.IsNullOrWhiteSpace(deltaMessageId))
                         {
@@ -301,6 +328,13 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case AssistantMessageEvent msg:
+                        var messageParentToolCallId = ReadStringProperty(msg.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(messageParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentMessage(messageParentToolCallId, msg.Data?.Content ?? string.Empty);
+                            break;
+                        }
+
                         if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
                             if (hasStartedReasoning)

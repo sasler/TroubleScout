@@ -415,8 +415,10 @@ internal static class ReportHtmlBuilder
             sb.AppendLine($"        <div><dt>Execution mode</dt><dd>{HtmlEncode(summary.ExecutionMode)}</dd></div>");
             if (summary.AgentModels is { Count: > 0 })
             {
-                var configuredModels = string.Join(", ", summary.AgentModels.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key}={entry.Value}"));
-                sb.AppendLine($"        <div><dt>Subagent models</dt><dd>{HtmlEncode(configuredModels)}</dd></div>");
+                var subagentModel = summary.AgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var configuredModel)
+                    ? configuredModel
+                    : summary.AgentModels.Values.First();
+                sb.AppendLine($"        <div><dt>Subagent model</dt><dd>{HtmlEncode(subagentModel)}</dd></div>");
             }
             if (!string.IsNullOrWhiteSpace(summary.GitHubBillingDisplayMode))
             {
@@ -475,7 +477,7 @@ internal static class ReportHtmlBuilder
 
         // ── Summary statistics cards ──
         sb.AppendLine("    <div class=\"summary-row\">");
-        sb.AppendLine($"      <div class=\"summary-card sc-green\"><div class=\"sc-val\">{safeCount}</div><div class=\"sc-lbl\">Safe (Auto)</div></div>");
+        sb.AppendLine($"      <div class=\"summary-card sc-green\"><div class=\"sc-val\">{safeCount}</div><div class=\"sc-lbl\">Read-only</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-blue\"><div class=\"sc-val\">{approvedCount}</div><div class=\"sc-lbl\">Approved</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-red\"><div class=\"sc-val\">{blockedCount}</div><div class=\"sc-lbl\">Blocked</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-amber\"><div class=\"sc-val\">{deniedCount}</div><div class=\"sc-lbl\">Denied</div></div>");
@@ -515,6 +517,8 @@ internal static class ReportHtmlBuilder
                 {
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
                     var isMcp = string.Equals(action.Source, "MCP", StringComparison.OrdinalIgnoreCase);
+                    var isSubagentTool = string.Equals(action.Source, "Subagent Tool", StringComparison.OrdinalIgnoreCase);
+                    var isSubagentResult = string.Equals(action.Source, "Subagent Result", StringComparison.OrdinalIgnoreCase);
 
                     sb.AppendLine("            <div class=\"action-card\">");
                     sb.AppendLine("              <div class=\"action-header\">");
@@ -538,9 +542,8 @@ internal static class ReportHtmlBuilder
                     }
                     sb.AppendLine("              </div>");
 
-                    if (isMcp)
+                    if (isMcp || isSubagentTool)
                     {
-                        // Tool call (server / tool name without args)
                         sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Tool call\" open>");
                         sb.AppendLine("                <summary>Tool call</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
@@ -563,6 +566,15 @@ internal static class ReportHtmlBuilder
                         sb.AppendLine("                <div class=\"inner-content\">");
                         var outputText = string.IsNullOrWhiteSpace(action.Output) ? "(no output captured)" : action.Output;
                         sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(outputText)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
+                    }
+                    else if (isSubagentResult)
+                    {
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Returned findings\" open>");
+                        sb.AppendLine("                <summary>Returned findings</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Output)}</pre></div>");
                         sb.AppendLine("                </div>");
                         sb.AppendLine("              </details>");
                     }

@@ -809,7 +809,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             ExecutionMode: "Auto",
             TargetServer: "localhost")
         {
-            AgentModels = new Dictionary<string, string> { ["evidence"] = "gpt-4.1" },
+            AgentModels = new Dictionary<string, string> { ["subagent"] = "gpt-4.1" },
             GitHubBillingDisplayMode = "ai-credits",
             SubagentCalls = 2,
             SubagentTokens = 144
@@ -819,13 +819,91 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             [new ReportPromptEntry(DateTimeOffset.UtcNow, "check", [], "done")],
             summary);
 
-        html.Should().Contain("Subagent models");
-        html.Should().Contain("evidence=gpt-4.1");
+        html.Should().Contain("Subagent model");
+        html.Should().Contain("gpt-4.1");
+        html.Should().NotContain("subagent=gpt-4.1");
         html.Should().Contain("Billing display");
         html.Should().Contain("ai-credits");
         html.Should().Contain("Subagent usage");
         html.Should().Contain("2 calls / 144 tokens");
+        html.Should().Contain("Read-only");
+        html.Should().NotContain("Safe (Auto)");
     }
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixtures exercise child event attribution exposed by the SDK.
+    public void ConversationHistoryTracker_ShouldCaptureSubagentToolsAndReturnedFindingsForReport()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check performance");
+        tracker.RecordSubagentStarted(new SubagentStartedEvent
+        {
+            Data = new SubagentStartedData
+            {
+                AgentDisplayName = "Troubleshooting Subagent",
+                AgentName = "troubleshooting-subagent",
+                AgentDescription = "Collect evidence",
+                Model = "gpt-5.4-mini",
+                ToolCallId = "sub-1"
+            }
+        });
+        tracker.RecordSubagentToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ParentToolCallId = "sub-1",
+                ToolCallId = "tool-1",
+                ToolName = "get_performance_counters",
+                McpServerName = "monitoring-server",
+                Arguments = "{\"category\":\"CPU\"}"
+            }
+        });
+        tracker.RecordSubagentToolComplete(new ToolExecutionCompleteEvent
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ParentToolCallId = "sub-1",
+                ToolCallId = "tool-1",
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "CPUPercent 12" }
+            }
+        });
+        tracker.RecordSubagentMessage("sub-1", "CPU utilization is normal.");
+        tracker.RecordSubagentCompleted(new SubagentCompletedEvent
+        {
+            Data = new SubagentCompletedData
+            {
+                AgentDisplayName = "Troubleshooting Subagent",
+                AgentName = "troubleshooting-subagent",
+                Model = "gpt-5.4-mini",
+                ToolCallId = "sub-1",
+                TotalTokens = 42,
+                TotalToolCalls = 1
+            }
+        });
+
+        var prompts = tracker.GetRecordedPromptSnapshot();
+        var actions = prompts.Single().Actions;
+        actions.Should().Contain(action => action.Source == "Subagent Tool"
+            && action.Command == "get_performance_counters"
+            && action.Target == "monitoring-server"
+            && action.Output.Contains("CPUPercent 12", StringComparison.Ordinal));
+        actions.Should().Contain(action => action.Source == "Subagent"
+            && action.Output.Contains("Model: gpt-5.4-mini", StringComparison.Ordinal)
+            && action.Output.Contains("42 tokens", StringComparison.Ordinal));
+        actions.Should().Contain(action => action.Source == "Subagent Result"
+            && action.Output.Contains("CPU utilization is normal.", StringComparison.Ordinal));
+
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts);
+        html.Should().Contain("Subagent Tool");
+        html.Should().Contain("get_performance_counters");
+        html.Should().Contain("monitoring-server");
+        html.Should().Contain("Model: gpt-5.4-mini");
+        html.Should().Contain("CPUPercent 12");
+        html.Should().Contain("Returned findings");
+        html.Should().Contain("CPU utilization is normal.");
+    }
+#pragma warning restore CS0618
 
     [Fact]
     public void GetRecordedPromptSnapshot_ShouldRedactStatusBarFields()
@@ -1628,6 +1706,27 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task GetStatusFields_ShouldAlwaysShowSelectedSubagentModelInMainStatus()
+    {
+        await ExecuteWithTemporarySettingsPathAsync(async _ =>
+        {
+            AppSettingsStore.Save(new AppSettings
+            {
+                AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+                {
+                    ["github"] = new() { ["subagent"] = "gpt-5-mini" }
+                }
+            });
+
+            await using var session = new TroubleshootingSession("localhost");
+
+            session.GetStatusFields().Should().Contain(field =>
+                field.Label == "Subagent model" && field.Value == "gpt-5-mini");
+            await Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public void GetStatusFields_WhenUsageIncludesContext_ShouldIncludeCombinedContextField()
     {
         // Arrange
@@ -1997,16 +2096,14 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
 
-        config.IncludeSubAgentStreamingEvents.Should().BeFalse();
+        config.IncludeSubAgentStreamingEvents.Should().BeTrue();
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
         config.CustomAgents.Should().NotBeNull();
-        config.CustomAgents.Should().Contain(agent => agent.Name == "server-evidence-collector"
+        config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent"
             && agent.Infer == true
-            && string.Equals(agent.DisplayName, "Server Evidence Collector", StringComparison.Ordinal));
-        var issueResearcher = config.CustomAgents!.Single(agent => agent.Name == "issue-researcher");
-        issueResearcher.Infer.Should().BeTrue();
-        issueResearcher.Tools.Should().Equal("web_search");
+            && string.Equals(agent.DisplayName, "Troubleshooting Subagent", StringComparison.Ordinal));
+        config.CustomAgents!.Single().Tools.Should().Contain("web_search");
     }
 
     [Fact]
@@ -2038,15 +2135,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
             var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
             var config = InvokeBuildSessionConfig(session, "gpt-4.1");
-            var customAgents = config.CustomAgents!;
-
-            var monitoringAgent = customAgents.Single(agent => agent.Name == "monitoring-investigator");
-            monitoringAgent.McpServers.Should().NotBeNull();
-            monitoringAgent.McpServers!.Keys.Should().Equal("zabbix");
-
-            var ticketingAgent = customAgents.Single(agent => agent.Name == "ticket-investigator");
-            ticketingAgent.McpServers.Should().NotBeNull();
-            ticketingAgent.McpServers!.Keys.Should().Equal("redmine");
+            var subagent = config.CustomAgents!.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent").Which;
+            subagent.McpServers.Should().NotBeNull();
+            subagent.McpServers!.Keys.Should().BeEquivalentTo("zabbix", "redmine");
         });
     }
 
@@ -3457,7 +3548,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Proven read-only commands and diagnostic tools execute automatically in all modes",
+        content.Should().Contain("Proven read-only diagnostic tools execute automatically in all modes",
             "system message should clarify read-only tools work in all modes");
     }
 

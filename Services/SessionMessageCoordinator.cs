@@ -68,6 +68,10 @@ internal static class SessionMessageCoordinator
                     RecordSubagentStarted = request.HistoryTracker.RecordSubagentStarted,
                     RecordSubagentCompleted = request.HistoryTracker.RecordSubagentCompleted,
                     RecordSubagentFailed = request.HistoryTracker.RecordSubagentFailed,
+                    RecordSubagentToolAction = request.HistoryTracker.RecordSubagentToolAction,
+                    RecordSubagentToolComplete = request.HistoryTracker.RecordSubagentToolComplete,
+                    RecordSubagentMessageDelta = request.HistoryTracker.RecordSubagentMessageDelta,
+                    RecordSubagentMessage = request.HistoryTracker.RecordSubagentMessage,
                     IncrementToolInvocation = request.IncrementToolInvocation
                 }
             });
