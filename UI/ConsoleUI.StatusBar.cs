@@ -70,6 +70,17 @@ public static partial class ConsoleUI
                 Markup: $"[grey]Tools:[/] [cyan]{info.ToolInvocations}[/]"));
         }
 
+        if (info.SubagentCalls > 0)
+        {
+            var delegated = info.SubagentTokens is > 0
+                ? $"{info.SubagentCalls} / {FormatCompactTokenCount((int)Math.Min(info.SubagentTokens.Value, int.MaxValue))} tokens"
+                : info.SubagentCalls.ToString();
+            fields.Add(new StatusBarField(
+                Priority: 55,
+                PlainText: $"Agents: {delegated}",
+                Markup: $"[grey]Agents:[/] [cyan]{delegated}[/]"));
+        }
+
         if (info.SessionInputTokens.HasValue || info.SessionOutputTokens.HasValue)
         {
             var sessIn = info.SessionInputTokens.HasValue ? FormatCompactTokenCount((int)Math.Min(info.SessionInputTokens.Value, int.MaxValue)) : "?";

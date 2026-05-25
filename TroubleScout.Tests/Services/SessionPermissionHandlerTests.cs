@@ -55,11 +55,11 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_YoloMode_ShouldApproveNonReadRequestWithoutPrompt()
+    public async Task HandleAsync_AutoMode_ShouldNotBypassNonShellPermissions()
     {
         var promptCount = 0;
         var handler = CreateHandler(
-            getExecutionMode: () => ExecutionMode.Yolo,
+            getExecutionMode: () => ExecutionMode.Auto,
             promptCommandApproval: (_, _, _) =>
             {
                 promptCount++;
@@ -68,8 +68,8 @@ public class SessionPermissionHandlerTests
 
         var result = await handler.HandleAsync(new PermissionRequest { Kind = "write" }, new PermissionInvocation());
 
-        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
-        promptCount.Should().Be(0);
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
     }
 
     [Fact]
@@ -109,6 +109,46 @@ public class SessionPermissionHandlerTests
 
         readOnly.Kind.Should().Be(PermissionRequestResultKind.Approved);
         blocked.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+    }
+
+    [Fact]
+    public async Task HandleAsync_AutoUnknownReadOnlyVerdict_ShouldAuthorizeWithoutHumanPrompt()
+    {
+        var promptCount = 0;
+        var authorizationCount = 0;
+        var handler = CreateHandler(
+            getExecutionMode: () => ExecutionMode.Auto,
+            promptCommandApproval: (_, _, _) =>
+            {
+                promptCount++;
+                return ApprovalResult.Denied;
+            },
+            autoEvaluator: new FakeAutoEvaluator(new AutoCommandApprovalDecision(true, "gpt-5-mini", "queries inventory")),
+            recordAutoAuthorization: (_, _) => authorizationCount++);
+
+        var result = await handler.HandleAsync(
+            CreateShellPermissionRequest("Read-CustomInventory -Server localhost"),
+            new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(0);
+        authorizationCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleAsync_AutoKnownMutation_ShouldNotInvokeEvaluator()
+    {
+        var evaluator = new FakeAutoEvaluator(new AutoCommandApprovalDecision(true, "gpt-5-mini", "incorrect"));
+        var handler = CreateHandler(
+            getExecutionMode: () => ExecutionMode.Auto,
+            autoEvaluator: evaluator);
+
+        var result = await handler.HandleAsync(
+            CreateShellPermissionRequest("Restart-Service spooler"),
+            new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        evaluator.CallCount.Should().Be(0);
     }
 
     [Fact]
@@ -228,16 +268,20 @@ public class SessionPermissionHandlerTests
         SessionPermissionHandler.CommandApprovalPrompt? promptCommandApproval = null,
         SessionPermissionHandler.UrlApprovalPrompt? promptUrlApproval = null,
         SessionPermissionHandler.McpApprovalPrompt? promptMcpApproval = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        IAutoCommandApprovalEvaluator? autoEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
     {
         return new SessionPermissionHandler(
-            getExecutionMode ?? (() => ExecutionMode.Safe),
+            getExecutionMode ?? (() => ExecutionMode.Strict),
             getConfiguredSafeCommands ?? (() => null),
             getMcpServerRole ?? (_ => null),
             promptCommandApproval ?? ((_, _, _) => ApprovalResult.Denied),
             promptUrlApproval ?? ((_, _) => UrlApprovalResult.Deny),
             promptMcpApproval ?? ((_, _, _, _) => McpApprovalResult.Deny),
-            settings);
+            settings,
+            autoEvaluator,
+            recordAutoAuthorization);
     }
 
     private static PermissionRequestShell CreateShellPermissionRequest(string command)
@@ -301,6 +345,17 @@ public class SessionPermissionHandlerTests
             {
                 // Best-effort cleanup for temp test files.
             }
+        }
+    }
+
+    private sealed class FakeAutoEvaluator(AutoCommandApprovalDecision? decision) : IAutoCommandApprovalEvaluator
+    {
+        internal int CallCount { get; private set; }
+
+        public Task<AutoCommandApprovalDecision?> EvaluateAsync(string command, CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(decision);
         }
     }
 }

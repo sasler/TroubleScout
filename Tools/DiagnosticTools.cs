@@ -25,6 +25,8 @@ public class DiagnosticTools
     private readonly Func<string, PowerShellExecutor?>? _getExecutorCallback;
     private readonly Func<string, Task<bool>>? _closeSessionCallback;
     private readonly Func<string, string, Task<(bool Success, string? Error)>>? _connectJeaServerCallback;
+    private readonly IAutoCommandApprovalEvaluator? _autoCommandApprovalEvaluator;
+    private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
@@ -36,7 +38,9 @@ public class DiagnosticTools
         Func<string, Task<(bool Success, string? Error)>>? connectServerCallback = null,
         Func<string, PowerShellExecutor?>? getExecutorCallback = null,
         Func<string, Task<bool>>? closeSessionCallback = null,
-        Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null)
+        Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null,
+        IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
@@ -46,6 +50,8 @@ public class DiagnosticTools
         _getExecutorCallback = getExecutorCallback;
         _closeSessionCallback = closeSessionCallback;
         _connectJeaServerCallback = connectJeaServerCallback;
+        _autoCommandApprovalEvaluator = autoCommandApprovalEvaluator;
+        _recordAutoAuthorization = recordAutoAuthorization;
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -75,7 +81,7 @@ public class DiagnosticTools
             _executor.ActualComputerName ?? _targetServer,
             command,
             output,
-            CommandApprovalState.SafeAuto));
+            CommandApprovalState.StrictReadOnly));
     }
 
     private void LogCommandAction(string target, string command, string output, CommandApprovalState approvalState)
@@ -105,7 +111,19 @@ public class DiagnosticTools
 
         if (!validation.RequiresApproval)
         {
-            return (true, null, CommandApprovalState.SafeAuto);
+            return (true, null, CommandApprovalState.StrictReadOnly);
+        }
+
+        if (executor.ExecutionMode == ExecutionMode.Auto
+            && validation.Classification == CommandSafetyClassification.Unknown
+            && _autoCommandApprovalEvaluator != null)
+        {
+            var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(validationCommand);
+            if (decision is { IsReadOnly: true })
+            {
+                _recordAutoAuthorization?.Invoke(displayCommand, decision);
+                return (true, null, CommandApprovalState.ApprovedByAutoAgent);
+            }
         }
 
         executor.AddHistoryEntry($"[PENDING APPROVAL] {displayCommand}");
@@ -127,7 +145,7 @@ public class DiagnosticTools
     {
         yield return AIFunctionFactory.Create(RunPowerShellCommandAsync,
             "run_powershell",
-            "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands require approval in Safe mode or run automatically in YOLO mode.");
+            "Execute a PowerShell command on the target Windows server. Proven read-only commands run automatically. Mutating commands require approval; in Auto mode only unknown read-only candidates can be reviewed automatically.");
 
         yield return CreateReadOnlyTool(GetSystemInfoAsync,
             "get_system_info",
@@ -214,7 +232,21 @@ public class DiagnosticTools
             return $"[BLOCKED] {validation.Reason}";
         }
 
-        if (validation.RequiresApproval)
+        var approvalState = CommandApprovalState.StrictReadOnly;
+        if (validation.RequiresApproval
+            && executor.ExecutionMode == ExecutionMode.Auto
+            && validation.Classification == CommandSafetyClassification.Unknown
+            && _autoCommandApprovalEvaluator != null)
+        {
+            var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(command);
+            if (decision is { IsReadOnly: true })
+            {
+                approvalState = CommandApprovalState.ApprovedByAutoAgent;
+                _recordAutoAuthorization?.Invoke(command, decision);
+            }
+        }
+
+        if (validation.RequiresApproval && approvalState != CommandApprovalState.ApprovedByAutoAgent)
         {
             executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
@@ -248,7 +280,7 @@ public class DiagnosticTools
                 target,
                 command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+                approvalState));
             var errorOutput = $"[ERROR] {result.Error ?? "Unknown error occurred"}";
             return isAlternate ? $"[{sessionName}] {errorOutput}" : errorOutput;
         }
@@ -262,7 +294,7 @@ public class DiagnosticTools
             target,
             command,
             output,
-            executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+            approvalState));
 
         return isAlternate ? $"[{sessionName}] {output}" : output;
     }
@@ -904,12 +936,14 @@ public sealed record PendingCommand(string Command, string Reason, PowerShellExe
 
 public enum CommandApprovalState
 {
-    SafeAuto,
+    StrictReadOnly,
     ApprovalRequested,
     ApprovedByUser,
-    AutoApprovedYolo,
+    ApprovedByAutoAgent,
     Denied,
-    Blocked
+    Blocked,
+    SafeAuto,
+    AutoApprovedYolo
 }
 
 public record CommandActionLog(
@@ -917,4 +951,5 @@ public record CommandActionLog(
     string Target,
     string Command,
     string Output,
-    CommandApprovalState ApprovalState);
+    CommandApprovalState ApprovalState,
+    string? Source = null);

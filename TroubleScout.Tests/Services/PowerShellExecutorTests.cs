@@ -103,7 +103,7 @@ public class PowerShellExecutorTests : IDisposable
     public void ValidateCommand_MutatingCommandInSafeMode_ShouldRequireApproval()
     {
         // Arrange
-        _executor.ExecutionMode = ExecutionMode.Safe;
+        _executor.ExecutionMode = ExecutionMode.Strict;
 
         // Act
         var result = _executor.ValidateCommand("Restart-Service -Name spooler");
@@ -111,21 +111,22 @@ public class PowerShellExecutorTests : IDisposable
         // Assert
         result.IsAllowed.Should().BeTrue();
         result.RequiresApproval.Should().BeTrue();
-        result.Reason.Should().Contain("Safe mode");
+        result.Reason.Should().Contain("Strict mode");
     }
 
     [Fact]
-    public void ValidateCommand_MutatingCommandInYoloMode_ShouldNotRequireApproval()
+    public void ValidateCommand_MutatingCommandInAutoMode_ShouldStillRequireApproval()
     {
         // Arrange
-        _executor.ExecutionMode = ExecutionMode.Yolo;
+        _executor.ExecutionMode = ExecutionMode.Auto;
 
         // Act
         var result = _executor.ValidateCommand("Restart-Service -Name spooler");
 
         // Assert
         result.IsAllowed.Should().BeTrue();
-        result.RequiresApproval.Should().BeFalse();
+        result.RequiresApproval.Should().BeTrue();
+        result.Reason.Should().Contain("requires explicit user approval");
     }
 
     [Theory]
@@ -337,6 +338,26 @@ Write-Output ""Service stopped""
     }
 
     [Fact]
+    public void ValidateCommand_UnknownParseableCommand_ShouldExposeUnknownClassification()
+    {
+        var result = _executor.ValidateCommand("Read-CustomInventory -Server localhost");
+
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+        result.Classification.Should().Be(CommandSafetyClassification.Unknown);
+    }
+
+    [Fact]
+    public void ValidateCommand_InvalidPowerShell_ShouldBeBlockedFromAutoEvaluation()
+    {
+        var result = _executor.ValidateCommand("Get-Service | Where-Object {");
+
+        result.IsAllowed.Should().BeFalse();
+        result.RequiresApproval.Should().BeFalse();
+        result.Classification.Should().Be(CommandSafetyClassification.Invalid);
+    }
+
+    [Fact]
     public void ValidateCommand_ScriptWithComments_ShouldIgnoreComments()
     {
         // Arrange
@@ -399,6 +420,36 @@ Get-Process
         // Assert
         result.IsAllowed.Should().BeTrue();
         result.RequiresApproval.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateCommand_InvocationOperatorCommand_ShouldNotBeProvenReadOnly()
+    {
+        var result = _executor.ValidateCommand("& 'Remove-Item' 'C:\\test.txt'");
+
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+        result.Classification.Should().NotBe(CommandSafetyClassification.ReadOnly);
+    }
+
+    [Fact]
+    public void ValidateCommand_StaticMutatingMethod_ShouldRequireApproval()
+    {
+        var result = _executor.ValidateCommand("[System.IO.File]::WriteAllText('C:\\test.txt', 'content')");
+
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+        result.Classification.Should().Be(CommandSafetyClassification.Mutating);
+    }
+
+    [Fact]
+    public void ValidateCommand_UnrecognizedMethodInvocation_ShouldNotBeProvenReadOnly()
+    {
+        var result = _executor.ValidateCommand("[DateTime]::UtcNow.ToString('O')");
+
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeTrue();
+        result.Classification.Should().Be(CommandSafetyClassification.Unknown);
     }
 
     [Fact]

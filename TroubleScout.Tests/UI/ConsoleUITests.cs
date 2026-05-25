@@ -351,7 +351,7 @@ public class ConsoleUITests
         // Arrange & Act
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
-            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Safe, null,
+            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Strict, null,
             additionalTargets: new[] { "ServerA", "ServerB" });
         var output = AnsiConsole.ExportText();
 
@@ -368,7 +368,7 @@ public class ConsoleUITests
         // Arrange & Act
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
-            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Safe, null,
+            "PrimaryServer", "WinRM", true, "gpt-4.1", ExecutionMode.Strict, null,
             additionalTargets: null);
         var output = AnsiConsole.ExportText();
 
@@ -1003,7 +1003,7 @@ public class ConsoleUITests
     {
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
-            "localhost", "Local", true, "gpt-4.1", ExecutionMode.Safe,
+            "localhost", "Local", true, "gpt-4.1", ExecutionMode.Strict,
             usageFields: new (string, string)[]
             {
                 (ConsoleUI.StatusSectionSeparator, "Provider"),
@@ -1060,7 +1060,7 @@ public class ConsoleUITests
         // Arrange & Act
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
-            "server1", "JEA (JEA-Admins)", true, "gpt-4.1", ExecutionMode.Safe, null,
+            "server1", "JEA (JEA-Admins)", true, "gpt-4.1", ExecutionMode.Strict, null,
             additionalTargets: null, defaultSessionTarget: "localhost");
         var output = AnsiConsole.ExportText();
 
@@ -1077,7 +1077,7 @@ public class ConsoleUITests
         // Arrange & Act
         AnsiConsole.Record();
         ConsoleUI.ShowStatusPanel(
-            "localhost", "Local PowerShell", true, "gpt-4.1", ExecutionMode.Safe);
+            "localhost", "Local PowerShell", true, "gpt-4.1", ExecutionMode.Strict);
         var output = AnsiConsole.ExportText();
 
         // Assert — AI row should contain both status and model

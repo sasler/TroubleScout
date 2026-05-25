@@ -50,7 +50,8 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(config);
 
         config.Mode.Should().Be(SystemMessageMode.Customize);
-        content.Should().Contain("exhaust ALL available diagnostic tools");
+        content.Should().Contain("Delegate high-volume server evidence collection");
+        content.Should().Contain("Constrain log/event time ranges");
     }
 
     [Fact]
@@ -122,6 +123,7 @@ public class SystemPromptTests : IDisposable
 
         content.Should().Contain("Monitoring MCP server: zabbix");
         content.Should().Contain("Ticketing MCP server: redmine");
+        content.Should().Contain("Delegate targeted server diagnostic evidence collection to the server-evidence-collector sub-agent.");
         content.Should().Contain("Delegate monitoring lookups to the monitoring-focused sub-agent");
         content.Should().Contain("Delegate ticket history lookups to the ticket-focused sub-agent");
         content.Should().Contain("Delegate external issue and remediation research to the issue-researcher sub-agent");
@@ -156,7 +158,7 @@ public class SystemPromptTests : IDisposable
             primaryJeaExecutor: null,
             additionalExecutors: new Dictionary<string, PowerShellExecutor>(StringComparer.OrdinalIgnoreCase),
             settings: new AppSettings(),
-            executionMode: ExecutionMode.Safe);
+            executionMode: ExecutionMode.Strict);
 
         var content = GetCombinedPromptContent(config);
 
@@ -184,7 +186,7 @@ public class SystemPromptTests : IDisposable
                 ["srv-jea"] = jeaExecutor
             },
             settings: new AppSettings(),
-            executionMode: ExecutionMode.Safe);
+            executionMode: ExecutionMode.Strict);
 
         var content = GetCombinedPromptContent(config);
 

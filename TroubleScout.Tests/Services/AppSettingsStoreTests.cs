@@ -138,6 +138,36 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Save_ThenLoad_ShouldPersistPerProviderAgentModelsAndBillingMode()
+    {
+        var settings = new AppSettings
+        {
+            AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+            {
+                ["github"] = new() { ["evidence"] = "gpt-5-mini", ["approval"] = "gpt-4.1" },
+                ["byok"] = new() { ["evidence"] = "cheap-byok-model" }
+            },
+            GitHubBillingDisplayMode = "ai-credits"
+        };
+
+        AppSettingsStore.Save(settings);
+        var loaded = AppSettingsStore.Load();
+
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: false)["approval"].Should().Be("gpt-4.1");
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: true)["evidence"].Should().Be("cheap-byok-model");
+        loaded.GitHubBillingDisplayMode.Should().Be("ai-credits");
+    }
+
+    [Fact]
+    public void ResolveGitHubBillingDisplayMode_ShouldDefaultToCreditsAfterCutover()
+    {
+        AppSettingsStore.ResolveGitHubBillingDisplayMode(null, new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero))
+            .Should().Be("ai-credits");
+        AppSettingsStore.ResolveGitHubBillingDisplayMode(null, new DateTimeOffset(2026, 5, 31, 23, 59, 59, TimeSpan.Zero))
+            .Should().Be("premium-requests-legacy");
+    }
+
+    [Fact]
     public void Load_ShouldNormalizeMonitoringAndTicketingMcpServerNames()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);

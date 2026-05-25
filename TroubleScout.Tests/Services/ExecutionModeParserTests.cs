@@ -7,9 +7,9 @@ namespace TroubleScout.Tests.Services;
 public class ExecutionModeParserTests
 {
     [Theory]
-    [InlineData("safe", ExecutionMode.Safe)]
-    [InlineData("SAFE", ExecutionMode.Safe)]
-    [InlineData("yolo", ExecutionMode.Yolo)]
+    [InlineData("strict", ExecutionMode.Strict)]
+    [InlineData("STRICT", ExecutionMode.Strict)]
+    [InlineData("auto", ExecutionMode.Auto)]
     public void TryParse_WithValidValues_ShouldParse(string input, ExecutionMode expected)
     {
         var success = ExecutionModeParser.TryParse(input, out var mode);
@@ -23,6 +23,8 @@ public class ExecutionModeParserTests
     [InlineData("   ")]
     [InlineData("change")]
     [InlineData("unknown")]
+    [InlineData("safe")]
+    [InlineData("yolo")]
     public void TryParse_WithInvalidValues_ShouldFail(string input)
     {
         var success = ExecutionModeParser.TryParse(input, out _);

@@ -34,7 +34,7 @@ internal sealed record SessionTranscriptDocument(
 
 internal static class SessionTranscriptService
 {
-    internal const int CurrentSchemaVersion = 1;
+    internal const int CurrentSchemaVersion = 2;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -166,9 +166,9 @@ internal static class SessionTranscriptService
             return SessionTranscriptLoadResult.MalformedJson;
         }
 
-        if (document.SchemaVersion != CurrentSchemaVersion)
+        if (document.SchemaVersion is not (1 or CurrentSchemaVersion))
         {
-            detail = $"Unsupported transcript schema version {document.SchemaVersion}. Supported version: {CurrentSchemaVersion}.";
+            detail = $"Unsupported transcript schema version {document.SchemaVersion}. Supported versions: 1 and {CurrentSchemaVersion}.";
             return SessionTranscriptLoadResult.UnsupportedSchemaVersion;
         }
 
@@ -254,7 +254,12 @@ internal static class SessionTranscriptService
             ConfiguredSkills = RedactList(summary.ConfiguredSkills),
             UsedSkills = RedactList(summary.UsedSkills),
             ExecutionMode = SecretRedactor.Redact(summary.ExecutionMode),
-            TargetServer = SecretRedactor.Redact(summary.TargetServer)
+            TargetServer = SecretRedactor.Redact(summary.TargetServer),
+            AgentModels = summary.AgentModels?.ToDictionary(
+                entry => SecretRedactor.Redact(entry.Key),
+                entry => SecretRedactor.Redact(entry.Value),
+                StringComparer.OrdinalIgnoreCase),
+            GitHubBillingDisplayMode = SecretRedactor.Redact(summary.GitHubBillingDisplayMode)
         };
     }
 

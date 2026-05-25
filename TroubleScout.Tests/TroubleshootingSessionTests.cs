@@ -182,10 +182,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
     {
         // Arrange & Act
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         // Assert
-        session.CurrentExecutionMode.Should().Be(ExecutionMode.Yolo);
+        session.CurrentExecutionMode.Should().Be(ExecutionMode.Strict);
     }
 
     [Fact]
@@ -697,7 +697,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange - add an additional executor via the private field
         var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(_session, "_additionalExecutors");
         var altExecutor = new PowerShellExecutor("server2");
-        altExecutor.ExecutionMode = ExecutionMode.Safe;
+        altExecutor.ExecutionMode = ExecutionMode.Strict;
         additionalExecutors["server2"] = altExecutor;
 
         var method = typeof(TroubleshootingSession)
@@ -705,10 +705,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        method!.Invoke(_session, [ExecutionMode.Yolo]);
+        method!.Invoke(_session, [ExecutionMode.Auto]);
 
         // Assert
-        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Yolo);
+        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Auto);
         altExecutor.Dispose();
     }
 
@@ -789,6 +789,42 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         html.Should().NotContain(secret);
         html.Should().Contain(SecretRedactor.Mask);
+    }
+
+    [Fact]
+    public void BuildReportHtml_ShouldRenderSubagentModelsBillingAndUsage()
+    {
+        var summary = new ReportSessionSummary(
+            CurrentModel: "gpt-5",
+            CurrentProvider: "GitHub Copilot",
+            ModelsUsed: ["gpt-5"],
+            ConfiguredMcpServers: [],
+            UsedMcpServers: [],
+            MonitoringMcp: null,
+            TicketingMcp: null,
+            ApprovedMcpServersForSession: [],
+            PersistedApprovedMcpServers: [],
+            ConfiguredSkills: [],
+            UsedSkills: [],
+            ExecutionMode: "Auto",
+            TargetServer: "localhost")
+        {
+            AgentModels = new Dictionary<string, string> { ["evidence"] = "gpt-4.1" },
+            GitHubBillingDisplayMode = "ai-credits",
+            SubagentCalls = 2,
+            SubagentTokens = 144
+        };
+
+        var html = ReportHtmlBuilder.BuildReportHtml(
+            [new ReportPromptEntry(DateTimeOffset.UtcNow, "check", [], "done")],
+            summary);
+
+        html.Should().Contain("Subagent models");
+        html.Should().Contain("evidence=gpt-4.1");
+        html.Should().Contain("Billing display");
+        html.Should().Contain("ai-credits");
+        html.Should().Contain("Subagent usage");
+        html.Should().Contain("2 calls / 144 tokens");
     }
 
     [Fact]
@@ -2103,7 +2139,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task PermissionHandler_FileRead_ShouldApproveInSafeMode()
     {
-        // Arrange - default session is Safe mode
+        // Arrange - default session is Strict mode
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
 
@@ -2205,15 +2241,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PermissionHandler_Mcp_InYoloMode_ShouldApprove()
+    public async Task PermissionHandler_ReadOnlyMcp_ShouldApproveWithoutModeBypass()
     {
-        // Arrange - switch to YOLO mode
-        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
         var config = InvokeBuildSessionConfig(session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
 
         // Act
-        var result = await handler(new PermissionRequest { Kind = "mcp" }, new PermissionInvocation());
+        var result = await handler(
+            new PermissionRequestMcp { Kind = "mcp", ServerName = "inventory", ToolName = "list_assets", ToolTitle = "List assets", ReadOnly = true },
+            new PermissionInvocation());
 
         // Assert
         result.Kind.Should().Be(PermissionRequestResultKind.Approved);
@@ -2458,7 +2495,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         assessment.Should().NotBeNull();
         assessment!.Validation.IsAllowed.Should().BeTrue();
         assessment.Validation.RequiresApproval.Should().BeTrue();
-        assessment.PromptReason.Should().Contain("Safe mode");
+        assessment.PromptReason.Should().Contain("Strict mode");
         assessment.ImpactText.Should().Contain("not classified as read-only");
     }
 
@@ -2491,7 +2528,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         assessment!.Command.Should().Contain("...");
         assessment.Validation.IsAllowed.Should().BeTrue();
         assessment.Validation.RequiresApproval.Should().BeTrue();
-        assessment.PromptReason.Should().Contain("Safe mode");
+        assessment.PromptReason.Should().Contain("Strict mode");
     }
 
     [Fact]
@@ -3402,8 +3439,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Attempt every relevant diagnostic tool",
-            "system message should encourage using all tools before giving up");
+        content.Should().Contain("Attempt the most relevant diagnostic sources",
+            "system message should favor targeted evidence collection");
     }
 
     [Fact]
@@ -3420,7 +3457,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Read-only diagnostic tools execute automatically in ALL modes",
+        content.Should().Contain("Proven read-only commands and diagnostic tools execute automatically in all modes",
             "system message should clarify read-only tools work in all modes");
     }
 
@@ -3507,15 +3544,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task ConnectAdditionalServer_NonExistentHost_ShouldReturnFailure()
     {
-        // Arrange — use Yolo mode to skip approval prompt, then invoke private method
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        // Arrange - skip approval explicitly, then invoke the private method.
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         var method = typeof(TroubleshootingSession)
             .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         method.Should().NotBeNull();
 
         // Act — connection should fail for non-existent host
-        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", false])!;
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", true])!;
         var result = await task;
 
         // Assert — should fail with connection error
@@ -3775,8 +3812,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task ConnectAdditionalServer_SkipApproval_ShouldBypassApprovalInSafeMode()
     {
-        // Arrange — session in Safe mode; invoke with skipApproval=true via reflection
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Safe);
+        // Arrange - session in Strict mode; invoke with skipApproval=true via reflection
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         var method = typeof(TroubleshootingSession)
             .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);

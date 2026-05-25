@@ -72,15 +72,15 @@ public class SlashCommandDispatcherTests
         var messages = new List<string>();
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetExecutionMode = () => ExecutionMode.Safe,
+            GetExecutionMode = () => ExecutionMode.Strict,
             ShowInfo = messages.Add
         });
 
         var result = dispatcher.Dispatch("/mode");
 
         result.Handled.Should().BeTrue();
-        messages.Should().Contain("Current mode: safe");
-        messages.Should().Contain("Usage: /mode <safe|yolo>");
+        messages.Should().Contain("Current mode: strict");
+        messages.Should().Contain("Usage: /mode <strict|auto>");
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public class SlashCommandDispatcherTests
         var result = dispatcher.Dispatch("/mode maybe");
 
         result.Handled.Should().BeTrue();
-        warnings.Should().Contain("Invalid mode. Use: safe or yolo.");
+        warnings.Should().Contain("Invalid mode. Use: strict or auto.");
         setCalls.Should().Be(0);
     }
 
@@ -110,14 +110,58 @@ public class SlashCommandDispatcherTests
         {
             SetExecutionMode = value => mode = value,
             SetConsoleExecutionMode = value => mode = value,
+            CanEnableAutoMode = () => true,
             ShowStatus = _ => statusCalls++
         });
 
-        var result = dispatcher.Dispatch("/mode yolo");
+        var result = dispatcher.Dispatch("/mode auto");
 
         result.Handled.Should().BeTrue();
-        mode.Should().Be(ExecutionMode.Yolo);
+        mode.Should().Be(ExecutionMode.Auto);
         statusCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public void Dispatch_WithAutoModeWithoutApprovalModel_ShouldRefuseChange()
+    {
+        var warnings = new List<string>();
+        var setCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            CanEnableAutoMode = () => false,
+            SetExecutionMode = _ => setCalls++,
+            ShowWarning = warnings.Add
+        });
+
+        dispatcher.Dispatch("/mode auto");
+
+        setCalls.Should().Be(0);
+        warnings.Should().Contain(message => message.Contains("/agent-model approval", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithAgentModel_ShouldPersistActiveProviderModelAndRecreateSession()
+    {
+        (string Role, string? Model)? saved = null;
+        var recreateCalls = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            UseByokOpenAi = () => false,
+            RefreshAvailableModels = () => Task.CompletedTask,
+            GetModelSelectionEntries = () => [CreateModelEntry("gpt-5-mini", "GPT-5 mini", isCurrent: false)],
+            SaveAgentModelOverride = (role, model) => saved = (role, model),
+            RecreateCurrentCopilotSession = () =>
+            {
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
+            }
+        });
+
+        var result = await dispatcher.DispatchAsync("/agent-model evidence gpt-5-mini");
+
+        result.Handled.Should().BeTrue();
+        saved.Should().Be(("evidence", "gpt-5-mini"));
+        recreateCalls.Should().Be(1);
     }
 
     [Fact]
@@ -505,7 +549,7 @@ public class SlashCommandDispatcherTests
 
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetExecutionMode = () => ExecutionMode.Safe,
+            GetExecutionMode = () => ExecutionMode.Strict,
             RunWithSpinnerAsync = async (label, action) =>
             {
                 spinnerLabels.Add(label);
@@ -557,7 +601,7 @@ public class SlashCommandDispatcherTests
         var warnings = new List<string>();
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetExecutionMode = () => ExecutionMode.Yolo,
+            GetExecutionMode = () => ExecutionMode.Auto,
             RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
             ReconnectServer = (_, _) => Task.FromResult(true),
             ConnectAdditionalServer = (_, _) => Task.FromResult((true, (string?)null)),
@@ -605,7 +649,7 @@ public class SlashCommandDispatcherTests
         var additionalCalls = 0;
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetExecutionMode = () => ExecutionMode.Safe,
+            GetExecutionMode = () => ExecutionMode.Strict,
             RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
             ReconnectServer = (_, _) => Task.FromResult(true),
             PromptCommandApproval = (_, _) => false,
@@ -625,13 +669,13 @@ public class SlashCommandDispatcherTests
     }
 
     [Fact]
-    public async Task DispatchAsync_WithServerAdditionalInYoloMode_ShouldConnectWithoutPrompt()
+    public async Task DispatchAsync_WithServerAdditionalInAutoMode_ShouldStillPromptForConnection()
     {
         var approvalCalls = 0;
         var additionalTargets = new List<string>();
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetExecutionMode = () => ExecutionMode.Yolo,
+            GetExecutionMode = () => ExecutionMode.Auto,
             RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
             ReconnectServer = (_, _) => Task.FromResult(true),
             PromptCommandApproval = (_, _) =>
@@ -649,7 +693,7 @@ public class SlashCommandDispatcherTests
         var result = await dispatcher.DispatchAsync("/server srv1 srv2");
 
         result.Handled.Should().BeTrue();
-        approvalCalls.Should().Be(0);
+        approvalCalls.Should().Be(1);
         additionalTargets.Should().Equal("srv2");
     }
 

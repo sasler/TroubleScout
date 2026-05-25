@@ -313,7 +313,7 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         logs.Should().ContainSingle();
-        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.StrictReadOnly);
     }
 
     [Fact]
@@ -374,7 +374,7 @@ public class DiagnosticToolsTests : IDisposable
         logs.Should().ContainSingle();
         logs[0].Command.Should().Be("Get-SystemInfo");
         logs[0].Output.Should().Be("system output");
-        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.StrictReadOnly);
     }
 
     [Fact]

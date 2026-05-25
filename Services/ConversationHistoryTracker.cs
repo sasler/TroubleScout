@@ -11,6 +11,7 @@ internal sealed class ConversationHistoryTracker
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
     private readonly Dictionary<string, McpActionLocation> _pendingMcpActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, McpActionLocation> _pendingSubagentActions = new(StringComparer.Ordinal);
 
     private readonly record struct McpActionLocation(int PromptIndex, int ActionIndex);
 
@@ -70,7 +71,7 @@ internal sealed class ConversationHistoryTracker
             actionLog.Command,
             actionLog.Output,
             actionLog.ApprovalState.ToString(),
-            "PowerShell");
+            actionLog.Source ?? "PowerShell");
 
         AppendActionToCurrentPrompt(entry);
     }
@@ -162,6 +163,55 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
+    internal void RecordSubagentStarted(SubagentStartedEvent started)
+    {
+        var data = started.Data;
+        if (data == null)
+        {
+            return;
+        }
+
+        var name = data.AgentDisplayName ?? data.AgentName ?? "subagent";
+        var toolCallId = data.ToolCallId;
+        var model = string.IsNullOrWhiteSpace(data.Model) ? string.Empty : $"Model: {data.Model}";
+        AppendActionToCurrentPrompt(new ReportActionEntry(
+            DateTimeOffset.Now,
+            name,
+            "Delegated investigation",
+            model,
+            "Delegated",
+            "Subagent")
+        {
+            ToolCallId = toolCallId
+        });
+
+        if (!string.IsNullOrWhiteSpace(toolCallId))
+        {
+            lock (_reportLock)
+            {
+                _pendingSubagentActions[toolCallId] = new McpActionLocation(
+                    _lastPromptIndex,
+                    _reportPrompts[_lastPromptIndex].Actions.Count - 1);
+            }
+        }
+    }
+
+    internal void RecordSubagentCompleted(SubagentCompletedEvent completed) =>
+        CompleteSubagentAction(
+            completed.Data?.ToolCallId,
+            completed.Data?.TotalTokens,
+            completed.Data?.TotalToolCalls,
+            success: true,
+            error: null);
+
+    internal void RecordSubagentFailed(SubagentFailedEvent failed) =>
+        CompleteSubagentAction(
+            failed.Data?.ToolCallId,
+            failed.Data?.TotalTokens,
+            failed.Data?.TotalToolCalls,
+            success: false,
+            error: failed.Data?.Error);
+
     internal void ClearRecordedConversationHistory()
     {
         lock (_reportLock)
@@ -169,6 +219,7 @@ internal sealed class ConversationHistoryTracker
             _reportPrompts.Clear();
             _lastPromptIndex = -1;
             _pendingMcpActions.Clear();
+            _pendingSubagentActions.Clear();
         }
     }
 
@@ -180,6 +231,7 @@ internal sealed class ConversationHistoryTracker
             _reportPrompts.AddRange(SessionTranscriptService.RedactPrompts(prompts));
             _lastPromptIndex = _reportPrompts.Count - 1;
             _pendingMcpActions.Clear();
+            _pendingSubagentActions.Clear();
         }
     }
 
@@ -217,6 +269,52 @@ internal sealed class ConversationHistoryTracker
             }
 
             _reportPrompts[_lastPromptIndex].Actions.Add(actionEntry);
+        }
+    }
+
+    private void CompleteSubagentAction(string? toolCallId, long? tokens, long? tools, bool success, string? error)
+    {
+        if (string.IsNullOrWhiteSpace(toolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentActions.Remove(toolCallId, out var location)
+                || location.PromptIndex < 0
+                || location.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var actions = _reportPrompts[location.PromptIndex].Actions;
+            if (location.ActionIndex < 0 || location.ActionIndex >= actions.Count)
+            {
+                return;
+            }
+
+            var parts = new List<string>();
+            if (tokens is > 0)
+            {
+                parts.Add($"{tokens:N0} tokens");
+            }
+            if (tools is > 0)
+            {
+                parts.Add($"{tools:N0} tools");
+            }
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                parts.Add(error);
+            }
+
+            var current = actions[location.ActionIndex];
+            actions[location.ActionIndex] = current with
+            {
+                Output = string.Join(", ", parts),
+                SafetyApproval = success ? "Delegated" : "Failed",
+                Success = success
+            };
         }
     }
 

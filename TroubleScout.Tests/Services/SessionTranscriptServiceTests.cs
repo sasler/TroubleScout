@@ -181,6 +181,31 @@ public sealed class SessionTranscriptServiceTests : IDisposable
     }
 
     [Fact]
+    public void Load_ShouldAcceptLegacySchemaVersionOne()
+    {
+        var path = Path.Combine(_tempDir, "legacy.json");
+        File.WriteAllText(path, """
+        {
+          "schemaVersion": 1,
+          "createdAt": "2026-05-09T12:00:00Z",
+          "prompts": [
+            {
+              "timestamp": "2026-05-09T12:00:00Z",
+              "prompt": "hello",
+              "actions": [],
+              "agentReply": "reply"
+            }
+          ]
+        }
+        """);
+
+        var result = SessionTranscriptService.Load(path, out var transcript, out _);
+
+        result.Should().Be(SessionTranscriptLoadResult.Success);
+        transcript!.SchemaVersion.Should().Be(1);
+    }
+
+    [Fact]
     public void SaveAndLoad_ShouldRoundTripPromptActionsStatusBarAndSummary()
     {
         var path = Path.Combine(_tempDir, "session.json");
@@ -223,6 +248,10 @@ public sealed class SessionTranscriptServiceTests : IDisposable
         transcript.Prompts[0].Actions[0].Command.Should().Be("Get-Service");
         transcript.Prompts[0].StatusBar!.Model.Should().Be("gpt-5");
         transcript.Summary!.CurrentModel.Should().Be("gpt-5");
+        transcript.Summary.AgentModels.Should().ContainKey("evidence").WhoseValue.Should().Be("gpt-4.1");
+        transcript.Summary.GitHubBillingDisplayMode.Should().Be("ai-credits");
+        transcript.Summary.SubagentCalls.Should().Be(2);
+        transcript.Summary.SubagentTokens.Should().Be(44);
     }
 
     [Fact]
@@ -258,6 +287,12 @@ public sealed class SessionTranscriptServiceTests : IDisposable
             PersistedApprovedMcpServers: [],
             ConfiguredSkills: [],
             UsedSkills: [],
-            ExecutionMode: "Safe",
-            TargetServer: "localhost");
+            ExecutionMode: "Strict",
+            TargetServer: "localhost")
+        {
+            AgentModels = new Dictionary<string, string> { ["evidence"] = "gpt-4.1" },
+            GitHubBillingDisplayMode = "ai-credits",
+            SubagentCalls = 2,
+            SubagentTokens = 44
+        };
 }

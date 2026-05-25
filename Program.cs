@@ -22,7 +22,7 @@ var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
 var debugMode = false;
-var executionMode = ExecutionMode.Safe;
+var executionMode = ExecutionMode.Strict;
 var useByokOpenAi = false;
 string? byokOpenAiBaseUrl = null;
 string? byokOpenAiApiKey = null;
@@ -91,12 +91,12 @@ for (int i = 0; i < args.Length; i++)
         case "--mode" when i + 1 < args.Length:
             if (!ExecutionModeParser.TryParse(args[++i], out executionMode))
             {
-                Console.WriteLine("Invalid mode. Use: safe or yolo.");
+                Console.WriteLine("Invalid mode. Use: strict or auto.");
                 return 1;
             }
             break;
         case "--mode":
-            Console.WriteLine("--mode requires a value: safe or yolo.");
+            Console.WriteLine("--mode requires a value: strict or auto.");
             return 1;
         case "--byok-openai":
             useByokOpenAi = true;

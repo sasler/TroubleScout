@@ -123,7 +123,7 @@ public class McpReadOnlyHeuristicTests
         // The heuristic only matches "get_*", "list_*", etc. Bare "getx", "listing",
         // and similar strings must not be auto-approved — otherwise an MCP tool named
         // "status_change" or "getconfigurationreset" would slip past the approval
-        // prompt in Safe mode.
+        // prompt in Strict mode.
         McpReadOnlyHeuristic.IsReadOnlyToolName(toolName).Should().BeFalse();
     }
 }

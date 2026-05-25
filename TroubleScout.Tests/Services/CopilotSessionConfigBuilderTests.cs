@@ -20,6 +20,10 @@ public class CopilotSessionConfigBuilderTests
         config.OnPermissionRequest.Should().NotBeNull();
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
+        config.DefaultAgent.ExcludedTools.Should().Contain([
+            "get_system_info", "get_event_logs", "get_services", "get_processes",
+            "get_disk_space", "get_network_info", "get_performance_counters"
+        ]);
     }
 
     [Fact]
@@ -39,10 +43,27 @@ public class CopilotSessionConfigBuilderTests
         config.CustomAgents.Should().Contain(agent => agent.Name == "server-evidence-collector"
             && agent.Infer == true
             && string.Equals(agent.DisplayName, "Server Evidence Collector", StringComparison.Ordinal));
+        var evidenceCollector = config.CustomAgents!.Single(agent => agent.Name == "server-evidence-collector");
+        evidenceCollector.Tools.Should().Contain(["get_system_info", "get_event_logs", "run_powershell"]);
 
         var issueResearcher = config.CustomAgents!.Single(agent => agent.Name == "issue-researcher");
         issueResearcher.Infer.Should().BeTrue();
         issueResearcher.Tools.Should().Equal("web_search");
+    }
+
+    [Fact]
+    public void Build_WithRoleModelOverrides_ShouldApplyModelsToMatchingAgents()
+    {
+        var config = CopilotSessionConfigBuilder.Build(CreateOptions(
+            agentModels: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["evidence"] = "gpt-5-mini",
+                ["research"] = "gpt-4.1"
+            }));
+
+        var agents = config.CustomAgents!;
+        agents.Single(agent => agent.Name == "server-evidence-collector").Model.Should().Be("gpt-5-mini");
+        agents.Single(agent => agent.Name == "issue-researcher").Model.Should().Be("gpt-4.1");
     }
 
     [Fact]
@@ -89,7 +110,8 @@ public class CopilotSessionConfigBuilderTests
         IReadOnlyDictionary<string, McpServerConfig>? mcpServers = null,
         string? monitoringMcpServer = null,
         string? ticketingMcpServer = null,
-        ICollection<string>? configurationWarnings = null)
+        ICollection<string>? configurationWarnings = null,
+        IReadOnlyDictionary<string, string>? agentModels = null)
     {
         return new CopilotSessionConfigOptions(
             Model: model,
@@ -102,6 +124,7 @@ public class CopilotSessionConfigBuilderTests
             TicketingMcpServer: ticketingMcpServer,
             OnEvent: _ => { },
             OnPermissionRequest: (_, _) => Task.FromResult(new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved }),
-            ConfigurationWarnings: configurationWarnings);
+            ConfigurationWarnings: configurationWarnings,
+            AgentModels: agentModels);
     }
 }

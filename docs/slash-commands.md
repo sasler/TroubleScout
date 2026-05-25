@@ -99,19 +99,25 @@ Examples:
 /jea server1 JEA-Admins
 ```
 
-### `/mode <safe|yolo>`
+### `/mode <strict|auto>`
 
 Set the PowerShell execution mode for the current session.
 
-- `safe` (default): only commands matching the safe list (`Get-*`, `Select-*`, `Sort-*`, etc.) auto-execute. Mutations require approval.
+- `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.
 
-- `yolo`: remediation commands can execute without confirmation. Use with care.
+- `auto`: unknown command candidates can be evaluated by the configured approval subagent; known mutations still require approval.
 
 ## Configuration
 
 ### `/model`
 
 Choose another AI model and session handoff mode interactively.
+
+### `/agent-model [role] [model|inherit]`
+
+Configure per-provider models for evidence, research, monitoring, ticketing, and approval subagents.
+
+The `approval` role must have an explicit model before `/mode auto` can be enabled.
 
 ### `/reasoning [auto|<effort>]`
 

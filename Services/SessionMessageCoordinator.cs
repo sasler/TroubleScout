@@ -65,6 +65,9 @@ internal static class SessionMessageCoordinator
                     ShowLiveStatusNotice = ConsoleUI.ShowLiveStatusNotice,
                     RecordMcpToolAction = request.RecordMcpToolAction,
                     RecordMcpToolComplete = request.HistoryTracker.RecordMcpToolComplete,
+                    RecordSubagentStarted = request.HistoryTracker.RecordSubagentStarted,
+                    RecordSubagentCompleted = request.HistoryTracker.RecordSubagentCompleted,
+                    RecordSubagentFailed = request.HistoryTracker.RecordSubagentFailed,
                     IncrementToolInvocation = request.IncrementToolInvocation
                 }
             });

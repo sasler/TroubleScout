@@ -31,9 +31,10 @@ internal sealed class SlashCommandHandlers
     internal Action<bool> ShowStatus { get; init; } = static _ => { };
     internal Action ShowStats { get; init; } = static () => { };
     internal Action ShowHistory { get; init; } = static () => { };
-    internal Func<ExecutionMode> GetExecutionMode { get; init; } = static () => ExecutionMode.Safe;
+    internal Func<ExecutionMode> GetExecutionMode { get; init; } = static () => ExecutionMode.Strict;
     internal Action<ExecutionMode> SetExecutionMode { get; init; } = static _ => { };
     internal Action<ExecutionMode> SetConsoleExecutionMode { get; init; } = static _ => { };
+    internal Func<bool> CanEnableAutoMode { get; init; } = static () => false;
     internal Func<string> GetTheme { get; init; } = static () => "dark";
     internal Action<string> SetTheme { get; init; } = static _ => { };
     internal Action<string> PersistTheme { get; init; } = static _ => { };
@@ -45,6 +46,10 @@ internal sealed class SlashCommandHandlers
     internal Func<Task> RefreshAvailableModels { get; init; } = static () => Task.CompletedTask;
     internal Func<int> GetAvailableModelCount { get; init; } = static () => 0;
     internal Func<IReadOnlyList<ModelSelectionEntry>> GetModelSelectionEntries { get; init; } = static () => Array.Empty<ModelSelectionEntry>();
+    internal Func<bool> UseByokOpenAi { get; init; } = static () => false;
+    internal Func<IReadOnlyDictionary<string, string>> GetAgentModelOverrides { get; init; } =
+        static () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    internal Action<string, string?> SaveAgentModelOverride { get; init; } = static (_, _) => { };
     internal Func<string, IReadOnlyList<ModelSelectionEntry>, ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
     internal Func<ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
     internal Func<string, string, ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => ModelSwitchBehavior.CleanSession;
@@ -228,6 +233,12 @@ internal sealed class SlashCommandDispatcher
         if (parsed.FirstToken == "/model")
         {
             await HandleModelCommandAsync();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/agent-model"))
+        {
+            await HandleAgentModelCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -755,6 +766,87 @@ internal sealed class SlashCommandDispatcher
         }
     }
 
+    private async Task HandleAgentModelCommandAsync(string input)
+    {
+        var parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+        var role = parts.Length > 1 ? parts[1].Trim().ToLowerInvariant() : null;
+        if (string.IsNullOrWhiteSpace(role))
+        {
+            var configured = _handlers.GetAgentModelOverrides();
+            _handlers.ShowInfo($"Agent model profile: {(_handlers.UseByokOpenAi() ? "byok" : "github")}");
+            foreach (var supportedRole in AppSettingsStore.SupportedAgentRoles)
+            {
+                _handlers.ShowInfo($"  {supportedRole}: {(configured.TryGetValue(supportedRole, out var value) ? value : "inherit")}");
+            }
+            _handlers.ShowInfo("Enter role to configure (evidence, research, monitoring, ticketing, approval), or press Enter to stop:");
+            role = _handlers.PromptText().Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(role))
+            {
+                return;
+            }
+        }
+
+        if (!AppSettingsStore.SupportedAgentRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
+        {
+            _handlers.ShowWarning($"Unknown agent role '{role}'. Supported roles: {string.Join(", ", AppSettingsStore.SupportedAgentRoles)}.");
+            return;
+        }
+
+        string? selectedModel = parts.Length > 2 ? parts[2].Trim() : null;
+        if (string.Equals(selectedModel, "inherit", StringComparison.OrdinalIgnoreCase))
+        {
+            if (role == "approval" && _handlers.GetExecutionMode() == ExecutionMode.Auto)
+            {
+                _handlers.ShowWarning("The approval role cannot inherit or be cleared while auto mode is enabled.");
+                return;
+            }
+
+            _handlers.SaveAgentModelOverride(role, null);
+            _handlers.ShowSuccess($"Agent model for '{role}' now inherits the primary model.");
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(selectedModel))
+            {
+                await _handlers.RefreshAvailableModels();
+                var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+                var choices = _handlers.GetModelSelectionEntries().Where(entry => entry.Source == activeSource).ToList();
+                if (choices.Count == 0)
+                {
+                    _handlers.ShowWarning("No models are available for the active provider.");
+                    return;
+                }
+
+                var current = _handlers.GetAgentModelOverrides().TryGetValue(role, out var existing) ? existing : string.Empty;
+                selectedModel = _handlers.PromptModelSelection(current, choices)?.ModelId;
+                if (string.IsNullOrWhiteSpace(selectedModel))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                await _handlers.RefreshAvailableModels();
+                var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+                if (!_handlers.GetModelSelectionEntries().Any(entry =>
+                        entry.Source == activeSource && entry.ModelId.Equals(selectedModel, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _handlers.ShowWarning($"Model '{selectedModel}' is not available from the active provider.");
+                    return;
+                }
+            }
+
+            _handlers.SaveAgentModelOverride(role, selectedModel);
+            _handlers.ShowSuccess($"Agent model for '{role}' set to '{selectedModel}' for the active provider.");
+        }
+
+        var (recreated, error) = await _handlers.RecreateCurrentCopilotSession();
+        if (!recreated)
+        {
+            _handlers.ShowWarning($"Agent model was saved, but the AI session could not be recreated. {error}".Trim());
+        }
+    }
+
     private static bool LooksLikeUrl(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -994,16 +1086,13 @@ internal sealed class SlashCommandDispatcher
 
         foreach (var server in additionalServers)
         {
-            if (_handlers.GetExecutionMode() == ExecutionMode.Safe)
+            var approved = _handlers.PromptCommandApproval(
+                $"New-PSSession -ComputerName '{server}'",
+                $"TroubleScout wants to establish a direct PowerShell session to {server}");
+            if (!approved)
             {
-                var approved = _handlers.PromptCommandApproval(
-                    $"New-PSSession -ComputerName '{server}'",
-                    $"TroubleScout wants to establish a direct PowerShell session to {server}");
-                if (!approved)
-                {
-                    _handlers.ShowWarning($"Connection to {server} was denied.");
-                    continue;
-                }
+                _handlers.ShowWarning($"Connection to {server} was denied.");
+                continue;
             }
 
             await _handlers.RunWithSpinnerAsync($"Connecting to {server}...", async _ =>
@@ -1163,13 +1252,19 @@ internal sealed class SlashCommandDispatcher
         if (parts.Length < 2)
         {
             _handlers.ShowInfo($"Current mode: {_handlers.GetExecutionMode().ToCliValue()}");
-            _handlers.ShowInfo("Usage: /mode <safe|yolo>");
+            _handlers.ShowInfo("Usage: /mode <strict|auto>");
             return;
         }
 
         if (!ExecutionModeParser.TryParse(parts[1], out var requestedMode))
         {
-            _handlers.ShowWarning("Invalid mode. Use: safe or yolo.");
+            _handlers.ShowWarning("Invalid mode. Use: strict or auto.");
+            return;
+        }
+
+        if (requestedMode == ExecutionMode.Auto && !_handlers.CanEnableAutoMode())
+        {
+            _handlers.ShowWarning("Auto mode requires an explicit approval subagent model for the active provider. Configure one with /agent-model approval <model>.");
             return;
         }
 

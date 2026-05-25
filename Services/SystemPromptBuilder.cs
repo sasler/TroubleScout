@@ -179,6 +179,7 @@ internal static class SystemPromptBuilder
         {
             var roleLines = new StringBuilder();
             roleLines.AppendLine("## MCP Role Guidance");
+            roleLines.AppendLine("- Delegate targeted server diagnostic evidence collection to the server-evidence-collector sub-agent.");
 
             if (!string.IsNullOrWhiteSpace(settings.MonitoringMcpServer))
             {
@@ -197,6 +198,16 @@ internal static class SystemPromptBuilder
             roleLines.AppendLine("- Keep delegated results concise and bring back only findings that materially affect the diagnosis.");
             roleLines.AppendLine();
             mcpRoleGuidance = roleLines.ToString();
+        }
+        else
+        {
+            mcpRoleGuidance = """
+                ## Delegation Guidance
+                - Delegate targeted server log, event, service, process, disk, network, and performance evidence collection to the server-evidence-collector sub-agent.
+                - Delegate external issue and remediation research to the issue-researcher sub-agent when web research materially improves the diagnosis.
+                - Keep delegated results concise and return only evidence that affects the diagnosis.
+
+                """;
         }
 
         if (settings.SystemPromptOverrides != null)

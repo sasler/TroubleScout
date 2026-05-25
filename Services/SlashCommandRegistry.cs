@@ -44,13 +44,15 @@ internal static class SlashCommandRegistry
                 "JEA executions never use `AddScript(...)`; commands are built with the PowerShell command API so no-language endpoints stay valid."
             ],
             ["/jea server1 JEA-Admins"]),
-        new(Diagnostics, "/mode <safe|yolo>", "Set the PowerShell execution mode for the current session.", ["/mode"],
+        new(Diagnostics, "/mode <strict|auto>", "Set the PowerShell execution mode for the current session.", ["/mode"],
             [
-                "- `safe` (default): only commands matching the safe list (`Get-*`, `Select-*`, `Sort-*`, etc.) auto-execute. Mutations require approval.",
-                "- `yolo`: remediation commands can execute without confirmation. Use with care."
+                "- `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.",
+                "- `auto`: unknown command candidates can be evaluated by the configured approval subagent; known mutations still require approval."
             ]),
 
         new(Configuration, "/model", "Choose another AI model and session handoff mode interactively.", ["/model"]),
+        new(Configuration, "/agent-model [role] [model|inherit]", "Configure per-provider models for evidence, research, monitoring, ticketing, and approval subagents.", ["/agent-model"],
+            ["The `approval` role must have an explicit model before `/mode auto` can be enabled."]),
         new(Configuration, "/reasoning [auto|<effort>]", "Set the reasoning effort for the current model when supported.", ["/reasoning"],
             ["With no argument, prompts interactively."]),
         new(Configuration, "/settings", "Open `settings.json` in the default editor, then reload prompt and safety configuration after the editor exits.", ["/settings"]),

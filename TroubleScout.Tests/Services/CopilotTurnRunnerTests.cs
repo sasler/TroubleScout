@@ -184,6 +184,84 @@ public class CopilotTurnRunnerTests
         errors.Should().ContainSingle().Which.Should().Be(("Session Error", "boom"));
     }
 
+    [Fact]
+    public async Task RunAsync_SubagentLifecycle_ShouldEmitDurableUsageNotices()
+    {
+        var notices = new List<string>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData
+                {
+                    AgentDisplayName = "Server Evidence Collector",
+                    AgentName = "server-evidence-collector",
+                    AgentDescription = "Collects evidence",
+                    Model = "gpt-5-mini",
+                    ToolCallId = "sub-1"
+                }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData
+                {
+                    AgentDisplayName = "Server Evidence Collector",
+                    AgentName = "server-evidence-collector",
+                    Model = "gpt-5-mini",
+                    ToolCallId = "sub-1",
+                    TotalTokens = 120,
+                    TotalToolCalls = 2,
+                    Duration = TimeSpan.FromSeconds(1.5)
+                }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(session, showLiveStatusNotice: notices.Add));
+
+        notices.Should().Contain(message => message.Contains("Server Evidence Collector", StringComparison.Ordinal)
+            && message.Contains("gpt-5-mini", StringComparison.Ordinal)
+            && message.Contains("started", StringComparison.OrdinalIgnoreCase));
+        notices.Should().Contain(message => message.Contains("120 tokens", StringComparison.Ordinal)
+            && message.Contains("2 tools", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentFailure_ShouldEmitDurableUsageNotice()
+    {
+        var notices = new List<string>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentFailedEvent
+            {
+                Data = new SubagentFailedData
+                {
+                    AgentDisplayName = "Approval Reviewer",
+                    AgentName = "approval",
+                    Model = "gpt-4.1",
+                    ToolCallId = "sub-2",
+                    TotalTokens = 45,
+                    TotalToolCalls = 1,
+                    Duration = TimeSpan.FromSeconds(2),
+                    Error = "timeout"
+                }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(session, showLiveStatusNotice: notices.Add));
+
+        notices.Should().Contain(message => message.Contains("Approval Reviewer", StringComparison.Ordinal)
+            && message.Contains("failed", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("45 tokens", StringComparison.Ordinal)
+            && message.Contains("1 tools", StringComparison.Ordinal)
+            && message.Contains("2", StringComparison.Ordinal));
+    }
+
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
         {
@@ -209,6 +287,7 @@ public class CopilotTurnRunnerTests
         Action<string>? writeAiResponse = null,
         Action<string>? writeReasoningText = null,
         Action<string, string>? showError = null,
+        Action<string>? showLiveStatusNotice = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
         => new()
         {
@@ -221,7 +300,8 @@ public class CopilotTurnRunnerTests
             {
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
-                ShowError = showError ?? ((_, _) => { })
+                ShowError = showError ?? ((_, _) => { }),
+                ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { })
             }
         };
 

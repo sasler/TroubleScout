@@ -8,15 +8,15 @@ public static partial class ConsoleUI
 {
     private static string GetPromptMarkup()
     {
-        return _currentExecutionMode == ExecutionMode.Yolo
-            ? "[bold cyan]You[/] [bold OrangeRed1](YOLO)[/][grey] >[/] "
+        return _currentExecutionMode == ExecutionMode.Auto
+            ? "[bold cyan]You[/] [bold yellow](AUTO)[/][grey] >[/] "
             : "[bold cyan]You[/] [grey]>[/] ";
     }
 
     private static string GetPromptText()
     {
-        return _currentExecutionMode == ExecutionMode.Yolo
-            ? "You (YOLO) > "
+        return _currentExecutionMode == ExecutionMode.Auto
+            ? "You (AUTO) > "
             : "You > ";
     }
 

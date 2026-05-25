@@ -15,6 +15,8 @@ internal sealed class SessionPermissionHandler
     private readonly CommandApprovalPrompt _promptCommandApproval;
     private readonly UrlApprovalPrompt _promptUrlApproval;
     private readonly McpApprovalPrompt _promptMcpApproval;
+    private readonly IAutoCommandApprovalEvaluator? _autoCommandApprovalEvaluator;
+    private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
     private readonly HashSet<string> _approvedUrlsForSession = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _approvedMcpServersForSession = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _persistedSeededApprovals = new(StringComparer.OrdinalIgnoreCase);
@@ -28,7 +30,9 @@ internal sealed class SessionPermissionHandler
         CommandApprovalPrompt promptCommandApproval,
         UrlApprovalPrompt promptUrlApproval,
         McpApprovalPrompt promptMcpApproval,
-        AppSettings? appSettings = null)
+        AppSettings? appSettings = null,
+        IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
     {
         _getExecutionMode = getExecutionMode;
         _getConfiguredSafeCommands = getConfiguredSafeCommands;
@@ -37,21 +41,18 @@ internal sealed class SessionPermissionHandler
         _promptUrlApproval = promptUrlApproval;
         _promptMcpApproval = promptMcpApproval;
         _appSettings = appSettings;
+        _autoCommandApprovalEvaluator = autoCommandApprovalEvaluator;
+        _recordAutoAuthorization = recordAutoAuthorization;
     }
 
-    internal Task<PermissionRequestResult> HandleAsync(PermissionRequest request, PermissionInvocation invocation)
+    internal async Task<PermissionRequestResult> HandleAsync(PermissionRequest request, PermissionInvocation invocation)
     {
         _ = invocation;
 
         var kind = PermissionEvaluator.NormalizePermissionKind(request.Kind);
         if (kind is "read" or "custom-tool")
         {
-            return Task.FromResult(Approved());
-        }
-
-        if (_getExecutionMode() == ExecutionMode.Yolo)
-        {
-            return Task.FromResult(Approved());
+            return Approved();
         }
 
         if (kind == "shell")
@@ -64,19 +65,31 @@ internal sealed class SessionPermissionHandler
             {
                 if (shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
                 {
-                    return Task.FromResult(Approved());
+                    return Approved();
                 }
 
                 if (!shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
                 {
-                    return Task.FromResult(Rejected());
+                    return Rejected();
+                }
+
+                if (_getExecutionMode() == ExecutionMode.Auto
+                    && shellAssessment.Validation.Classification == CommandSafetyClassification.Unknown
+                    && _autoCommandApprovalEvaluator != null)
+                {
+                    var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(shellAssessment.FullCommand);
+                    if (decision is { IsReadOnly: true })
+                    {
+                        _recordAutoAuthorization?.Invoke(shellAssessment.Command, decision);
+                        return Approved();
+                    }
                 }
 
                 var shellApproval = _promptCommandApproval(
                     shellAssessment.Command,
                     shellAssessment.PromptReason,
                     shellAssessment.ImpactText);
-                return Task.FromResult(shellApproval == ApprovalResult.Approved ? Approved() : Rejected());
+                return shellApproval == ApprovalResult.Approved ? Approved() : Rejected();
             }
         }
 
@@ -84,18 +97,18 @@ internal sealed class SessionPermissionHandler
         {
             if (TryIsApprovedUrlRequest(request))
             {
-                return Task.FromResult(Approved());
+                return Approved();
             }
 
             var url = GetUrlFromPermissionRequest(request);
             var intention = GetUrlPermissionIntention(request);
             var urlApproval = _promptUrlApproval(url ?? "URL fetch", intention);
-            return Task.FromResult(CreateUrlPermissionApprovalResult(url, urlApproval));
+            return CreateUrlPermissionApprovalResult(url, urlApproval);
         }
 
         if (kind == "mcp")
         {
-            return Task.FromResult(HandleMcpPermissionRequest(request));
+            return HandleMcpPermissionRequest(request);
         }
 
         var description = PermissionEvaluator.DescribePermissionRequest(request);
@@ -103,7 +116,7 @@ internal sealed class SessionPermissionHandler
             description,
             PermissionEvaluator.BuildPermissionPromptReason(kind),
             null);
-        return Task.FromResult(approval == ApprovalResult.Approved ? Approved() : Rejected());
+        return approval == ApprovalResult.Approved ? Approved() : Rejected();
     }
 
     internal void ResetUrlApprovals()

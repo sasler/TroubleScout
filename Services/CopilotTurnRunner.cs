@@ -56,6 +56,9 @@ internal sealed class CopilotTurnCallbacks
     public Action<string> ShowLiveStatusNotice { get; init; } = static _ => { };
     public Action<ToolExecutionStartEvent> RecordMcpToolAction { get; init; } = static _ => { };
     public Action<ToolExecutionCompleteEvent> RecordMcpToolComplete { get; init; } = static _ => { };
+    public Action<SubagentStartedEvent> RecordSubagentStarted { get; init; } = static _ => { };
+    public Action<SubagentCompletedEvent> RecordSubagentCompleted { get; init; } = static _ => { };
+    public Action<SubagentFailedEvent> RecordSubagentFailed { get; init; } = static _ => { };
     public Action IncrementToolInvocation { get; init; } = static () => { };
 }
 
@@ -196,23 +199,62 @@ internal sealed class CopilotTurnRunner
                         {
                             pendingStreamLineBreak = true;
                         }
-                        thinkingIndicator.UpdateStatus($"Delegating to {subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "sub-agent"}");
+                        var startedName = subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "subagent";
+                        var startedModel = subagentStarted.Data?.Model;
+                        thinkingIndicator.UpdateStatus($"Delegating to {startedName}");
+                        request.Callbacks.ShowLiveStatusNotice(
+                            string.IsNullOrWhiteSpace(startedModel)
+                                ? $"Subagent started: {startedName}"
+                                : $"Subagent started: {startedName} ({startedModel})");
+                        request.Callbacks.RecordSubagentStarted(subagentStarted);
                         break;
 
-                    case SubagentCompletedEvent:
+                    case SubagentCompletedEvent subagentCompleted:
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Processing delegated results");
+                        var completedName = subagentCompleted.Data?.AgentDisplayName ?? subagentCompleted.Data?.AgentName ?? "subagent";
+                        var completedSuffix = new List<string>();
+                        if (subagentCompleted.Data?.TotalTokens is long tokens && tokens > 0)
+                        {
+                            completedSuffix.Add($"{tokens:N0} tokens");
+                        }
+                        if (subagentCompleted.Data?.TotalToolCalls is long tools && tools > 0)
+                        {
+                            completedSuffix.Add($"{tools:N0} tools");
+                        }
+                        request.Callbacks.ShowLiveStatusNotice(
+                            $"Subagent completed: {completedName}" +
+                            (completedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", completedSuffix)})"));
+                        request.Callbacks.RecordSubagentCompleted(subagentCompleted);
                         break;
 
-                    case SubagentFailedEvent:
+                    case SubagentFailedEvent subagentFailed:
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Delegated task failed");
+                        var failedName = subagentFailed.Data?.AgentDisplayName ?? subagentFailed.Data?.AgentName ?? "subagent";
+                        var failedSuffix = new List<string>();
+                        if (subagentFailed.Data?.Duration is TimeSpan failedDuration)
+                        {
+                            failedSuffix.Add($"{failedDuration.TotalSeconds:0.#}s");
+                        }
+                        if (subagentFailed.Data?.TotalTokens is long failedTokens && failedTokens > 0)
+                        {
+                            failedSuffix.Add($"{failedTokens:N0} tokens");
+                        }
+                        if (subagentFailed.Data?.TotalToolCalls is long failedTools && failedTools > 0)
+                        {
+                            failedSuffix.Add($"{failedTools:N0} tools");
+                        }
+                        request.Callbacks.ShowLiveStatusNotice(
+                            $"Subagent failed: {failedName}" +
+                            (failedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", failedSuffix)})"));
+                        request.Callbacks.RecordSubagentFailed(subagentFailed);
                         break;
 
                     case AssistantMessageDeltaEvent delta:

@@ -17,7 +17,8 @@ internal sealed record CopilotSessionConfigOptions(
     ICollection<string>? ConfigurationWarnings = null,
     ProviderConfig? Provider = null,
     IReadOnlyList<string>? SkillDirectories = null,
-    IReadOnlyList<string>? DisabledSkills = null);
+    IReadOnlyList<string>? DisabledSkills = null,
+    IReadOnlyDictionary<string, string>? AgentModels = null);
 
 internal static class CopilotSessionConfigBuilder
 {
@@ -37,7 +38,17 @@ internal static class CopilotSessionConfigBuilder
             Tools = options.Tools.Cast<AIFunctionDeclaration>().ToList(),
             DefaultAgent = new DefaultAgentConfig
             {
-                ExcludedTools = ["web_search"]
+                ExcludedTools =
+                [
+                    "web_search",
+                    "get_system_info",
+                    "get_event_logs",
+                    "get_services",
+                    "get_processes",
+                    "get_disk_space",
+                    "get_network_info",
+                    "get_performance_counters"
+                ]
             },
             CustomAgents = BuildCustomAgentConfigs(options),
             ClientName = "TroubleScout",
@@ -81,6 +92,18 @@ internal static class CopilotSessionConfigBuilder
                 DisplayName = "Server Evidence Collector",
                 Description = "Collects targeted server and MCP evidence, then returns only the relevant findings.",
                 Infer = true,
+                Model = GetRoleModel(options, "evidence"),
+                Tools =
+                [
+                    "get_system_info",
+                    "get_event_logs",
+                    "get_services",
+                    "get_processes",
+                    "get_disk_space",
+                    "get_network_info",
+                    "get_performance_counters",
+                    "run_powershell"
+                ],
                 Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentServerEvidenceCollector)
             },
             new()
@@ -89,6 +112,7 @@ internal static class CopilotSessionConfigBuilder
                 DisplayName = "Issue Researcher",
                 Description = "Researches detected errors, symptoms, and event IDs on the web and returns concise findings.",
                 Infer = true,
+                Model = GetRoleModel(options, "research"),
                 Tools = ["web_search"],
                 Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentIssueResearcher)
             }
@@ -99,7 +123,8 @@ internal static class CopilotSessionConfigBuilder
             "Monitoring Investigator",
             options.MonitoringMcpServer,
             options.AvailableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentMonitoringInvestigator));
+            PromptTemplateLoader.Render(PromptTemplateIds.AgentMonitoringInvestigator),
+            GetRoleModel(options, "monitoring"));
         if (monitoringAgent != null)
         {
             agents.Add(monitoringAgent);
@@ -110,7 +135,8 @@ internal static class CopilotSessionConfigBuilder
             "Ticket Investigator",
             options.TicketingMcpServer,
             options.AvailableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentTicketInvestigator));
+            PromptTemplateLoader.Render(PromptTemplateIds.AgentTicketInvestigator),
+            GetRoleModel(options, "ticketing"));
         if (ticketingAgent != null)
         {
             agents.Add(ticketingAgent);
@@ -124,7 +150,8 @@ internal static class CopilotSessionConfigBuilder
         string displayName,
         string? configuredServerName,
         IReadOnlyDictionary<string, McpServerConfig> availableMcpServers,
-        string prompt)
+        string prompt,
+        string? model)
     {
         if (string.IsNullOrWhiteSpace(configuredServerName)
             || !availableMcpServers.TryGetValue(configuredServerName, out var serverConfig))
@@ -138,6 +165,7 @@ internal static class CopilotSessionConfigBuilder
             DisplayName = displayName,
             Description = $"Uses the mapped MCP role '{configuredServerName}' and returns concise findings.",
             Infer = true,
+            Model = model,
             McpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase)
             {
                 [configuredServerName] = serverConfig
@@ -145,6 +173,11 @@ internal static class CopilotSessionConfigBuilder
             Prompt = prompt
         };
     }
+
+    private static string? GetRoleModel(CopilotSessionConfigOptions options, string role) =>
+        options.AgentModels != null && options.AgentModels.TryGetValue(role, out var model) && !string.IsNullOrWhiteSpace(model)
+            ? model.Trim()
+            : null;
 
     private static void ValidateConfiguredMcpRole(
         string roleName,

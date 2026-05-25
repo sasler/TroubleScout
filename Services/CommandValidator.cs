@@ -1,3 +1,5 @@
+using System.Management.Automation.Language;
+
 namespace TroubleScout.Services;
 
 internal class CommandValidator
@@ -16,7 +18,20 @@ internal class CommandValidator
         "Enable-", "Disable-", "Rename-", "Move-", "Add-", "Install-",
         "Uninstall-", "Invoke-", "Register-", "Unregister-", "Reset-",
         "Update-", "Grant-", "Revoke-", "Suspend-", "Resume-", "Push-",
-        "Mount-", "Dismount-", "Repair-"
+        "Mount-", "Dismount-", "Repair-", "Format-"
+    ];
+
+    private static readonly HashSet<string> ReadOnlyFormatCommands =
+    [
+        "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide"
+    ];
+
+    private static readonly HashSet<string> MutatingMembers =
+    [
+        "Kill", "Stop", "Dispose", "Delete", "Start",
+        "WriteAllText", "WriteAllBytes", "WriteAllLines", "AppendAllText", "AppendAllLines",
+        "Create", "CreateDirectory", "Move", "Copy", "Replace",
+        "SetAttributes", "SetCreationTime", "SetLastAccessTime", "SetLastWriteTime"
     ];
 
     private readonly ExecutionMode _executionMode;
@@ -40,58 +55,25 @@ internal class CommandValidator
     {
         if (string.IsNullOrWhiteSpace(command))
         {
-            return new CommandValidation(false, false, "Command cannot be empty");
+            return new CommandValidation(false, false, "Command cannot be empty", CommandSafetyClassification.Invalid);
         }
 
         if (_configurationName != null)
         {
             return _jeaAllowedCommands != null
                 ? ValidateJeaCommand(command)
-                : new CommandValidation(false, false, "JEA command discovery has not completed for this session.");
+                : new CommandValidation(false, false, "JEA command discovery has not completed for this session.", CommandSafetyClassification.Blocked);
         }
 
-        var isMultiStatement = command.Contains('\n') || command.Contains(';');
-
-        if (isMultiStatement)
+        var classification = ClassifyCommand(command, out var detail);
+        return classification switch
         {
-            if (IsReadOnlyScript(command))
-            {
-                return new CommandValidation(true, false);
-            }
-
-            return GetMutatingCommandValidation("Script contains commands that can modify system state");
-        }
-
-        if (command.Contains('|'))
-        {
-            return IsReadOnlyScript(command)
-                ? new CommandValidation(true, false)
-                : GetMutatingCommandValidation("Pipeline contains commands that can modify system state");
-        }
-
-        var cmdletName = ExtractCmdletName(command);
-
-        if (IsSimpleReadOnlyExpression(command))
-        {
-            return new CommandValidation(true, false);
-        }
-
-        if (string.IsNullOrEmpty(cmdletName))
-        {
-            return new CommandValidation(false, true, "Could not parse command - requires approval");
-        }
-
-        if (BlockedCommands.Contains(cmdletName, StringComparer.OrdinalIgnoreCase))
-        {
-            return new CommandValidation(false, false, $"Command '{cmdletName}' is blocked for security reasons");
-        }
-
-        if (IsReadOnlySingleCommand(cmdletName))
-        {
-            return new CommandValidation(true, false);
-        }
-
-        return GetMutatingCommandValidation($"Command '{cmdletName}' is not a read-only command");
+            CommandSafetyClassification.ReadOnly => new CommandValidation(true, false, detail, classification),
+            CommandSafetyClassification.Blocked => new CommandValidation(false, false, detail, classification),
+            CommandSafetyClassification.Invalid => new CommandValidation(false, false, detail, classification),
+            CommandSafetyClassification.Mutating => RequireApproval(detail ?? "Command can modify system state", classification),
+            _ => RequireApproval(detail ?? "Command could not be proven read-only", classification)
+        };
     }
 
     internal static CommandValidation ValidateStandaloneCommand(
@@ -116,13 +98,7 @@ internal class CommandValidator
         if (normalizedPattern.EndsWith('*'))
         {
             var prefix = normalizedPattern[..^1];
-            if (string.IsNullOrEmpty(prefix))
-            {
-                return false;
-            }
-
-            if (DangerousVerbPrefixes.Any(dv => prefix.Equals(dv.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
-                                              || prefix.Equals(dv, StringComparison.OrdinalIgnoreCase)))
+            if (string.IsNullOrEmpty(prefix) || IsDangerousPrefix(prefix))
             {
                 return false;
             }
@@ -130,214 +106,198 @@ internal class CommandValidator
             return normalizedCmdletName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
         }
 
+        if (IsDangerousCommand(normalizedCmdletName) && !ReadOnlyFormatCommands.Contains(normalizedCmdletName))
+        {
+            return false;
+        }
+
         return normalizedCmdletName.Equals(normalizedPattern, StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string ExtractCmdletName(string command)
     {
-        var trimmed = command.Trim();
-        var firstPart = trimmed.Split('|')[0].Trim();
-        var parts = firstPart.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (TryParse(command, out var ast, out _) && ast != null)
+        {
+            return ast.FindAll(node => node is CommandAst, searchNestedScriptBlocks: true)
+                .OfType<CommandAst>()
+                .Select(node => node.GetCommandName() ?? string.Empty)
+                .FirstOrDefault() ?? string.Empty;
+        }
 
-        return parts.Length > 0 ? parts[0] : string.Empty;
+        return string.Empty;
     }
 
     private CommandValidation ValidateJeaCommand(string command)
     {
-        var cmdlets = ExtractCommandPositionCmdlets(command);
+        if (!TryParse(command, out var ast, out var error) || ast == null)
+        {
+            return new CommandValidation(false, false, error ?? "JEA command could not be parsed.", CommandSafetyClassification.Invalid);
+        }
+
+        var cmdlets = GetCommandNames(ast);
         if (cmdlets.Count == 0)
         {
             return new CommandValidation(false, false,
-                $"Command does not contain a recognized JEA cmdlet for session '{_configurationName}'.");
+                $"Command does not contain a recognized JEA cmdlet for session '{_configurationName}'.",
+                CommandSafetyClassification.Blocked);
         }
 
         foreach (var cmdlet in cmdlets)
         {
-            if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
+            if (BlockedCommands.Contains(cmdlet))
             {
-                return new CommandValidation(false, false, $"Command '{cmdlet}' is blocked for security reasons");
+                return new CommandValidation(false, false, $"Command '{cmdlet}' is blocked for security reasons", CommandSafetyClassification.Blocked);
             }
 
             if (!_jeaAllowedCommands!.Contains(cmdlet))
             {
                 return new CommandValidation(false, false,
-                    $"Command '{cmdlet}' is not available in JEA session '{_configurationName}'.");
+                    $"Command '{cmdlet}' is not available in JEA session '{_configurationName}'.",
+                    CommandSafetyClassification.Blocked);
             }
         }
 
-        return new CommandValidation(true, false);
+        return new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly);
     }
 
-    private static List<string> ExtractCommandPositionCmdlets(string command)
+    private CommandSafetyClassification ClassifyCommand(string command, out string? detail)
     {
-        var cmdlets = new List<string>();
-        var statements = command
-            .Replace("\r\n", "\n")
-            .Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s) && !s.StartsWith("#"));
-
-        foreach (var statement in statements)
+        detail = null;
+        if (command.Contains('`'))
         {
-            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@") ||
-                statement.StartsWith("{") || statement.StartsWith("}") || statement.StartsWith("(") ||
-                statement.StartsWith(")"))
+            detail = "Command contains escape characters and cannot be proven read-only";
+            return CommandSafetyClassification.Unknown;
+        }
+
+        if (!TryParse(command, out var ast, out var parseError) || ast == null)
+        {
+            detail = $"PowerShell command could not be parsed safely: {parseError}";
+            return CommandSafetyClassification.Invalid;
+        }
+
+        if (ast.FindAll(node => node is FileRedirectionAst, true).Any())
+        {
+            detail = "Command includes file redirection that can modify system state";
+            return CommandSafetyClassification.Mutating;
+        }
+
+        var invokedMembers = ast.FindAll(node => node is InvokeMemberExpressionAst, true)
+            .OfType<InvokeMemberExpressionAst>()
+            .Select(node => node.Member.Extent.Text.Trim('\'', '"'))
+            .ToList();
+        var unsafeMember = invokedMembers.FirstOrDefault(member => MutatingMembers.Contains(member));
+        if (!string.IsNullOrWhiteSpace(unsafeMember))
+        {
+            detail = $"Command invokes mutating member '{unsafeMember}'";
+            return CommandSafetyClassification.Mutating;
+        }
+
+        if (invokedMembers.Count > 0)
+        {
+            detail = "Command invokes an object member and cannot be proven read-only";
+            return CommandSafetyClassification.Unknown;
+        }
+
+        var propertyAssignment = ast.FindAll(node => node is AssignmentStatementAst, true)
+            .OfType<AssignmentStatementAst>()
+            .FirstOrDefault(assignment => assignment.Left is not VariableExpressionAst);
+        if (propertyAssignment != null)
+        {
+            detail = "Command assigns to an object property and can modify state";
+            return CommandSafetyClassification.Mutating;
+        }
+
+        var commandAsts = ast.FindAll(node => node is CommandAst, searchNestedScriptBlocks: true)
+            .OfType<CommandAst>()
+            .ToList();
+        if (commandAsts.Any(commandAst => string.IsNullOrWhiteSpace(commandAst.GetCommandName())))
+        {
+            detail = "Command contains a dynamic or unresolved invocation and cannot be proven read-only";
+            return CommandSafetyClassification.Unknown;
+        }
+
+        var commandNames = commandAsts
+            .Select(commandAst => commandAst.GetCommandName()!)
+            .ToList();
+        if (commandNames.Count == 0)
+        {
+            if (ast.FindAll(node => node is AssignmentStatementAst, true).Any())
             {
-                continue;
+                detail = "Command contains only an assignment and cannot be proven read-only";
+                return CommandSafetyClassification.Unknown;
             }
 
-            var pipeParts = statement.Split('|').Select(p => p.Trim());
-            foreach (var part in pipeParts)
+            return CommandSafetyClassification.ReadOnly;
+        }
+
+        foreach (var cmdlet in commandNames)
+        {
+            if (BlockedCommands.Contains(cmdlet))
             {
-                if (string.IsNullOrEmpty(part) || part.StartsWith("{") || part.StartsWith("}"))
-                {
-                    continue;
-                }
+                detail = $"Command '{cmdlet}' is blocked for security reasons";
+                return CommandSafetyClassification.Blocked;
+            }
 
-                var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length == 0)
-                {
-                    continue;
-                }
-
-                var firstToken = words[0];
-                if (firstToken.Contains('-') && !firstToken.StartsWith("$") && !firstToken.StartsWith("["))
-                {
-                    cmdlets.Add(firstToken);
-                }
+            if (IsDangerousCommand(cmdlet) && !ReadOnlyFormatCommands.Contains(cmdlet))
+            {
+                detail = $"Command '{cmdlet}' can modify system state";
+                return CommandSafetyClassification.Mutating;
             }
         }
 
-        return cmdlets;
-    }
-
-    private static bool IsSimpleReadOnlyExpression(string command)
-    {
-        var trimmed = command.Trim();
-        if (!trimmed.StartsWith("$", StringComparison.Ordinal))
+        var unknown = commandNames.FirstOrDefault(cmdlet => !IsReadOnlySingleCommand(cmdlet));
+        if (!string.IsNullOrWhiteSpace(unknown))
         {
-            return false;
+            detail = $"Command '{unknown}' is not recognized as read-only";
+            return CommandSafetyClassification.Unknown;
         }
 
-        if (trimmed.Contains(';') || trimmed.Contains('\n') || trimmed.Contains('\r') || trimmed.Contains('|'))
-        {
-            return false;
-        }
-
-        if (trimmed.Contains("=", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (trimmed.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Set-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Start-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Clear-", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Contains("Format-Volume", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
+        return CommandSafetyClassification.ReadOnly;
     }
 
     private bool IsReadOnlySingleCommand(string cmdletName)
     {
+        if (ReadOnlyFormatCommands.Contains(cmdletName))
+        {
+            return true;
+        }
+
         return GetSafeCommandPatterns().Any(pattern => MatchesSafeCommandPattern(cmdletName, pattern));
     }
 
-    private bool IsReadOnlyScript(string command)
+    private IReadOnlyList<string> GetSafeCommandPatterns() => _customSafeCommands ?? DefaultSafeCommands;
+
+    private CommandValidation RequireApproval(string reason, CommandSafetyClassification classification)
     {
-        var statements = command
-            .Replace("\r\n", "\n")
-            .Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s) && !s.StartsWith("#"));
+        var modeText = _executionMode == ExecutionMode.Auto ? "Auto" : "Strict";
+        return new CommandValidation(true, true, $"{reason}. {modeText} mode requires explicit user approval.", classification);
+    }
 
-        foreach (var statement in statements)
+    private static bool TryParse(string command, out ScriptBlockAst? ast, out string? error)
+    {
+        ast = Parser.ParseInput(command, out _, out var parseErrors);
+        if (parseErrors.Length == 0)
         {
-            if (statement.StartsWith("$") || statement.StartsWith("[") || statement.StartsWith("@") ||
-                statement.StartsWith("{") || statement.StartsWith("}") || statement.StartsWith("(") ||
-                statement.StartsWith(")"))
-            {
-                continue;
-            }
-
-            if (statement.Contains(" = ") && !statement.Contains("-"))
-            {
-                continue;
-            }
-
-            var pipeParts = statement.Split('|').Select(p => p.Trim());
-            foreach (var part in pipeParts)
-            {
-                if (string.IsNullOrEmpty(part))
-                {
-                    continue;
-                }
-
-                if (part.StartsWith("{") || part.StartsWith("}") || part == "{" || part == "}")
-                {
-                    continue;
-                }
-
-                if (part.Contains("{") && part.Contains("}"))
-                {
-                    var scriptBlockContent = part.Substring(part.IndexOf('{') + 1, part.LastIndexOf('}') - part.IndexOf('{') - 1);
-                    if (scriptBlockContent.Contains(".Kill(", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains(".Stop(", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Stop-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Restart-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Remove-", StringComparison.OrdinalIgnoreCase) ||
-                        scriptBlockContent.Contains("Set-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return false;
-                    }
-                }
-
-                var words = part.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length == 0)
-                {
-                    continue;
-                }
-
-                var cmdlet = words[0];
-                if (!cmdlet.Contains('-') || cmdlet.StartsWith("$") || cmdlet.StartsWith("["))
-                {
-                    continue;
-                }
-
-                if (BlockedCommands.Contains(cmdlet, StringComparer.OrdinalIgnoreCase))
-                {
-                    return false;
-                }
-
-                if (!IsReadOnlySingleCommand(cmdlet))
-                {
-                    return false;
-                }
-            }
+            error = null;
+            return true;
         }
 
-        return true;
+        error = parseErrors[0].Message;
+        return false;
     }
 
-    private IReadOnlyList<string> GetSafeCommandPatterns()
-    {
-        return _customSafeCommands ?? DefaultSafeCommands;
-    }
+    private static List<string> GetCommandNames(ScriptBlockAst ast) =>
+        ast.FindAll(node => node is CommandAst, searchNestedScriptBlocks: true)
+            .OfType<CommandAst>()
+            .Select(node => node.GetCommandName())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .ToList();
 
-    private CommandValidation GetMutatingCommandValidation(string baseReason)
-    {
-        return _executionMode switch
-        {
-            ExecutionMode.Safe => new CommandValidation(true, true, $"{baseReason}. Safe mode requires explicit user approval."),
-            ExecutionMode.Yolo => new CommandValidation(true, false, $"{baseReason}. YOLO mode allows execution without confirmation."),
-            _ => new CommandValidation(true, true, $"{baseReason}. Requires user approval.")
-        };
-    }
+    private static bool IsDangerousCommand(string commandName) =>
+        DangerousVerbPrefixes.Any(prefix => commandName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsDangerousPrefix(string prefix) =>
+        DangerousVerbPrefixes.Any(dangerous => prefix.Equals(dangerous.TrimEnd('-'), StringComparison.OrdinalIgnoreCase)
+            || prefix.Equals(dangerous, StringComparison.OrdinalIgnoreCase));
 }

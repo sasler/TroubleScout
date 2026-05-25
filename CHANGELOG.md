@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 💸 **Add token-efficient delegated investigations** - configurable per-provider evidence, research, monitoring, ticketing, and approval subagent models keep high-volume data collection out of the primary context while exposing delegated activity and usage in terminal and report surfaces.
+- 🔐 **Replace Safe/YOLO with Strict/Auto execution modes** - PowerShell AST classification proves common read-only pipelines locally, while Auto delegates only unknown parseable command safety decisions to an explicitly configured no-tools approval model and records its rationale.
+- 💳 **Prepare GitHub AI Credits billing display** - GitHub sessions can report AI Credits after the June 1, 2026 billing transition while retaining the premium-request legacy display where applicable.
+
 <!--
 Add new entries here as they land. When cutting a release, rename this section to
 `## [vX.Y.Z] - YYYY-MM-DD`, bump `Version`/`AssemblyVersion`/`FileVersion` in

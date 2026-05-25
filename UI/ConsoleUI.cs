@@ -64,6 +64,8 @@ public sealed record StatusBarInfo(
     public long? SessionInputTokens { get; init; }
     public long? SessionOutputTokens { get; init; }
     public string? SessionCostEstimate { get; init; }
+    public int SubagentCalls { get; init; }
+    public long? SubagentTokens { get; init; }
     public static StatusBarInfo Empty => new(null, null, null, null, null, 0, null);
 }
 
@@ -72,7 +74,7 @@ public sealed record StatusBarInfo(
 /// </summary>
 public static partial class ConsoleUI
 {
-    private static ExecutionMode _currentExecutionMode = ExecutionMode.Safe;
+    private static ExecutionMode _currentExecutionMode = ExecutionMode.Strict;
     private static int _lastInputRowCount = 1;
     private static int _lastSuggestionRowCount;
     private static int _lastSuggestionRowOffset = 1;
@@ -176,7 +178,7 @@ public static partial class ConsoleUI
         string connectionMode,
         bool copilotReady,
         string? model = null,
-        ExecutionMode executionMode = ExecutionMode.Safe,
+        ExecutionMode executionMode = ExecutionMode.Strict,
         IReadOnlyList<(string Label, string Value)>? usageFields = null,
         IReadOnlyList<string>? additionalTargets = null,
         string? defaultSessionTarget = null)
@@ -386,7 +388,7 @@ public static partial class ConsoleUI
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
         optionsTable.AddRow("[cyan]--jea[/] [grey]<server> <configurationName>[/]", "Preconnect a single startup JEA endpoint session");
-        optionsTable.AddRow("[cyan]--mode[/] [grey]<safe|yolo>[/]", "PowerShell execution mode (default: safe)");
+        optionsTable.AddRow("[cyan]--mode[/] [grey]<strict|auto>[/]", "PowerShell execution mode (default: strict)");
         optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
         optionsTable.AddRow("[cyan]--skills-dir[/] [grey]<path>[/]", "Directory containing Copilot skill files (repeatable)");
         optionsTable.AddRow("[cyan]--disable-skill[/] [grey]<name>[/]", "Disable a specific skill by name (repeatable)");
@@ -412,8 +414,8 @@ public static partial class ConsoleUI
         AnsiConsole.MarkupLine("  [grey]# Run a single headless prompt and exit[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server web01 --prompt [grey]\"Check disk space\"[/]");
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with YOLO execution mode[/]");
-        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode yolo");
+        AnsiConsole.MarkupLine("  [grey]# Use a specific AI model with automatic review for unknown read-only commands[/]");
+        AnsiConsole.MarkupLine("  [cyan]troublescout[/] --model gpt-4.1 --mode auto");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("  [grey]# Preconnect a JEA endpoint before starting[/]");
         AnsiConsole.MarkupLine("  [cyan]troublescout[/] --server server1 --jea server2 JEA-Admins");
@@ -742,8 +744,8 @@ public static partial class ConsoleUI
     {
         return mode switch
         {
-            ExecutionMode.Safe => "[green]SAFE[/]",
-            ExecutionMode.Yolo => "[red]YOLO[/]",
+            ExecutionMode.Strict => "[green]STRICT[/]",
+            ExecutionMode.Auto => "[yellow]AUTO[/]",
             _ => "[grey]UNKNOWN[/]"
         };
     }

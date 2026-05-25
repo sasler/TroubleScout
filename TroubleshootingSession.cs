@@ -62,6 +62,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
     private string? _configuredTicketingMcpServer;
     private readonly SessionPermissionHandler _permissionHandler;
     private readonly SessionEventTelemetry _telemetry;
+    private readonly IAutoCommandApprovalEvaluator _autoCommandApprovalEvaluator;
 
     private SystemMessageConfig _systemMessageConfig;
 
@@ -97,7 +98,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
         bool debugMode = false,
-        ExecutionMode executionMode = ExecutionMode.Safe,
+        ExecutionMode executionMode = ExecutionMode.Strict,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
         string? byokOpenAiApiKey = null,
@@ -135,6 +136,13 @@ public partial class TroubleshootingSession : IAsyncDisposable
         ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(settings.Theme);
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
+        if (_executionMode == ExecutionMode.Auto
+            && !AppSettingsStore.GetAgentModelsForProvider(settings, useByokOpenAi).ContainsKey("approval"))
+        {
+            _executionMode = ExecutionMode.Strict;
+            ConsoleUI.ShowWarning("Auto mode requires an explicit approval subagent model for the active provider. Starting in strict mode; configure one with /agent-model approval <model>.");
+        }
+        _autoCommandApprovalEvaluator = new DelegateAutoCommandApprovalEvaluator(EvaluateUnknownCommandAsync);
         _permissionHandler = new SessionPermissionHandler(
             () => _executionMode,
             () => _configuredSafeCommands,
@@ -142,7 +150,9 @@ public partial class TroubleshootingSession : IAsyncDisposable
             (command, reason, impact) => ConsoleUI.PromptCommandApproval(command, reason, impact: impact),
             ConsoleUI.PromptUrlApproval,
             ConsoleUI.PromptMcpApproval,
-            settings);
+            settings,
+            _autoCommandApprovalEvaluator,
+            RecordAutoAuthorization);
         _permissionHandler.SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
         _telemetry = new SessionEventTelemetry(
             _sessionUsageTracker,
@@ -171,7 +181,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
         bool debugMode = false,
-        ExecutionMode executionMode = ExecutionMode.Safe,
+        ExecutionMode executionMode = ExecutionMode.Strict,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
         string? byokOpenAiApiKey = null,
