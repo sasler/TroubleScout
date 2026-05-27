@@ -7,6 +7,19 @@ namespace TroubleScout.Services;
 
 internal sealed class ConversationHistoryTracker
 {
+    private static readonly HashSet<string> LocallyLoggedDiagnosticTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "run_powershell",
+        "run_delegated_powershell",
+        "get_system_info",
+        "get_event_logs",
+        "get_services",
+        "get_processes",
+        "get_disk_space",
+        "get_network_info",
+        "get_performance_counters"
+    };
+
     private readonly List<ReportPromptEntry> _reportPrompts = [];
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
@@ -83,10 +96,16 @@ internal sealed class ConversationHistoryTracker
         var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
         var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
         var isDelegatedAuthorization = toolName.StartsWith("authorize_delegated_", StringComparison.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(mcpServerName) && !isDelegatedAuthorization)
+        if (string.IsNullOrWhiteSpace(mcpServerName)
+            && !isDelegatedAuthorization
+            && LocallyLoggedDiagnosticTools.Contains(toolName))
         {
             return;
         }
+
+        var source = isDelegatedAuthorization
+            ? "Delegation Authorization"
+            : string.IsNullOrWhiteSpace(mcpServerName) ? "Tool" : "MCP";
 
         var argumentsPreview = FormatArgumentsForReport(toolStart.Data?.Arguments);
 
@@ -94,11 +113,11 @@ internal sealed class ConversationHistoryTracker
 
         var entry = new ReportActionEntry(
             DateTimeOffset.Now,
-            isDelegatedAuthorization ? "Primary agent" : mcpServerName ?? "MCP",
+            isDelegatedAuthorization ? "Primary agent" : mcpServerName ?? "Primary agent",
             toolName,
             string.Empty,
-            isDelegatedAuthorization ? "Preauthorization" : "MCP",
-            isDelegatedAuthorization ? "Delegation Authorization" : "MCP")
+            isDelegatedAuthorization ? "Preauthorization" : source,
+            source)
         {
             Arguments = argumentsPreview,
             ToolCallId = toolCallId

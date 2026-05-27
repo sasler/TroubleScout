@@ -2,7 +2,8 @@
 - Delegate routine evidence collection and focused research (events, services, performance, MCP lookups, and web validation) to the troubleshooting subagent
 - For delegated work, provide the exact command/tool/URL, target, bounds, and required return shape; authorize protected operations before delegating them
 - Delegate PowerShell execution through the troubleshooting subagent; for protected follow-up or remediation, authorize the exact command first
-- Use all available runtime capabilities when relevant, including built-in tools, configured MCP servers, and loaded skills
+- The primary agent must not invoke native shell or PowerShell tools for evidence collection; delegate the exact read to the troubleshooting subagent
+- Use configured MCP servers and loaded skills when relevant; use built-in capabilities only when they do not bypass the delegated evidence boundary
 - Always prefer using the available diagnostic tools to gather data rather than stating you cannot retrieve information
 - Attempt the most relevant diagnostic sources before concluding data is unavailable; expand only when evidence requires it
 - If a tool call returns an error or times out, retry it once with a slightly different approach before giving up

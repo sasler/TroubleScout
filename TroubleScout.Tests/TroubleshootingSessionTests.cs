@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text.Json;
 using TroubleScout;
 using TroubleScout.Services;
+using TroubleScout.Tools;
 using TroubleScout.UI;
 using Xunit;
 using PermissionDecisionApproveForSession = GitHub.Copilot.Rpc.PermissionDecisionApproveForSession;
@@ -926,6 +927,75 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         html.Should().Contain("CPUPercent 12");
         html.Should().Contain("Returned findings");
         html.Should().Contain("CPU utilization is normal.");
+    }
+#pragma warning restore CS0618
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixture exercises SDK tool event persistence.
+    public void ConversationHistoryTracker_ShouldCapturePrimarySdkToolArgumentsAndOutputForReport()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check disk");
+        tracker.RecordMcpToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = "shell-1",
+                ToolName = "powershell",
+                Arguments = "{\"command\":\"Get-Volume | Select-Object DriveLetter,SizeRemaining\"}"
+            }
+        });
+        tracker.RecordMcpToolComplete(new ToolExecutionCompleteEvent
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ToolCallId = "shell-1",
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "C 123456" }
+            }
+        });
+
+        var prompts = tracker.GetRecordedPromptSnapshot();
+        var action = prompts.Single().Actions.Single();
+        action.Source.Should().Be("Tool");
+        action.Command.Should().Be("powershell");
+        action.Arguments.Should().Contain("Get-Volume");
+        action.Output.Should().Contain("C 123456");
+
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts);
+        html.Should().Contain("Tool");
+        html.Should().Contain("Get-Volume");
+        html.Should().Contain("C 123456");
+    }
+#pragma warning restore CS0618
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixture exercises SDK wrapper event de-duplication.
+    public void ConversationHistoryTracker_ShouldNotDuplicateLocallyLoggedDiagnosticToolActions()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check events");
+        tracker.RecordMcpToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = "tool-1",
+                ToolName = "get_event_logs",
+                Arguments = "{\"logName\":\"System\"}"
+            }
+        });
+        tracker.RecordCommandAction(new CommandActionLog(
+            DateTimeOffset.UtcNow,
+            "localhost",
+            "Get-WinEvent -LogName 'System' -MaxEvents 20",
+            "No errors.",
+            CommandApprovalState.StrictReadOnly));
+
+        var actions = tracker.GetRecordedPromptSnapshot().Single().Actions;
+
+        actions.Should().ContainSingle();
+        actions.Single().Source.Should().Be("PowerShell");
+        actions.Single().Command.Should().Contain("Get-WinEvent");
     }
 #pragma warning restore CS0618
 
@@ -1970,6 +2040,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_powershell");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
         config.CustomAgents.Should().NotBeNull();
         config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent"
             && agent.Infer == true

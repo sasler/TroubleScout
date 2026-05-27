@@ -183,18 +183,21 @@ internal class CommandValidator
 
         var invokedMembers = ast.FindAll(node => node is InvokeMemberExpressionAst, true)
             .OfType<InvokeMemberExpressionAst>()
-            .Select(node => node.Member.Extent.Text.Trim('\'', '"'))
             .ToList();
-        var unsafeMember = invokedMembers.FirstOrDefault(member => MutatingMembers.Contains(member));
+        var unsafeMember = invokedMembers
+            .Select(node => node.Member.Extent.Text.Trim('\'', '"'))
+            .FirstOrDefault(member => MutatingMembers.Contains(member));
         if (!string.IsNullOrWhiteSpace(unsafeMember))
         {
             detail = $"Command invokes mutating member '{unsafeMember}'";
             return CommandSafetyClassification.Mutating;
         }
 
-        if (invokedMembers.Count > 0)
+        var unknownInvocation = invokedMembers.FirstOrDefault(node => !IsKnownReadOnlyMemberInvocation(node));
+        if (unknownInvocation != null)
         {
-            detail = "Command invokes an object member and cannot be proven read-only";
+            var unknownMember = unknownInvocation.Member.Extent.Text.Trim('\'', '"');
+            detail = $"Command invokes object member '{unknownMember}' and cannot be proven read-only";
             return CommandSafetyClassification.Unknown;
         }
 
@@ -266,6 +269,23 @@ internal class CommandValidator
     }
 
     private IReadOnlyList<string> GetSafeCommandPatterns() => _customSafeCommands ?? DefaultSafeCommands;
+
+    private static bool IsKnownReadOnlyMemberInvocation(InvokeMemberExpressionAst invocation)
+    {
+        var member = invocation.Member.Extent.Text.Trim('\'', '"');
+        var receiver = invocation.Expression.Extent.Text.Trim();
+
+        if (member.Equals("Round", StringComparison.OrdinalIgnoreCase))
+        {
+            return receiver.Equals("[math]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return (member.Equals("AddDays", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("AddHours", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("AddMinutes", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("AddSeconds", StringComparison.OrdinalIgnoreCase))
+            && receiver.Equals("(Get-Date)", StringComparison.OrdinalIgnoreCase);
+    }
 
     private CommandValidation RequireApproval(string reason, CommandSafetyClassification classification)
     {

@@ -22,6 +22,7 @@ public class CopilotSessionConfigBuilderTests
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_powershell");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
         config.DefaultAgent.ExcludedTools.Should().Contain([
             "get_system_info", "get_event_logs", "get_services", "get_processes",
             "get_disk_space", "get_network_info", "get_performance_counters"

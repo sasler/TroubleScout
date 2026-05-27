@@ -267,6 +267,17 @@ internal static class PermissionEvaluator
     private static bool LooksLikePowerShellCommand(string command)
     {
         var trimmed = command.TrimStart();
+        while (trimmed.StartsWith("#", StringComparison.Ordinal))
+        {
+            var newlineIndex = trimmed.IndexOfAny(['\r', '\n']);
+            if (newlineIndex < 0)
+            {
+                return false;
+            }
+
+            trimmed = trimmed[(newlineIndex + 1)..].TrimStart();
+        }
+
         if (string.IsNullOrWhiteSpace(trimmed))
         {
             return false;

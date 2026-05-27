@@ -42,6 +42,10 @@ internal static class CopilotSessionConfigBuilder
                 ExcludedTools =
                 [
                     "web_search",
+                    "shell",
+                    "shell.exec",
+                    "bash",
+                    "powershell",
                     "run_powershell",
                     "run_delegated_powershell",
                     "get_system_info",

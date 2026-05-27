@@ -9,14 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+<!-- Add new entries here as they land. -->
+
+## [v1.18.0] - 2026-05-27
+
+### Changed
+
 - 💸 **Add token-efficient delegated investigations** - one configurable per-provider subagent model keeps high-volume data collection out of the primary context while exposing delegated activity and usage in terminal and report surfaces.
 - 🔐 **Bound protected delegated work** - primary-agent preauthorization gates exact delegated PowerShell, MCP, and URL operations; reports include authorization, delegated tool output, returned findings, model, duration, and token/tool metrics.
 - 🛑 **Stop after completed responses** - remove post-analysis continuation and model-replay follow-up turns so additional work begins only from a new user request.
 - 🔐 **Replace Safe/YOLO with Strict/Auto execution modes** - PowerShell AST classification proves common read-only pipelines locally, while Auto delegates only unknown parseable command safety decisions to an explicitly configured no-tools subagent evaluation session and records its rationale.
 - 💳 **Prepare GitHub AI Credits billing display** - GitHub sessions can report AI Credits after the June 1, 2026 billing transition while retaining the premium-request legacy display where applicable.
+- 🧾 **Retain diagnostic report evidence** - report timelines capture SDK tool output where needed without duplicating locally logged diagnostic commands, and read-only health collection avoids unnecessary permission dialogs.
 
 <!--
-Add new entries here as they land. When cutting a release, rename this section to
+When cutting a release, rename the current Unreleased entries to
 `## [vX.Y.Z] - YYYY-MM-DD`, bump `Version`/`AssemblyVersion`/`FileVersion` in
 `TroubleScout.csproj`, and recreate an empty `## [Unreleased]` section above.
 -->

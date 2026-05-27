@@ -67,6 +67,17 @@ public class SystemPromptTests : IDisposable
     }
 
     [Fact]
+    public async Task DefaultSystemPrompt_RequiresPrimaryToDelegatePowerShellEvidenceReads()
+    {
+        await using var session = new TroubleshootingSession("localhost");
+
+        var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
+
+        content.Should().Contain("primary agent must not invoke native shell or PowerShell tools for evidence collection");
+        content.Should().Contain("delegate the exact read to the troubleshooting subagent");
+    }
+
+    [Fact]
     public async Task SystemPromptOverride_ReplacesSection()
     {
         AppSettingsStore.Save(new AppSettings

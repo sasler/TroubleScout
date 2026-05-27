@@ -520,6 +520,7 @@ internal static class ReportHtmlBuilder
                     var isDelegationAuthorization = string.Equals(action.Source, "Delegation Authorization", StringComparison.OrdinalIgnoreCase);
                     var isSubagentTool = string.Equals(action.Source, "Subagent Tool", StringComparison.OrdinalIgnoreCase);
                     var isSubagentResult = string.Equals(action.Source, "Subagent Result", StringComparison.OrdinalIgnoreCase);
+                    var isTool = string.Equals(action.Source, "Tool", StringComparison.OrdinalIgnoreCase);
 
                     sb.AppendLine("            <div class=\"action-card\">");
                     sb.AppendLine("              <div class=\"action-header\">");
@@ -543,7 +544,7 @@ internal static class ReportHtmlBuilder
                     }
                     sb.AppendLine("              </div>");
 
-                    if (isMcp || isDelegationAuthorization || isSubagentTool)
+                    if (isMcp || isDelegationAuthorization || isSubagentTool || isTool)
                     {
                         sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Tool call\" open>");
                         sb.AppendLine("                <summary>Tool call</summary>");
