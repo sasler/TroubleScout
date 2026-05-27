@@ -63,6 +63,8 @@ internal sealed class CopilotTurnCallbacks
     public Action<ToolExecutionCompleteEvent> RecordSubagentToolComplete { get; init; } = static _ => { };
     public Action<string, string> RecordSubagentMessageDelta { get; init; } = static (_, _) => { };
     public Action<string, string> RecordSubagentMessage { get; init; } = static (_, _) => { };
+    public Action<string, string?> ShowSubagentStarted { get; init; } = static (_, _) => { };
+    public Action<string, string?, string, TimeSpan?, long?, long?, bool, string?> ShowSubagentResult { get; init; } = static (_, _, _, _, _, _, _, _) => { };
     public Action IncrementToolInvocation { get; init; } = static () => { };
 }
 
@@ -101,6 +103,7 @@ internal sealed class CopilotTurnRunner
         var currentStreamMessageId = string.Empty;
         var processedDeltaIds = new HashSet<string>();
         var responseBuffer = new StringBuilder();
+        var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
         Task? abortTask = null;
 
@@ -226,6 +229,11 @@ internal sealed class CopilotTurnRunner
                             string.IsNullOrWhiteSpace(startedModel)
                                 ? $"Subagent started: {startedName}"
                                 : $"Subagent started: {startedName} ({startedModel})");
+                        if (!string.IsNullOrWhiteSpace(subagentStarted.Data?.ToolCallId))
+                        {
+                            subagentOutput[subagentStarted.Data.ToolCallId] = new StringBuilder();
+                        }
+                        request.Callbacks.ShowSubagentStarted(startedName, startedModel);
                         request.Callbacks.RecordSubagentStarted(subagentStarted);
                         break;
 
@@ -248,6 +256,20 @@ internal sealed class CopilotTurnRunner
                         request.Callbacks.ShowLiveStatusNotice(
                             $"Subagent completed: {completedName}" +
                             (completedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", completedSuffix)})"));
+                        var completedToolCallId = subagentCompleted.Data?.ToolCallId;
+                        var completedResult = !string.IsNullOrWhiteSpace(completedToolCallId)
+                            && subagentOutput.Remove(completedToolCallId, out var completedBuffer)
+                                ? completedBuffer.ToString()
+                                : string.Empty;
+                        request.Callbacks.ShowSubagentResult(
+                            completedName,
+                            subagentCompleted.Data?.Model,
+                            completedResult,
+                            subagentCompleted.Data?.Duration,
+                            subagentCompleted.Data?.TotalTokens,
+                            subagentCompleted.Data?.TotalToolCalls,
+                            true,
+                            null);
                         request.Callbacks.RecordSubagentCompleted(subagentCompleted);
                         break;
 
@@ -274,6 +296,20 @@ internal sealed class CopilotTurnRunner
                         request.Callbacks.ShowLiveStatusNotice(
                             $"Subagent failed: {failedName}" +
                             (failedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", failedSuffix)})"));
+                        var failedToolCallId = subagentFailed.Data?.ToolCallId;
+                        var failedResult = !string.IsNullOrWhiteSpace(failedToolCallId)
+                            && subagentOutput.Remove(failedToolCallId, out var failedBuffer)
+                                ? failedBuffer.ToString()
+                                : string.Empty;
+                        request.Callbacks.ShowSubagentResult(
+                            failedName,
+                            subagentFailed.Data?.Model,
+                            failedResult,
+                            subagentFailed.Data?.Duration,
+                            subagentFailed.Data?.TotalTokens,
+                            subagentFailed.Data?.TotalToolCalls,
+                            false,
+                            subagentFailed.Data?.Error);
                         request.Callbacks.RecordSubagentFailed(subagentFailed);
                         break;
 
@@ -286,7 +322,14 @@ internal sealed class CopilotTurnRunner
                         var deltaParentToolCallId = ReadStringProperty(delta.Data, "ParentToolCallId");
                         if (!string.IsNullOrWhiteSpace(deltaParentToolCallId))
                         {
-                            request.Callbacks.RecordSubagentMessageDelta(deltaParentToolCallId, delta.Data?.DeltaContent ?? string.Empty);
+                            var delegatedDelta = delta.Data?.DeltaContent ?? string.Empty;
+                            if (!subagentOutput.TryGetValue(deltaParentToolCallId, out var delegatedBuffer))
+                            {
+                                delegatedBuffer = new StringBuilder();
+                                subagentOutput[deltaParentToolCallId] = delegatedBuffer;
+                            }
+                            delegatedBuffer.Append(delegatedDelta);
+                            request.Callbacks.RecordSubagentMessageDelta(deltaParentToolCallId, delegatedDelta);
                             break;
                         }
 
@@ -331,7 +374,16 @@ internal sealed class CopilotTurnRunner
                         var messageParentToolCallId = ReadStringProperty(msg.Data, "ParentToolCallId");
                         if (!string.IsNullOrWhiteSpace(messageParentToolCallId))
                         {
-                            request.Callbacks.RecordSubagentMessage(messageParentToolCallId, msg.Data?.Content ?? string.Empty);
+                            var delegatedMessage = msg.Data?.Content ?? string.Empty;
+                            if (!subagentOutput.TryGetValue(messageParentToolCallId, out var finalDelegatedBuffer))
+                            {
+                                subagentOutput[messageParentToolCallId] = new StringBuilder(delegatedMessage);
+                            }
+                            else if (finalDelegatedBuffer.Length == 0)
+                            {
+                                finalDelegatedBuffer.Append(delegatedMessage);
+                            }
+                            request.Callbacks.RecordSubagentMessage(messageParentToolCallId, delegatedMessage);
                             break;
                         }
 

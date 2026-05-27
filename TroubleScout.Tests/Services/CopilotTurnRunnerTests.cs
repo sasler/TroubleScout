@@ -296,6 +296,41 @@ public class CopilotTurnRunnerTests
         captured.Should().ContainSingle().Which.Should().Be(("sub-1", "delegated finding"));
     }
 
+    [Fact]
+    public async Task RunAsync_SubagentCompletion_ShouldDisplayReturnedFindingsAndMetricsSeparately()
+    {
+        (string Content, string? Model, long? Tokens, bool Success)? displayed = null;
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData { AgentDisplayName = "Evidence", AgentName = "evidence", AgentDescription = "Collect evidence", Model = "gpt-5-mini", ToolCallId = "sub-1" }
+            });
+            session.Emit(new AssistantMessageDeltaEvent
+            {
+                Id = Guid.NewGuid(),
+                Data = new AssistantMessageDeltaData { MessageId = "sub-message", ParentToolCallId = "sub-1", DeltaContent = "disk queue is elevated" }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData { AgentDisplayName = "Evidence", AgentName = "evidence", Model = "gpt-5-mini", ToolCallId = "sub-1", TotalTokens = 72 }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(
+            session,
+            showSubagentResult: (_, model, content, _, tokens, _, success, _) => displayed = (content, model, tokens, success)));
+
+        displayed.Should().NotBeNull();
+        displayed!.Value.Content.Should().Be("disk queue is elevated");
+        displayed.Value.Model.Should().Be("gpt-5-mini");
+        displayed.Value.Tokens.Should().Be(72);
+        displayed.Value.Success.Should().BeTrue();
+    }
+
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
         {
@@ -323,6 +358,7 @@ public class CopilotTurnRunnerTests
         Action<string, string>? showError = null,
         Action<string>? showLiveStatusNotice = null,
         Action<string, string>? recordSubagentMessageDelta = null,
+        Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
         => new()
         {
@@ -337,7 +373,8 @@ public class CopilotTurnRunnerTests
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
                 ShowError = showError ?? ((_, _) => { }),
                 ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
-                RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { })
+                RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { }),
+                ShowSubagentResult = showSubagentResult ?? ((_, _, _, _, _, _, _, _) => { })
             }
         };
 

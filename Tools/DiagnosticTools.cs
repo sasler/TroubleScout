@@ -27,6 +27,12 @@ public class DiagnosticTools
     private readonly Func<string, string, Task<(bool Success, string? Error)>>? _connectJeaServerCallback;
     private readonly IAutoCommandApprovalEvaluator? _autoCommandApprovalEvaluator;
     private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
+    private readonly Func<string, string, string?, Task<string>>? _authorizeDelegatedMcpCallback;
+    private readonly Func<string, string?, Task<string>>? _authorizeDelegatedUrlCallback;
+    private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedPowerShellGrants = new(StringComparer.Ordinal);
+    private readonly object _delegatedGrantLock = new();
+
+    private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
@@ -40,7 +46,9 @@ public class DiagnosticTools
         Func<string, Task<bool>>? closeSessionCallback = null,
         Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null,
         IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
-        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null,
+        Func<string, string, string?, Task<string>>? authorizeDelegatedMcpCallback = null,
+        Func<string, string?, Task<string>>? authorizeDelegatedUrlCallback = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
@@ -52,6 +60,8 @@ public class DiagnosticTools
         _connectJeaServerCallback = connectJeaServerCallback;
         _autoCommandApprovalEvaluator = autoCommandApprovalEvaluator;
         _recordAutoAuthorization = recordAutoAuthorization;
+        _authorizeDelegatedMcpCallback = authorizeDelegatedMcpCallback;
+        _authorizeDelegatedUrlCallback = authorizeDelegatedUrlCallback;
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -147,6 +157,22 @@ public class DiagnosticTools
         yield return AIFunctionFactory.Create(RunPowerShellCommandAsync,
             "run_powershell",
             "Execute a PowerShell command on the target Windows server. Proven read-only commands run automatically. Mutating commands require approval; in Auto mode only unknown read-only candidates can be reviewed automatically.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedPowerShellAsync,
+            "authorize_delegated_powershell",
+            "Primary-agent only. Obtain any required user approval before delegating an exact PowerShell command. Returns a one-use authorizationId for protected commands.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedMcpAsync,
+            "authorize_delegated_mcp",
+            "Primary-agent only. Obtain any required permission before delegating an exact MCP tool invocation.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedUrlAsync,
+            "authorize_delegated_url",
+            "Primary-agent only. Obtain any required permission before delegating access to an exact URL.");
+
+        yield return AIFunctionFactory.Create(RunDelegatedPowerShellAsync,
+            "run_delegated_powershell",
+            "Execute an exact PowerShell command as delegated evidence collection. Read-only commands run automatically; protected commands require a one-use authorizationId obtained by the primary agent.");
 
         yield return CreateReadOnlyTool(GetSystemInfoAsync,
             "get_system_info",
@@ -299,6 +325,141 @@ public class DiagnosticTools
 
         return isAlternate ? $"[{sessionName}] {output}" : output;
     }
+
+    private async Task<string> AuthorizeDelegatedPowerShellAsync(
+        [Description("The exact PowerShell command the subagent will run")] string command,
+        [Description("Optional: the server session name the subagent will target")] string? sessionName = null,
+        [Description("Optional: the reason for delegated evidence collection")] string? intent = null)
+    {
+        var resolved = ResolveExecutor(sessionName);
+        if (resolved.Error != null)
+        {
+            return resolved.Error;
+        }
+
+        var validation = resolved.Executor!.ValidateCommand(command);
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            return $"[BLOCKED] {validation.Reason}";
+        }
+
+        if (!validation.RequiresApproval)
+        {
+            return "[OK] This delegated command is read-only and does not require preauthorization.";
+        }
+
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            return "[DENIED] Protected delegated execution requires interactive approval, which is unavailable in headless mode.";
+        }
+
+        var approved = await _approvalCallback(command, validation.Reason ?? intent ?? "Requires user approval");
+        if (!approved)
+        {
+            return "[DENIED] User denied authorization for delegated execution.";
+        }
+
+        var authorizationId = Guid.NewGuid().ToString("N");
+        lock (_delegatedGrantLock)
+        {
+            _delegatedPowerShellGrants[authorizationId] =
+                new DelegatedPowerShellGrant(command, NormalizeSessionName(sessionName), CommandApprovalState.ApprovedByUser);
+        }
+
+        return $"[APPROVED] Delegate this exact command with authorizationId={authorizationId}";
+    }
+
+    private Task<string> AuthorizeDelegatedMcpAsync(
+        [Description("The exact MCP server name")] string serverName,
+        [Description("The exact MCP tool name")] string toolName,
+        [Description("Optional: serialized arguments or a concise argument description")] string? arguments = null)
+        => _authorizeDelegatedMcpCallback != null
+            ? _authorizeDelegatedMcpCallback(serverName, toolName, arguments)
+            : Task.FromResult("[ERROR] Delegated MCP preauthorization is unavailable in this session.");
+
+    private Task<string> AuthorizeDelegatedUrlAsync(
+        [Description("The exact URL the subagent will access")] string url,
+        [Description("Optional: the reason URL access is required")] string? intention = null)
+        => _authorizeDelegatedUrlCallback != null
+            ? _authorizeDelegatedUrlCallback(url, intention)
+            : Task.FromResult("[ERROR] Delegated URL preauthorization is unavailable in this session.");
+
+    private async Task<string> RunDelegatedPowerShellAsync(
+        [Description("The exact PowerShell command requested by the primary agent")] string command,
+        [Description("One-use authorizationId for a protected command; omit for proven read-only commands")] string? authorizationId = null,
+        [Description("Optional: the preconnected server session name")] string? sessionName = null)
+    {
+        var resolved = ResolveExecutor(sessionName);
+        if (resolved.Error != null)
+        {
+            return resolved.Error;
+        }
+
+        var executor = resolved.Executor!;
+        var validation = executor.ValidateCommand(command);
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            LogCommandAction(resolved.Target!, command, $"[BLOCKED] {validation.Reason}", CommandApprovalState.Blocked);
+            return $"[BLOCKED] {validation.Reason}";
+        }
+
+        var approvalState = CommandApprovalState.StrictReadOnly;
+        if (validation.RequiresApproval)
+        {
+            DelegatedPowerShellGrant? grant = null;
+            lock (_delegatedGrantLock)
+            {
+                if (!string.IsNullOrWhiteSpace(authorizationId)
+                    && _delegatedPowerShellGrants.TryGetValue(authorizationId, out var candidate)
+                    && candidate.Command.Equals(command, StringComparison.Ordinal)
+                    && string.Equals(candidate.SessionName, NormalizeSessionName(sessionName), StringComparison.OrdinalIgnoreCase))
+                {
+                    grant = candidate;
+                    _delegatedPowerShellGrants.Remove(authorizationId);
+                }
+            }
+
+            if (grant == null)
+            {
+                return "[PREAUTHORIZATION REQUIRED] The primary agent must authorize this exact protected command before delegation.";
+            }
+
+            approvalState = grant.ApprovalState;
+        }
+
+        var wrappedCommand = executor.IsJeaSession
+            ? command
+            : WrapCommandWithTargetVerification(command, executor, resolved.IsAlternate ? sessionName : null);
+        executor.AddHistoryEntry($"[EXECUTED] {command}");
+        ConsoleUI.ShowCommandExecution(command, resolved.IsAlternate ? sessionName! : _targetServer);
+        var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
+        var output = result.Success
+            ? string.IsNullOrWhiteSpace(result.Output) ? "[OK] Command completed with no output." : result.Output
+            : $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+        LogCommandAction(resolved.Target!, command, output, approvalState);
+        return resolved.IsAlternate ? $"[{sessionName}] {output}" : output;
+    }
+
+    private (PowerShellExecutor? Executor, string? Target, bool IsAlternate, string? Error) ResolveExecutor(string? sessionName)
+    {
+        if (string.IsNullOrWhiteSpace(sessionName))
+        {
+            return (_executor, _executor.ActualComputerName ?? _targetServer, false, null);
+        }
+
+        if (_getExecutorCallback == null)
+        {
+            return (null, null, false, $"[ERROR] This tool instance does not support multiple sessions. Cannot target server '{sessionName}'.");
+        }
+
+        var executor = _getExecutorCallback(sessionName);
+        return executor == null
+            ? (null, null, false, $"[ERROR] No session found for server '{sessionName}'. Use connect_server first.")
+            : (executor, executor.ActualComputerName ?? sessionName, true, null);
+    }
+
+    private static string? NormalizeSessionName(string? sessionName)
+        => string.IsNullOrWhiteSpace(sessionName) ? null : sessionName.Trim();
 
     /// <summary>
     /// Establish a direct PowerShell session to a target server

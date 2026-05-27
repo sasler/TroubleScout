@@ -26,10 +26,7 @@ internal static class SessionMessageCoordinator
         string userMessage,
         int? promptIndexOverride,
         CancellationToken cancellationToken,
-        bool showPostAnalysisActionPrompt,
-        bool forcePostAnalysisActionPrompt,
-        SessionMessageRequest request,
-        Func<string, int?, CancellationToken, bool, bool, Task<bool>> sendMessage)
+        SessionMessageRequest request)
     {
         if (request.CopilotSession == null)
         {
@@ -72,6 +69,8 @@ internal static class SessionMessageCoordinator
                     RecordSubagentToolComplete = request.HistoryTracker.RecordSubagentToolComplete,
                     RecordSubagentMessageDelta = request.HistoryTracker.RecordSubagentMessageDelta,
                     RecordSubagentMessage = request.HistoryTracker.RecordSubagentMessage,
+                    ShowSubagentStarted = ConsoleUI.ShowSubagentStarted,
+                    ShowSubagentResult = ConsoleUI.ShowSubagentResult,
                     IncrementToolInvocation = request.IncrementToolInvocation
                 }
             });
@@ -93,29 +92,9 @@ internal static class SessionMessageCoordinator
             request.SetPromptReply(promptIndex, result.ResponseText);
             request.SetLastAssistantMessage(result.ResponseText);
 
-            var approvalFollowUpHandled = false;
             if (!result.HasError)
             {
-                approvalFollowUpHandled = await request.ProcessPendingApprovals(cancellationToken);
-            }
-
-            if (!approvalFollowUpHandled
-                && !result.HasError
-                && showPostAnalysisActionPrompt
-                && SessionPromptFlow.ShouldOfferPostAnalysisActionPrompt(result.ResponseText, forcePostAnalysisActionPrompt))
-            {
-                turnOutcome = TurnOutcome.Success;
-                return await SessionPromptFlow.HandlePostAnalysisActionAsync(
-                    ConsoleUI.PromptPostAnalysisAction,
-                    request.RecordPrompt,
-                    (prompt, promptIndexForFollowUp, token, showPrompt, forcePrompt) => sendMessage(
-                        prompt,
-                        promptIndexForFollowUp,
-                        token,
-                        showPrompt,
-                        forcePrompt),
-                    ConsoleUI.ShowInfo,
-                    cancellationToken);
+                await request.ProcessPendingApprovals(cancellationToken);
             }
 
             turnOutcome = result.WasCancelled ? TurnOutcome.Cancelled

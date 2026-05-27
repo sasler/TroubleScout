@@ -2,6 +2,7 @@ using FluentAssertions;
 using Moq;
 using TroubleScout.Services;
 using TroubleScout.Tools;
+using TroubleScout.UI;
 using Xunit;
 
 namespace TroubleScout.Tests.Tools;
@@ -40,6 +41,10 @@ public class DiagnosticToolsTests : IDisposable
         
         var toolNames = tools.Select(t => t.Name).ToArray();
         toolNames.Should().Contain("run_powershell");
+        toolNames.Should().Contain("authorize_delegated_powershell");
+        toolNames.Should().Contain("authorize_delegated_mcp");
+        toolNames.Should().Contain("authorize_delegated_url");
+        toolNames.Should().Contain("run_delegated_powershell");
         toolNames.Should().Contain("get_system_info");
         toolNames.Should().Contain("get_event_logs");
         toolNames.Should().Contain("get_services");
@@ -91,6 +96,10 @@ public class DiagnosticToolsTests : IDisposable
         foreach (var toolName in new[]
         {
             "run_powershell",
+            "authorize_delegated_powershell",
+            "authorize_delegated_mcp",
+            "authorize_delegated_url",
+            "run_delegated_powershell",
             "connect_server",
             "connect_jea_server",
             "close_server_session"
@@ -230,6 +239,80 @@ public class DiagnosticToolsTests : IDisposable
         resultString.Should().Contain("BLOCKED");
         _diagnosticTools.PendingCommands.Should().BeEmpty();
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithoutGrant_ShouldNotQueueOrExecute()
+    {
+        var command = "Stop-Service -Name wuauserv";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+
+        var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
+        var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        result!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
+        _diagnosticTools.PendingCommands.Should().BeEmpty();
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithExactGrant_ShouldExecuteOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var command = "Stop-Service -Name wuauserv";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        _mockExecutor.Setup(x => x.ActualComputerName).Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "Service stopped"));
+        _mockApprovalCallback.Setup(callback => callback(command, It.IsAny<string>()))
+            .ReturnsAsync(true);
+
+        var tools = _diagnosticTools.GetTools().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+        var authorization = await tools["authorize_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+        var grantId = authorization!.ToString()!.Split("authorizationId=", StringSplitOptions.None)[1].Trim();
+
+        var first = await tools["run_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command, ["authorizationId"] = grantId });
+        var second = await tools["run_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command, ["authorizationId"] = grantId });
+
+        first!.ToString().Should().Contain("Service stopped");
+        second!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedPowerShell_ProtectedHeadlessCommand_ShouldDenyWithoutPrompt()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => true;
+        try
+        {
+            var command = "Stop-Service -Name wuauserv";
+            _mockExecutor.Setup(x => x.ValidateCommand(command))
+                .Returns(new CommandValidation(true, true, "Requires approval"));
+
+            var tool = _diagnosticTools.GetTools().Single(item => item.Name == "authorize_delegated_powershell");
+            var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+            result!.ToString().Should().Contain("[DENIED]");
+            _mockApprovalCallback.Verify(callback => callback(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
     }
 
     #endregion

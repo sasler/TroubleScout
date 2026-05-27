@@ -81,23 +81,24 @@ internal sealed class ConversationHistoryTracker
     internal void RecordMcpToolAction(ToolExecutionStartEvent toolStart)
     {
         var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
-        if (string.IsNullOrWhiteSpace(mcpServerName))
+        var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
+        var isDelegatedAuthorization = toolName.StartsWith("authorize_delegated_", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(mcpServerName) && !isDelegatedAuthorization)
         {
             return;
         }
 
-        var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
         var argumentsPreview = FormatArgumentsForReport(toolStart.Data?.Arguments);
 
         var toolCallId = ReadStringProperty(toolStart.Data, "ToolCallId");
 
         var entry = new ReportActionEntry(
             DateTimeOffset.Now,
-            mcpServerName,
+            isDelegatedAuthorization ? "Primary agent" : mcpServerName ?? "MCP",
             toolName,
             string.Empty,
-            "MCP",
-            "MCP")
+            isDelegatedAuthorization ? "Preauthorization" : "MCP",
+            isDelegatedAuthorization ? "Delegation Authorization" : "MCP")
         {
             Arguments = argumentsPreview,
             ToolCallId = toolCallId
@@ -201,6 +202,7 @@ internal sealed class ConversationHistoryTracker
     internal void RecordSubagentCompleted(SubagentCompletedEvent completed) =>
         CompleteSubagentAction(
             completed.Data?.ToolCallId,
+            completed.Data?.Duration,
             completed.Data?.TotalTokens,
             completed.Data?.TotalToolCalls,
             success: true,
@@ -209,6 +211,7 @@ internal sealed class ConversationHistoryTracker
     internal void RecordSubagentFailed(SubagentFailedEvent failed) =>
         CompleteSubagentAction(
             failed.Data?.ToolCallId,
+            failed.Data?.Duration,
             failed.Data?.TotalTokens,
             failed.Data?.TotalToolCalls,
             success: false,
@@ -389,7 +392,7 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
-    private void CompleteSubagentAction(string? toolCallId, long? tokens, long? tools, bool success, string? error)
+    private void CompleteSubagentAction(string? toolCallId, TimeSpan? duration, long? tokens, long? tools, bool success, string? error)
     {
         if (string.IsNullOrWhiteSpace(toolCallId))
         {
@@ -412,6 +415,10 @@ internal sealed class ConversationHistoryTracker
             }
 
             var parts = new List<string>();
+            if (duration.HasValue)
+            {
+                parts.Add($"{duration.Value.TotalSeconds:0.#}s");
+            }
             if (tokens is > 0)
             {
                 parts.Add($"{tokens:N0} tokens");

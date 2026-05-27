@@ -56,56 +56,6 @@ internal static class ModelPickerUI
             && entry.Source == selectedChoice.SourceHint);
     }
 
-    internal static ModelSwitchBehavior? PromptModelSwitchBehavior(
-        string currentModel,
-        string selectedModel)
-    {
-        if (ConsoleUI.IsInputRedirectedResolver())
-        {
-            return ModelSwitchBehavior.CleanSession;
-        }
-
-        const string cleanLabel = "Start a new clean session";
-        const string secondOpinionLabel =
-            "Ask another model for a second opinion using the full conversation and tool outputs (they will all be sent to it)";
-        const string cancelLabel = "Cancel";
-        IReadOnlyList<string> choices = [cleanLabel, secondOpinionLabel, cancelLabel];
-
-        var title =
-            $"[bold cyan]Switch to {Markup.Escape(selectedModel)}[/]{Environment.NewLine}" +
-            $"[grey]Current model:[/] [cyan]{Markup.Escape(currentModel)}[/]{Environment.NewLine}" +
-            "[grey]Choose whether to start fresh or share the current conversation and tool outputs with the selected model.[/]";
-
-        LiveThinkingIndicator.PauseForApproval();
-        try
-        {
-            var selected = ConsoleUI.ModelSwitchBehaviorPromptOverride != null
-                ? ConsoleUI.ModelSwitchBehaviorPromptOverride(title, choices)
-                : AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title(title)
-                        .PageSize(3)
-                        .AddChoices(choices)
-                        .UseConverter(choice => choice switch
-                        {
-                            cleanLabel => $"[green]{Markup.Escape(choice)}[/]",
-                            secondOpinionLabel => $"[cyan]{Markup.Escape(choice)}[/]",
-                            _ => $"[grey]{Markup.Escape(choice)}[/]"
-                        }));
-
-            return selected switch
-            {
-                cleanLabel => ModelSwitchBehavior.CleanSession,
-                secondOpinionLabel => ModelSwitchBehavior.SecondOpinion,
-                _ => null
-            };
-        }
-        finally
-        {
-            LiveThinkingIndicator.ResumeAfterApproval();
-        }
-    }
-
     public static string? PromptReasoningEffort(
         string? currentReasoningEffort,
         IReadOnlyList<string> supportedEfforts,

@@ -23,7 +23,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 
 ## Core Dependencies
 
-- GitHub.Copilot.SDK (`0.3.0`) via event-based streaming (`CopilotSession.On(...)`)
+- GitHub.Copilot.SDK (`1.0.0-beta.6`) via event-based streaming (`CopilotSession.On(...)`)
 - Microsoft.PowerShell.SDK (`7.5.4`) for embedded PowerShell execution
 - Spectre.Console (`0.54.0`) for terminal UI
 
@@ -70,7 +70,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 - Keep `Streaming = true` for interactive UX.
 - Build tool list with `AIFunctionFactory.Create(...)` in `Tools/DiagnosticTools.cs`.
 - When configuring BYOK OpenAI-compatible providers, preserve richer `ModelInfo` metadata and use `ProviderConfig.WireApi = "responses"` for GPT-5-family models.
-- Keep `IncludeSubAgentStreamingEvents = false` unless the TUI is explicitly updated to render sub-agent deltas separately from the main assistant stream.
+- Keep `IncludeSubAgentStreamingEvents = true`; the TUI renders delegated results separately from the main assistant stream and `/report` audits child activity.
 - Use `DefaultAgent.ExcludedTools` plus inferable `CustomAgents` to keep the root agent focused; the current foundation routes `web_search` through a dedicated research sub-agent.
 
 ### Resource lifecycle
@@ -126,7 +126,7 @@ Preserve this model for all changes.
 - **Approval dialog safety** — `LiveThinkingIndicator.PauseForApproval()` / `ResumeAfterApproval()` must wrap any `AnsiConsole.Prompt` or `SelectionPrompt` call made while the spinner is running, to prevent the spin loop from overwriting the prompt.
 - **Three-option approval prompts** — `ConsoleUI.PromptCommandApproval` returns `ApprovalResult` (Approved/Denied). The prompt offers Yes, No, or Explain via `SelectionPrompt<string>`. Explain shows a detail panel then re-prompts with a binary Yes/No.
 - **MCP approval prompts** — `ConsoleUI.PromptMcpApproval()` returns `McpApprovalResult` (`ApproveOnce`, `ApproveServerForSession`, `ApproveServerPersist`, `Deny`). The "persist across sessions" choice is only offered for servers that are mapped to a `monitoring`/`ticketing` role, and the prompt copy is MCP-specific (no shell-mutation warning).
-- **Post-analysis action dialog** — after a turn reaches diagnosis/recommendations or after approved commands finish, `ConsoleUI.PromptPostAnalysisAction()` asks whether to continue investigating, apply the fix, or stop for now. Prompt guidance should have the agent end with `## Ready for next action` so TroubleScout can reclaim control cleanly.
+- **Stop-after-answer flow** — once a response or approved-command summary has completed, the app returns directly to input. The user sends a new query for further investigation or remediation; prompts must not require a synthetic continuation marker.
 - **URL approval prompts** — `ConsoleUI.PromptUrlApproval()` provides a three-way choice: allow this URL, allow all URLs for the active session, or deny. Exact-URL approvals and allow-all state are stored only for the current TroubleScout session.
 - **`/mcp-role` slash command** — supports interactive mapping plus direct assignment (`/mcp-role monitoring zabbix`, `/mcp-role ticketing redmine`, `/mcp-role clear all`). Changes persist to `settings.json`, reload session settings immediately, and should remain visible in startup/status surfaces.
 - **Post-response status bar** — `ConsoleUI.WriteStatusBar(StatusBarInfo)` renders a compact one-line bar after each AI response with model name, provider, token counts, and tool invocations. Data comes from `BuildStatusBarInfo()`.

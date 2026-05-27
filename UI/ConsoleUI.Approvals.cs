@@ -227,45 +227,6 @@ public static partial class ConsoleUI
         }
     }
 
-    public static PostAnalysisAction PromptPostAnalysisAction()
-    {
-        LiveThinkingIndicator.PauseForApproval();
-        try
-        {
-            if (PostAnalysisActionPromptOverride != null)
-            {
-                return PostAnalysisActionPromptOverride();
-            }
-
-            if (IsInputRedirectedResolver())
-            {
-                return PostAnalysisAction.Stop;
-            }
-
-            AnsiConsole.WriteLine();
-            var choice = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]What should TroubleScout do next?[/]")
-                    .HighlightStyle(new Style(Color.Cyan1))
-                    .AddChoices([
-                        "Continue investigating",
-                        "Apply the fix",
-                        "Stop for now"
-                    ]));
-
-            return choice switch
-            {
-                "Continue investigating" => PostAnalysisAction.ContinueInvestigating,
-                "Apply the fix" => PostAnalysisAction.ApplyFix,
-                _ => PostAnalysisAction.Stop
-            };
-        }
-        finally
-        {
-            LiveThinkingIndicator.ResumeAfterApproval();
-        }
-    }
-
     public static (string? Monitoring, string? Ticketing) PromptMcpRoleSelection(
         string? currentMonitoring,
         string? currentTicketing,

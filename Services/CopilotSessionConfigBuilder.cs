@@ -42,6 +42,8 @@ internal static class CopilotSessionConfigBuilder
                 ExcludedTools =
                 [
                     "web_search",
+                    "run_powershell",
+                    "run_delegated_powershell",
                     "get_system_info",
                     "get_event_logs",
                     "get_services",
@@ -107,7 +109,7 @@ internal static class CopilotSessionConfigBuilder
                     "get_disk_space",
                     "get_network_info",
                     "get_performance_counters",
-                    "run_powershell",
+                    "run_delegated_powershell",
                     "web_search"
                 ],
                 McpServers = delegatedMcpServers.Count == 0 ? null : delegatedMcpServers,

@@ -158,7 +158,6 @@ public class InvariantGuardsTests
             "PromptCommandApproval",
             "PromptUrlApproval",
             "PromptMcpApproval",
-            "PromptPostAnalysisAction",
             "PromptMcpRoleSelection",
             "PromptBatchApproval",
         };

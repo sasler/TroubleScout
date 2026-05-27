@@ -99,118 +99,6 @@ public class ConsoleUITests
     }
 
     [Fact]
-    public void PromptModelSwitchBehavior_WhenInputRedirected_ShouldDefaultToCleanSession()
-    {
-        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
-        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
-
-        try
-        {
-            ConsoleUI.IsInputRedirectedResolver = static () => true;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = null;
-
-            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
-
-            result.Should().Be(ModelSwitchBehavior.CleanSession);
-        }
-        finally
-        {
-            ConsoleUI.IsInputRedirectedResolver = originalResolver;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
-        }
-    }
-
-    [Fact]
-    public void PromptModelSwitchBehavior_WhenOverrideChoosesSecondOpinion_ShouldReturnSecondOpinion()
-    {
-        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
-        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
-
-        try
-        {
-            ConsoleUI.IsInputRedirectedResolver = static () => false;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = (_, choices) =>
-                choices.Single(choice => choice.Contains("second opinion", StringComparison.OrdinalIgnoreCase));
-
-            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
-
-            result.Should().Be(ModelSwitchBehavior.SecondOpinion);
-        }
-        finally
-        {
-            ConsoleUI.IsInputRedirectedResolver = originalResolver;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
-        }
-    }
-
-    [Fact]
-    public void PromptModelSwitchBehavior_WhenOverrideChoosesCancel_ShouldReturnNull()
-    {
-        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
-        var originalPromptOverride = ConsoleUI.ModelSwitchBehaviorPromptOverride;
-
-        try
-        {
-            ConsoleUI.IsInputRedirectedResolver = static () => false;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = (_, choices) =>
-                choices.Single(choice => choice.Contains("Cancel", StringComparison.OrdinalIgnoreCase));
-
-            var result = ConsoleUI.PromptModelSwitchBehavior("gpt-4.1", "claude-sonnet-4.6");
-
-            result.Should().BeNull();
-        }
-        finally
-        {
-            ConsoleUI.IsInputRedirectedResolver = originalResolver;
-            ConsoleUI.ModelSwitchBehaviorPromptOverride = originalPromptOverride;
-        }
-    }
-
-    [Fact]
-    public void PromptPostAnalysisAction_WhenInputRedirected_ShouldReturnStop()
-    {
-        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
-        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
-
-        try
-        {
-            ConsoleUI.IsInputRedirectedResolver = static () => true;
-            ConsoleUI.PostAnalysisActionPromptOverride = null;
-
-            var result = ConsoleUI.PromptPostAnalysisAction();
-
-            result.Should().Be(PostAnalysisAction.Stop);
-        }
-        finally
-        {
-            ConsoleUI.IsInputRedirectedResolver = originalResolver;
-            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
-        }
-    }
-
-    [Fact]
-    public void PromptPostAnalysisAction_WhenOverrideChoosesApplyFix_ShouldReturnApplyFix()
-    {
-        var originalResolver = ConsoleUI.IsInputRedirectedResolver;
-        var originalPromptOverride = ConsoleUI.PostAnalysisActionPromptOverride;
-
-        try
-        {
-            ConsoleUI.IsInputRedirectedResolver = static () => false;
-            ConsoleUI.PostAnalysisActionPromptOverride = static () => PostAnalysisAction.ApplyFix;
-
-            var result = ConsoleUI.PromptPostAnalysisAction();
-
-            result.Should().Be(PostAnalysisAction.ApplyFix);
-        }
-        finally
-        {
-            ConsoleUI.IsInputRedirectedResolver = originalResolver;
-            ConsoleUI.PostAnalysisActionPromptOverride = originalPromptOverride;
-        }
-    }
-
-    [Fact]
     public void BuildTerminalTitleSequence_ShouldEmitOscTitleSequence()
     {
         var sequence = ConsoleUI.BuildTerminalTitleSequence("TroubleScout");
@@ -242,6 +130,7 @@ public class ConsoleUITests
         output.Should().Contain("--jea");
         output.Should().Contain("--prompt");
         output.Should().Contain("--model");
+        output.Should().Contain("--subagent-model");
         output.Should().Contain("1.2.3");
     }
 

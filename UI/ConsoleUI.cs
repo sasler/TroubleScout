@@ -32,13 +32,6 @@ public enum McpApprovalResult
     Deny
 }
 
-public enum PostAnalysisAction
-{
-    ContinueInvestigating,
-    ApplyFix,
-    Stop
-}
-
 public enum TerminalProgressState
 {
     Hidden = 0,
@@ -110,12 +103,10 @@ public static partial class ConsoleUI
 
     internal static bool IsMonochromeTheme()
         => string.Equals(CurrentTheme, "mono", StringComparison.OrdinalIgnoreCase);
-    internal static Func<string, IReadOnlyList<string>, string>? ModelSwitchBehaviorPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, ApprovalResult>? CommandApprovalPromptOverride { get; set; }
     internal static Func<string, string?, UrlApprovalResult>? UrlApprovalPromptOverride { get; set; }
     internal static Func<string, string, string?, string?, McpApprovalResult>? McpApprovalPromptOverride { get; set; }
     internal static Func<string?, string?, IReadOnlyList<string>, (string? Monitoring, string? Ticketing)>? McpRolePromptOverride { get; set; }
-    internal static Func<PostAnalysisAction>? PostAnalysisActionPromptOverride { get; set; }
     private static readonly object _terminalStateLock = new();
     private static readonly object _liveOutputLock = new();
     private static string? _originalConsoleTitle;
@@ -387,6 +378,7 @@ public static partial class ConsoleUI
         optionsTable.AddRow("[cyan]-s[/], [cyan]--server[/] [grey]<hostname>[/]", "Target server(s) hostname or IP. Repeat for multiple: -s srv1 -s srv2 (default: localhost)");
         optionsTable.AddRow("[cyan]-p[/], [cyan]--prompt[/] [grey]<text>[/]", "Run a single prompt in headless mode and exit");
         optionsTable.AddRow("[cyan]-m[/], [cyan]--model[/] [grey]<model-id>[/]", "AI model to use (e.g. gpt-4.1, gpt-5-mini)");
+        optionsTable.AddRow("[cyan]--subagent-model[/] [grey]<model-id>[/]", "Model used for delegated evidence collection");
         optionsTable.AddRow("[cyan]--jea[/] [grey]<server> <configurationName>[/]", "Preconnect a single startup JEA endpoint session");
         optionsTable.AddRow("[cyan]--mode[/] [grey]<strict|auto>[/]", "PowerShell execution mode (default: strict)");
         optionsTable.AddRow("[cyan]--mcp-config[/] [grey]<path>[/]", "Path to MCP server config JSON file");
@@ -591,11 +583,6 @@ public static partial class ConsoleUI
         IReadOnlyList<ModelSelectionEntry> entries)
         => ModelPickerUI.PromptModelSelection(currentModel, entries);
 
-    internal static ModelSwitchBehavior? PromptModelSwitchBehavior(
-        string currentModel,
-        string selectedModel)
-        => ModelPickerUI.PromptModelSwitchBehavior(currentModel, selectedModel);
-
     public static string? PromptReasoningEffort(
         string? currentReasoningEffort,
         IReadOnlyList<string> supportedEfforts,
@@ -692,6 +679,60 @@ public static partial class ConsoleUI
         {
             EnsureLineBreak();
             AnsiConsole.MarkupLine($"[blue]ℹ[/] {Markup.Escape(message)}");
+        });
+    }
+
+    internal static void ShowSubagentStarted(string name, string? model)
+    {
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            var modelText = string.IsNullOrWhiteSpace(model) ? "model unavailable" : model;
+            var panel = new Panel(new Markup($"[grey]Model:[/] [cyan]{Markup.Escape(modelText)}[/]"))
+                .Header($"[bold blue] Sub-agent: {Markup.Escape(name)} [/]")
+                .Border(BoxBorder.Rounded)
+                .BorderColor(Color.Blue);
+            AnsiConsole.Write(panel);
+        });
+    }
+
+    internal static void ShowSubagentResult(
+        string name,
+        string? model,
+        string returnedContent,
+        TimeSpan? duration,
+        long? tokens,
+        long? toolCalls,
+        bool success,
+        string? error)
+    {
+        WithLiveOutputLock(() =>
+        {
+            EnsureLineBreak();
+            var lines = new List<string>();
+            if (!string.IsNullOrWhiteSpace(returnedContent))
+            {
+                lines.Add($"[grey]Returned findings:[/]{Environment.NewLine}{Markup.Escape(returnedContent.Trim())}");
+            }
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                lines.Add($"[red]Error:[/] {Markup.Escape(error)}");
+            }
+
+            var metrics = new List<string>();
+            if (!string.IsNullOrWhiteSpace(model)) metrics.Add($"model {model}");
+            if (duration.HasValue) metrics.Add($"{duration.Value.TotalSeconds:0.#}s");
+            if (tokens.HasValue) metrics.Add($"{tokens.Value:N0} tokens");
+            if (toolCalls.HasValue) metrics.Add($"{toolCalls.Value:N0} tools");
+            lines.Add($"[grey]{Markup.Escape(string.Join(" | ", metrics))}[/]");
+            var color = success ? Color.Blue : Color.Red;
+            var markupColor = success ? "blue" : "red";
+            var state = success ? "completed" : "failed";
+            var panel = new Panel(new Markup(string.Join(Environment.NewLine + Environment.NewLine, lines)))
+                .Header($"[bold {markupColor}] Sub-agent {Markup.Escape(state)}: {Markup.Escape(name)} [/]")
+                .Border(BoxBorder.Rounded)
+                .BorderColor(color);
+            AnsiConsole.Write(panel);
         });
     }
 

@@ -1854,7 +1854,6 @@ public class SlashCommandDispatcherTests
             PromptModelSelection = (_, _) => entry,
             IsCurrentModelAndSource = _ => false,
             HasRecordedHistory = () => true,
-            PromptModelSwitchBehavior = (_, _) => ModelSwitchBehavior.CleanSession,
             RunWithSpinnerAsync = async (label, action) =>
             {
                 spinnerLabels.Add(label);
@@ -1872,58 +1871,108 @@ public class SlashCommandDispatcherTests
         var result = await dispatcher.DispatchAsync("/model");
 
         result.Handled.Should().BeTrue();
-        spinnerLabels.Should().Contain("Switching to GPT 5 (GitHub Copilot)...");
+        spinnerLabels.Should().Contain("Switching to GPT 5 (GitHub Copilot) with delegated model GPT 5 (GitHub Copilot)...");
         changedEntries.Should().ContainSingle().Which.Should().Be(entry);
         historyClears.Should().Be(1);
         summaries.Should().Be(1);
     }
 
     [Fact]
-    public async Task DispatchAsync_WithModelSecondOpinionSwitch_ShouldPreserveHistoryAndRunSecondOpinion()
+    public async Task DispatchAsync_WithSubagentOnlyModelSwitch_ShouldRecreateCleanSession()
     {
-        var entry = CreateModelEntry("gpt-5", "GPT 5 (GitHub Copilot)", isCurrent: false);
-        var prompt = new ReportPromptEntry(DateTimeOffset.UtcNow, "check services", [], "healthy");
+        var primary = CreateModelEntry("gpt-4.1", "GPT 4.1 (GitHub Copilot)", isCurrent: true);
+        var delegated = CreateModelEntry("gpt-5-mini", "GPT 5 mini (GitHub Copilot)", isCurrent: false);
         var historyClears = 0;
-        var selectedModelNameCalls = 0;
-        (string PreviousModel, string SelectedModel, IReadOnlyList<ReportPromptEntry> Prompts)? secondOpinion = null;
-        var messages = new List<string>();
+        var recreateCalls = 0;
+        (string Role, string? Model)? saved = null;
+        var prompts = new Queue<ModelSelectionEntry>([primary, delegated]);
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
-            GetAvailableModelCount = () => 1,
-            GetSelectedModelName = () => selectedModelNameCalls++ == 0 ? "gpt-4.1" : "gpt-5",
-            GetModelSelectionEntries = () => [entry],
-            PromptModelSelection = (_, _) => entry,
-            IsCurrentModelAndSource = _ => false,
+            GetAvailableModelCount = () => 2,
+            GetSelectedModelName = () => "gpt-4.1",
+            GetModelSelectionEntries = () => [primary, delegated],
+            GetAgentModelOverrides = () => new Dictionary<string, string> { ["subagent"] = "gpt-4.1" },
+            PromptModelSelection = (_, _) => prompts.Dequeue(),
+            IsCurrentModelAndSource = entry => entry.ModelId == "gpt-4.1",
             HasRecordedHistory = () => true,
-            GetRecordedPrompts = () => [prompt],
-            PromptModelSwitchBehavior = (_, _) => ModelSwitchBehavior.SecondOpinion,
             RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
-            ChangeModel = (_, _) => Task.FromResult(true),
-            ClearRecordedHistory = () => historyClears++,
-            RunSecondOpinion = (previousModel, selectedModel, prompts) =>
+            RecreateCurrentCopilotSession = () =>
             {
-                secondOpinion = (previousModel, selectedModel, prompts);
-                return Task.CompletedTask;
+                recreateCalls++;
+                return Task.FromResult((true, (string?)null));
             },
-            ShowInfo = messages.Add
+            SaveAgentModelOverride = (role, model) => saved = (role, model),
+            ClearRecordedHistory = () => historyClears++,
+            ShowModelSelectionSummary = () => { }
         });
 
         var result = await dispatcher.DispatchAsync("/model");
 
         result.Handled.Should().BeTrue();
-        historyClears.Should().Be(0);
-        secondOpinion.Should().NotBeNull();
-        secondOpinion!.Value.PreviousModel.Should().Be("gpt-4.1");
-        secondOpinion.Value.SelectedModel.Should().Be("gpt-5");
-        secondOpinion.Value.Prompts.Should().ContainSingle().Which.Should().Be(prompt);
-        messages.Should().Contain("Asking gpt-5 for a second opinion using the current session context...");
+        recreateCalls.Should().Be(1);
+        historyClears.Should().Be(1);
+        saved.Should().Be(("subagent", "gpt-5-mini"));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithCrossProviderModelSwitch_ShouldPersistSubagentAfterPrimarySwitch()
+    {
+        var primary = CreateModelEntry("gpt-byok", "GPT BYOK", isCurrent: false, ModelSource.Byok);
+        var delegated = CreateModelEntry("gpt-byok-mini", "GPT BYOK mini", isCurrent: false, ModelSource.Byok);
+        var prompts = new Queue<ModelSelectionEntry>([primary, delegated]);
+        var switchCompleted = false;
+        var savedAfterSwitch = false;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 2,
+            GetSelectedModelName = () => "gpt-github",
+            GetModelSelectionEntries = () => [primary, delegated],
+            PromptModelSelection = (_, _) => prompts.Dequeue(),
+            IsCurrentModelAndSource = _ => false,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ChangeModel = (_, _) =>
+            {
+                switchCompleted = true;
+                return Task.FromResult(true);
+            },
+            SaveAgentModelOverride = (_, _) => savedAfterSwitch = switchCompleted,
+            ShowModelSelectionSummary = () => { }
+        });
+
+        await dispatcher.DispatchAsync("/model");
+
+        savedAfterSwitch.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithFailedPrimaryModelSwitch_ShouldNotPersistSubagentSelection()
+    {
+        var primary = CreateModelEntry("gpt-byok", "GPT BYOK", isCurrent: false, ModelSource.Byok);
+        var prompts = new Queue<ModelSelectionEntry>([primary, primary]);
+        var saves = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 1,
+            GetSelectedModelName = () => "gpt-github",
+            GetModelSelectionEntries = () => [primary],
+            PromptModelSelection = (_, _) => prompts.Dequeue(),
+            IsCurrentModelAndSource = _ => false,
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            ChangeModel = (_, _) => Task.FromResult(false),
+            SaveAgentModelOverride = (_, _) => saves++
+        });
+
+        await dispatcher.DispatchAsync("/model");
+
+        saves.Should().Be(0);
     }
 
     private static ModelSelectionEntry CreateModelEntry(
         string modelId,
         string displayName,
-        bool isCurrent)
-        => new(modelId, displayName, ModelSource.GitHub)
+        bool isCurrent,
+        ModelSource source = ModelSource.GitHub)
+        => new(modelId, displayName, source)
         {
             IsCurrent = isCurrent
         };

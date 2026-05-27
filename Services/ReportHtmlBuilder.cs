@@ -517,6 +517,7 @@ internal static class ReportHtmlBuilder
                 {
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
                     var isMcp = string.Equals(action.Source, "MCP", StringComparison.OrdinalIgnoreCase);
+                    var isDelegationAuthorization = string.Equals(action.Source, "Delegation Authorization", StringComparison.OrdinalIgnoreCase);
                     var isSubagentTool = string.Equals(action.Source, "Subagent Tool", StringComparison.OrdinalIgnoreCase);
                     var isSubagentResult = string.Equals(action.Source, "Subagent Result", StringComparison.OrdinalIgnoreCase);
 
@@ -542,7 +543,7 @@ internal static class ReportHtmlBuilder
                     }
                     sb.AppendLine("              </div>");
 
-                    if (isMcp || isSubagentTool)
+                    if (isMcp || isDelegationAuthorization || isSubagentTool)
                     {
                         sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Tool call\" open>");
                         sb.AppendLine("                <summary>Tool call</summary>");

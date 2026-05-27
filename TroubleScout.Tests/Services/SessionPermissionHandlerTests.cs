@@ -236,6 +236,168 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_ActiveSubagentProtectedUrlWithoutPreauthorization_ShouldRejectWithoutPrompt()
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptUrlApproval: (_, _) =>
+        {
+            promptCount++;
+            return UrlApprovalResult.ApproveThisUrl;
+        });
+        handler.BeginSubagentRun();
+
+        var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedUrl_ThenActiveSubagent_ShouldUseExistingExactApproval()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var promptCount = 0;
+        var handler = CreateHandler(promptUrlApproval: (_, _) =>
+        {
+            promptCount++;
+            return UrlApprovalResult.ApproveThisUrl;
+        });
+
+        var authorization = await handler.AuthorizeDelegatedUrlAsync("https://example.com/logs", "read logs");
+        handler.BeginSubagentRun();
+        var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+        authorization.Should().Contain("[APPROVED]");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedUrl_ApproveAllChoice_ShouldStillPermitOnlyExactInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            var handler = CreateHandler(promptUrlApproval: (_, _) => UrlApprovalResult.ApproveAllUrls);
+
+            var authorization = await handler.AuthorizeDelegatedUrlAsync("https://example.com/logs", "read logs");
+            handler.BeginSubagentRun();
+            var exact = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+            var repeated = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+            var different = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/admin"), new PermissionInvocation());
+
+            authorization.Should().Contain("[APPROVED]");
+            exact.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            repeated.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            different.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedMcpApproveOnce_ShouldPermitExactActiveSubagentInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var promptCount = 0;
+        var handler = CreateHandler(promptMcpApproval: (_, _, _, _) =>
+        {
+            promptCount++;
+            return McpApprovalResult.ApproveOnce;
+        });
+
+        var authorization = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+        handler.BeginSubagentRun();
+        var first = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+        var second = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+
+        authorization.Should().Contain("[APPROVED]");
+        first.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        second.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedMcp_ServerApprovalChoice_ShouldStillPermitOnlyExactInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            var handler = CreateHandler(promptMcpApproval: (_, _, _, _) => McpApprovalResult.ApproveServerForSession);
+
+            var authorization = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+            handler.BeginSubagentRun();
+            var exact = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+            var repeated = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+            var different = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "delete-alert", "{}"), new PermissionInvocation());
+
+            authorization.Should().Contain("[APPROVED]");
+            exact.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            repeated.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            different.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedProtectedAccess_WhenHeadless_ShouldDenyWithoutPrompt()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => true;
+        try
+        {
+            var urlPromptCount = 0;
+            var mcpPromptCount = 0;
+            var handler = CreateHandler(
+                promptUrlApproval: (_, _) =>
+                {
+                    urlPromptCount++;
+                    return UrlApprovalResult.ApproveThisUrl;
+                },
+                promptMcpApproval: (_, _, _, _) =>
+                {
+                    mcpPromptCount++;
+                    return McpApprovalResult.ApproveOnce;
+                });
+
+            var url = await handler.AuthorizeDelegatedUrlAsync("https://example.com/protected", "inspect");
+            var mcp = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+
+            url.Should().Contain("[DENIED]");
+            mcp.Should().Contain("[DENIED]");
+            urlPromptCount.Should().Be(0);
+            mcpPromptCount.Should().Be(0);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
     public void SeedPersistedMcpApprovals_ShouldOnlySeedMappedRolesAndClearSeededApprovals()
     {
         WithTemporarySettingsPath(_ =>

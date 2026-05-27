@@ -29,7 +29,7 @@ internal static class SlashCommandRegistry
             [
                 "- `save` writes the current recorded prompts, assistant replies, tool actions, status bars, and session summary metadata to a versioned JSON file.",
                 "- `load` validates a transcript file and replaces the current recorded history after confirmation when history already exists.",
-                "Loaded transcripts are immediately available to `/report` and `/model` second-opinion context.",
+                "Loaded transcripts are immediately available to `/report`.",
                 "Transcript persistence is always explicit; TroubleScout does not automatically write transcript files."
             ],
             ["/transcript save C:\\Temp\\troublescout-session.json", "/transcript load C:\\Temp\\troublescout-session.json"]),
@@ -50,8 +50,9 @@ internal static class SlashCommandRegistry
                 "- `auto`: unknown command candidates can be evaluated in a no-tools safety session using the selected subagent model; known mutations still require approval."
             ]),
 
-        new(Configuration, "/model", "Choose another AI model and session handoff mode interactively.", ["/model"]),
-        new(Configuration, "/agent-model [model|inherit]", "Configure the active-provider model used for delegated investigation and Auto safety review.", ["/agent-model"],
+        new(Configuration, "/model", "Choose the primary model followed by the same-provider delegated evidence model; model changes start a clean AI session.", ["/model"],
+            ["A faster or lower-cost subagent model is recommended for high-volume evidence collection."]),
+        new(Configuration, "/agent-model [model|inherit]", "Backward-compatible shortcut to configure the active-provider delegated model and Auto safety review.", ["/agent-model"],
             ["An explicit subagent model must be selected before `/mode auto` can be enabled."]),
         new(Configuration, "/reasoning [auto|<effort>]", "Set the reasoning effort for the current model when supported.", ["/reasoning"],
             ["With no argument, prompts interactively."]),

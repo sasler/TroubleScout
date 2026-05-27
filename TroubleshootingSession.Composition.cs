@@ -15,7 +15,9 @@ public partial class TroubleshootingSession
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
             (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName),
             _autoCommandApprovalEvaluator,
-            RecordAutoAuthorization);
+            RecordAutoAuthorization,
+            _permissionHandler.AuthorizeDelegatedMcpAsync,
+            _permissionHandler.AuthorizeDelegatedUrlAsync);
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
         => SessionSystemPromptFactory.Create(new SessionSystemPromptRequest(
@@ -167,13 +169,13 @@ public partial class TroubleshootingSession
             availableMcpServers,
             _configuredMonitoringMcpServer,
             _configuredTicketingMcpServer,
-            _telemetry.HandleSessionLifecycleStateEvent,
+            HandleSessionLifecycleStateEvent,
             _permissionHandler.HandleAsync,
             _configurationWarnings,
             provider,
             _skillDirectories,
             _disabledSkills,
-            AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi)));
+            GetConfiguredAgentModels()));
     }
 
     private string? GetMcpServerRole(string serverName)
@@ -241,7 +243,7 @@ public partial class TroubleshootingSession
 
     private async Task<AutoCommandApprovalDecision?> EvaluateUnknownCommandAsync(string command, CancellationToken cancellationToken)
     {
-        var models = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi);
+        var models = GetConfiguredAgentModels();
         if (_copilotClient == null || !models.TryGetValue(AppSettingsStore.SubagentModelRole, out var approvalModel) || string.IsNullOrWhiteSpace(approvalModel))
         {
             return null;
@@ -374,7 +376,35 @@ public partial class TroubleshootingSession
             _executionMode.ToString(),
             EffectiveTargetServer,
             AppSettingsStore.ResolveGitHubBillingDisplayMode(AppSettingsStore.Load().GitHubBillingDisplayMode),
-            AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi));
+            GetConfiguredAgentModels());
+
+    private IReadOnlyDictionary<string, string> GetConfiguredAgentModels()
+    {
+        var models = new Dictionary<string, string>(
+            AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi),
+            StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_subagentModelOverride))
+        {
+            models[AppSettingsStore.SubagentModelRole] = _subagentModelOverride;
+        }
+
+        return models;
+    }
+
+    private void HandleSessionLifecycleStateEvent(SessionEvent evt)
+    {
+        _telemetry.HandleSessionLifecycleStateEvent(evt);
+        switch (evt)
+        {
+            case SubagentStartedEvent:
+                _permissionHandler.BeginSubagentRun();
+                break;
+            case SubagentCompletedEvent:
+            case SubagentFailedEvent:
+                _permissionHandler.EndSubagentRun();
+                break;
+        }
+    }
 
     private IReadOnlyList<string>? GetAdditionalTargetsForDisplay()
         => SessionTargetDisplay.GetAdditionalTargetsForDisplay(EffectiveTargetServers);
@@ -412,7 +442,7 @@ public partial class TroubleshootingSession
             GetExecutionMode = () => _executionMode,
             SetExecutionMode = SetExecutionMode,
             SetConsoleExecutionMode = ConsoleUI.SetExecutionMode,
-            CanEnableAutoMode = () => AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi).ContainsKey(AppSettingsStore.SubagentModelRole),
+            CanEnableAutoMode = () => GetConfiguredAgentModels().ContainsKey(AppSettingsStore.SubagentModelRole),
             GetTheme = () => ConsoleUI.CurrentTheme,
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = SettingsWorkflowService.PersistThemeSetting,
@@ -425,16 +455,16 @@ public partial class TroubleshootingSession
             GetAvailableModelCount = () => _modelDiscovery.AvailableModels.Count,
             GetModelSelectionEntries = GetModelSelectionEntries,
             UseByokOpenAi = () => _useByokOpenAi,
-            GetAgentModelOverrides = () => AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi),
-            SaveAgentModelOverride = (role, model) => SettingsWorkflowService.SaveAgentModelOverride(_useByokOpenAi, role, model),
+            GetAgentModelOverrides = GetConfiguredAgentModels,
+            SaveAgentModelOverride = (role, model) =>
+            {
+                _subagentModelOverride = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+                SettingsWorkflowService.SaveAgentModelOverride(_useByokOpenAi, role, model);
+            },
             PromptModelSelection = ConsoleUI.PromptModelSelection,
             IsCurrentModelAndSource = IsCurrentModelAndSource,
-            PromptModelSwitchBehavior = ConsoleUI.PromptModelSwitchBehavior,
             ChangeModel = ChangeModelAsync,
             ClearRecordedHistory = ClearRecordedConversationHistory,
-            RunSecondOpinion = async (previousModel, selectedModel, prompts) =>
-                await InteractiveSessionLoop.RunCancelableAiOperationAsync(token =>
-                    RequestSecondOpinionAsync(previousModel, selectedModel, prompts, token)),
             GetByokBaseUrl = () => _byokOpenAiBaseUrl,
             GetDefaultByokModel = () => _selectedModel ?? _requestedModel,
             GetOpenAiApiKeyEnvironmentVariable = () => OpenAiApiKeyEnvironmentVariable,

@@ -48,7 +48,7 @@ internal static class SystemPromptBuilder
             }
 
             primaryJeaLines.AppendLine("Do NOT attempt any other commands — they will be blocked by the JEA endpoint.");
-            primaryJeaLines.AppendLine($"Use run_powershell with sessionName: \"{safePrimary}\" to target this JEA session.");
+            primaryJeaLines.AppendLine($"Delegate run_delegated_powershell with sessionName: \"{safePrimary}\" to target this JEA session.");
             primaryJeaLines.AppendLine("Do NOT use the built-in diagnostic helper tools for this endpoint; they rely on broader PowerShell language features than constrained JEA sessions allow.");
             primaryJeaLines.AppendLine();
             primaryJeaBlock = primaryJeaLines.ToString();
@@ -59,14 +59,14 @@ internal static class SystemPromptBuilder
             var sessionLines = new StringBuilder();
             sessionLines.AppendLine();
             sessionLines.AppendLine("## Connected PSSessions");
-            sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Use run_powershell with sessionName to target each:");
+            sessionLines.AppendLine("The following servers are ALREADY connected and available as named sessions. Delegate run_delegated_powershell with sessionName to target each:");
             if (primaryJeaConfigName != null)
             {
-                sessionLines.AppendLine($"- Bootstrap/default session: {SanitizeServerNameForPrompt(targetServer)} — run_powershell without sessionName targets this session. Use it only when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)} or for local setup tasks.");
+                sessionLines.AppendLine($"- Bootstrap/default session: {SanitizeServerNameForPrompt(targetServer)} - delegated PowerShell without sessionName targets this session. Use it only when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)} or for local setup tasks.");
             }
             else
             {
-                sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} — use run_powershell without sessionName");
+                sessionLines.AppendLine($"- Primary (default): {SanitizeServerNameForPrompt(targetServer)} - delegate run_delegated_powershell without sessionName");
             }
 
             foreach (var serverName in additionalServerNames)
@@ -80,16 +80,16 @@ internal static class SystemPromptBuilder
                 if (additionalExecutors.TryGetValue(serverName, out var executor) && executor.IsJeaSession)
                 {
                     var configName = SanitizeServerNameForPrompt(executor.ConfigurationName ?? "unknown");
-                    sessionLines.AppendLine($"- {safeServerName} (JEA: {configName}) — use run_powershell(command, sessionName: \"{safeServerName}\")");
+                    sessionLines.AppendLine($"- {safeServerName} (JEA: {configName}) - delegate run_delegated_powershell(command, sessionName: \"{safeServerName}\")");
                 }
                 else
                 {
-                    sessionLines.AppendLine($"- {safeServerName} — use run_powershell(command, sessionName: \"{safeServerName}\")");
+                    sessionLines.AppendLine($"- {safeServerName} - delegate run_delegated_powershell(command, sessionName: \"{safeServerName}\")");
                 }
             }
 
             sessionLines.AppendLine();
-            sessionLines.AppendLine("When the user asks about multiple servers, gather data from ALL of them using run_powershell with the appropriate sessionName. Do NOT call connect_server for these — they are already connected.");
+            sessionLines.AppendLine("When the user asks about multiple servers, delegate collection from ALL of them using run_delegated_powershell with the appropriate sessionName. Do NOT call connect_server for these - they are already connected.");
             connectedSessionsBlock = sessionLines.ToString();
         }
 
@@ -123,7 +123,7 @@ internal static class SystemPromptBuilder
                 }
 
                 jeaLines.AppendLine("Do NOT attempt any other commands — they will be blocked by the JEA endpoint.");
-                jeaLines.AppendLine($"Use run_powershell with sessionName: \"{safeServerName}\" to target this session.");
+                jeaLines.AppendLine($"Delegate run_delegated_powershell with sessionName: \"{safeServerName}\" to target this session.");
                 jeaLines.AppendLine();
             }
 
@@ -149,7 +149,7 @@ internal static class SystemPromptBuilder
 
         var dataCollectionGuidance = primaryJeaConfigName == null
             ? "Use the diagnostic tools to collect relevant information FROM THE TARGET SERVER"
-            : $"Use run_powershell with sessionName: \"{SanitizeServerNameForPrompt(effectivePrimary)}\" to collect data from the primary JEA endpoint. Only use the bootstrap session when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)}.";
+            : $"Delegate run_delegated_powershell with sessionName: \"{SanitizeServerNameForPrompt(effectivePrimary)}\" to collect data from the primary JEA endpoint. Only use the bootstrap session when the user explicitly asks about {SanitizeServerNameForPrompt(targetServer)}.";
 
         var sourceVerificationGuidance = primaryJeaConfigName == null
             ? $"Always confirm the data comes from {effectivePrimary} by checking $env:COMPUTERNAME"

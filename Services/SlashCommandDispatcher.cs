@@ -52,10 +52,8 @@ internal sealed class SlashCommandHandlers
     internal Action<string, string?> SaveAgentModelOverride { get; init; } = static (_, _) => { };
     internal Func<string, IReadOnlyList<ModelSelectionEntry>, ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
     internal Func<ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
-    internal Func<string, string, ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => ModelSwitchBehavior.CleanSession;
     internal Func<ModelSelectionEntry, Action<string>?, Task<bool>> ChangeModel { get; init; } = static (_, _) => Task.FromResult(false);
     internal Action ClearRecordedHistory { get; init; } = static () => { };
-    internal Func<string, string, IReadOnlyList<ReportPromptEntry>, Task> RunSecondOpinion { get; init; } = static (_, _, _) => Task.CompletedTask;
     internal Func<string?> GetByokBaseUrl { get; init; } = static () => null;
     internal Func<string?> GetDefaultByokModel { get; init; } = static () => null;
     internal Func<string> GetOpenAiApiKeyEnvironmentVariable { get; init; } = static () => "OPENAI_API_KEY";
@@ -709,6 +707,7 @@ internal sealed class SlashCommandDispatcher
         }
 
         var currentModel = _handlers.GetSelectedModelName() ?? string.Empty;
+        _handlers.ShowInfo("Select the primary model.");
         var selectedEntry = _handlers.PromptModelSelection(currentModel, selectionEntries);
         if (selectedEntry == null)
         {
@@ -716,34 +715,54 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (_handlers.IsCurrentModelAndSource(selectedEntry))
+        var configuredAgentModels = _handlers.GetAgentModelOverrides();
+        var currentSubagentModel = configuredAgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var configuredSubagent)
+            ? configuredSubagent
+            : currentModel;
+        var subagentChoices = selectionEntries
+            .Where(entry => entry.Source == selectedEntry.Source)
+            .Select(entry => entry with
+            {
+                IsCurrent = entry.ModelId.Equals(currentSubagentModel, StringComparison.OrdinalIgnoreCase)
+            })
+            .ToList();
+        if (subagentChoices.Count == 0)
+        {
+            _handlers.ShowWarning("No subagent models are available from the selected primary provider.");
+            return;
+        }
+
+        _handlers.ShowInfo("Select the subagent model. A faster or lower-cost model is recommended for evidence collection.");
+        var selectedSubagentEntry = _handlers.PromptModelSelection(currentSubagentModel, subagentChoices);
+        if (selectedSubagentEntry == null)
+        {
+            _handlers.ShowInfo($"Keeping current subagent model: {currentSubagentModel}");
+            return;
+        }
+
+        var primaryChanged = !_handlers.IsCurrentModelAndSource(selectedEntry);
+        var subagentChanged = !configuredAgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var existingSubagent)
+            || !existingSubagent.Equals(selectedSubagentEntry.ModelId, StringComparison.OrdinalIgnoreCase);
+        if (!primaryChanged && !subagentChanged)
         {
             return;
         }
 
-        var switchBehavior = ModelSwitchBehavior.CleanSession;
-        var priorConversation = Array.Empty<ReportPromptEntry>();
-
-        if (_handlers.HasRecordedHistory())
-        {
-            var behaviorChoice = _handlers.PromptModelSwitchBehavior(currentModel, selectedEntry.DisplayName);
-            if (!behaviorChoice.HasValue)
-            {
-                _handlers.ShowInfo($"Keeping current model: {currentModel}");
-                return;
-            }
-
-            switchBehavior = behaviorChoice.Value;
-            if (switchBehavior == ModelSwitchBehavior.SecondOpinion)
-            {
-                priorConversation = _handlers.GetRecordedPrompts().ToArray();
-            }
-        }
-
         var displayName = selectedEntry.DisplayName;
-        var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
+        var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName} with delegated model {selectedSubagentEntry.DisplayName}...", async updateStatus =>
         {
-            return await _handlers.ChangeModel(selectedEntry, updateStatus);
+            if (primaryChanged)
+            {
+                return await _handlers.ChangeModel(selectedEntry, updateStatus);
+            }
+
+            var (recreated, error) = await _handlers.RecreateCurrentCopilotSession();
+            if (!recreated && !string.IsNullOrWhiteSpace(error))
+            {
+                _handlers.ShowWarning(error);
+            }
+
+            return recreated;
         });
 
         if (!success)
@@ -751,19 +770,13 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (switchBehavior == ModelSwitchBehavior.CleanSession)
+        _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, selectedSubagentEntry.ModelId);
+        if (_handlers.HasRecordedHistory())
         {
             _handlers.ClearRecordedHistory();
         }
 
         _handlers.ShowModelSelectionSummary();
-
-        if (switchBehavior == ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
-        {
-            var selectedModel = _handlers.GetSelectedModelName() ?? string.Empty;
-            _handlers.ShowInfo($"Asking {selectedModel} for a second opinion using the current session context...");
-            await _handlers.RunSecondOpinion(currentModel, selectedModel, priorConversation);
-        }
     }
 
     private async Task HandleAgentModelCommandAsync(string input)
@@ -1423,7 +1436,7 @@ internal sealed class SlashCommandDispatcher
         {
             case SessionTranscriptLoadResult.Success:
                 _handlers.ShowSuccess($"Loaded {promptCount} transcript prompt(s) from '{targetPath}'.");
-                _handlers.ShowInfo("Loaded history is now available to /report and /model second-opinion context.");
+                _handlers.ShowInfo("Loaded history is now available to /report.");
                 break;
             case SessionTranscriptLoadResult.PathMissing:
                 ShowTranscriptUsage();
