@@ -159,6 +159,31 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void SaveSubagentModelOverride_ShouldUpdateAndRemoveConfiguredSubagentModel()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+            {
+                ["github"] = new()
+                {
+                    ["subagent"] = "gpt-4.1"
+                }
+            }
+        });
+
+        SettingsWorkflowService.SaveSubagentModelOverride(false, "gpt-5-mini");
+        var updated = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), useByokOpenAi: false);
+
+        updated["subagent"].Should().Be("gpt-5-mini");
+
+        SettingsWorkflowService.SaveSubagentModelOverride(false, null);
+        var removed = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), useByokOpenAi: false);
+
+        removed.Should().NotContainKey("subagent");
+    }
+
+    [Fact]
     public void ResolveGitHubBillingDisplayMode_ShouldDefaultToCreditsAfterCutover()
     {
         AppSettingsStore.ResolveGitHubBillingDisplayMode(null, new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero))

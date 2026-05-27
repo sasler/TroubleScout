@@ -251,7 +251,7 @@ internal sealed class CopilotTurnRunner
                         }
                         if (subagentCompleted.Data?.TotalToolCalls is long tools && tools > 0)
                         {
-                            completedSuffix.Add($"{tools:N0} tools");
+                            completedSuffix.Add(FormatToolCount(tools));
                         }
                         request.Callbacks.ShowLiveStatusNotice(
                             $"Subagent completed: {completedName}" +
@@ -291,7 +291,7 @@ internal sealed class CopilotTurnRunner
                         }
                         if (subagentFailed.Data?.TotalToolCalls is long failedTools && failedTools > 0)
                         {
-                            failedSuffix.Add($"{failedTools:N0} tools");
+                            failedSuffix.Add(FormatToolCount(failedTools));
                         }
                         request.Callbacks.ShowLiveStatusNotice(
                             $"Subagent failed: {failedName}" +
@@ -504,6 +504,9 @@ internal sealed class CopilotTurnRunner
             }
         }
     }
+
+    private static string FormatToolCount(long count)
+        => $"{count:N0} {(count == 1 ? "tool" : "tools")}";
 
     internal static async Task RunActivityWatchdogAsync(
         ITurnThinkingIndicator indicator,

@@ -146,9 +146,18 @@ internal sealed class SessionPermissionHandler
 
     internal void EndSubagentRun()
     {
-        if (Volatile.Read(ref _activeSubagentCount) > 0)
+        while (true)
         {
-            Interlocked.Decrement(ref _activeSubagentCount);
+            var current = Volatile.Read(ref _activeSubagentCount);
+            if (current <= 0)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _activeSubagentCount, current - 1, current) == current)
+            {
+                return;
+            }
         }
     }
 

@@ -312,6 +312,43 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
+    public async Task EndSubagentRun_WhenConcurrentExtraCompletionOccurs_ShouldNotBypassNextSubagentProtection()
+    {
+        for (var attempt = 0; attempt < 500; attempt++)
+        {
+            var promptCount = 0;
+            var handler = CreateHandler(promptUrlApproval: (_, _) =>
+            {
+                promptCount++;
+                return UrlApprovalResult.ApproveThisUrl;
+            });
+
+            handler.BeginSubagentRun();
+            using var ready = new CountdownEvent(2);
+            using var release = new ManualResetEventSlim(false);
+            var endTasks = Enumerable.Range(0, 2)
+                .Select(_ => Task.Run(() =>
+                {
+                    ready.Signal();
+                    release.Wait();
+                    handler.EndSubagentRun();
+                }))
+                .ToArray();
+
+            ready.Wait();
+            release.Set();
+            await Task.WhenAll(endTasks);
+
+            handler.BeginSubagentRun();
+            var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+            result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            promptCount.Should().Be(0);
+            handler.EndSubagentRun();
+        }
+    }
+
+    [Fact]
     public async Task AuthorizeDelegatedUrl_ThenActiveSubagent_ShouldUseExistingExactApproval()
     {
         var originalRedirected = ConsoleUI.IsInputRedirectedResolver;

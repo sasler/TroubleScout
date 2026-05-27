@@ -456,10 +456,10 @@ public partial class TroubleshootingSession
             GetModelSelectionEntries = GetModelSelectionEntries,
             UseByokOpenAi = () => _useByokOpenAi,
             GetAgentModelOverrides = GetConfiguredAgentModels,
-            SaveAgentModelOverride = (role, model) =>
+            SaveAgentModelOverride = (_, model) =>
             {
                 _subagentModelOverride = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
-                SettingsWorkflowService.SaveAgentModelOverride(_useByokOpenAi, role, model);
+                SettingsWorkflowService.SaveSubagentModelOverride(_useByokOpenAi, model);
             },
             PromptModelSelection = ConsoleUI.PromptModelSelection,
             IsCurrentModelAndSource = IsCurrentModelAndSource,

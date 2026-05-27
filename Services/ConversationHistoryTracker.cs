@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using GitHub.Copilot;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -26,7 +27,7 @@ internal sealed class ConversationHistoryTracker
     private readonly Dictionary<string, McpActionLocation> _pendingMcpActions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, McpActionLocation> _pendingSubagentActions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, McpActionLocation> _pendingSubagentToolActions = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _subagentReturnedFindings = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StringBuilder> _subagentReturnedFindings = new(StringComparer.Ordinal);
 
     private readonly record struct McpActionLocation(int PromptIndex, int ActionIndex);
 
@@ -324,10 +325,13 @@ internal sealed class ConversationHistoryTracker
 
         lock (_reportLock)
         {
-            _subagentReturnedFindings[parentToolCallId] =
-                _subagentReturnedFindings.TryGetValue(parentToolCallId, out var current)
-                    ? current + content
-                    : content;
+            if (!_subagentReturnedFindings.TryGetValue(parentToolCallId, out var buffer))
+            {
+                buffer = new StringBuilder();
+                _subagentReturnedFindings[parentToolCallId] = buffer;
+            }
+
+            buffer.Append(content);
         }
     }
 
@@ -342,7 +346,7 @@ internal sealed class ConversationHistoryTracker
         {
             if (!_subagentReturnedFindings.ContainsKey(parentToolCallId))
             {
-                _subagentReturnedFindings[parentToolCallId] = content;
+                _subagentReturnedFindings[parentToolCallId] = new StringBuilder(content);
             }
         }
     }
@@ -444,7 +448,7 @@ internal sealed class ConversationHistoryTracker
             }
             if (tools is > 0)
             {
-                parts.Add($"{tools:N0} tools");
+                parts.Add($"{tools:N0} {(tools == 1 ? "tool" : "tools")}");
             }
             if (!string.IsNullOrWhiteSpace(error))
             {
@@ -465,13 +469,13 @@ internal sealed class ConversationHistoryTracker
             };
 
             if (_subagentReturnedFindings.Remove(toolCallId, out var returnedFindings)
-                && !string.IsNullOrWhiteSpace(returnedFindings))
+                && !string.IsNullOrWhiteSpace(returnedFindings.ToString()))
             {
                 actions.Add(new ReportActionEntry(
                     DateTimeOffset.Now,
                     current.Target,
                     "Returned findings",
-                    returnedFindings.Trim(),
+                    returnedFindings.ToString().Trim(),
                     success ? "Delegated" : "Failed",
                     "Subagent Result")
                 {

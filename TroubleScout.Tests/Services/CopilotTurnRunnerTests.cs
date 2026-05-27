@@ -259,7 +259,8 @@ public class CopilotTurnRunnerTests
         notices.Should().Contain(message => message.Contains("Approval Reviewer", StringComparison.Ordinal)
             && message.Contains("failed", StringComparison.OrdinalIgnoreCase)
             && message.Contains("45 tokens", StringComparison.Ordinal)
-            && message.Contains("1 tools", StringComparison.Ordinal)
+            && message.Contains("1 tool", StringComparison.Ordinal)
+            && !message.Contains("1 tools", StringComparison.Ordinal)
             && message.Contains("2", StringComparison.Ordinal));
     }
 

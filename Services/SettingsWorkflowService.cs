@@ -68,7 +68,7 @@ internal static class SettingsWorkflowService
         AppSettingsStore.Save(settings);
     }
 
-    internal static void SaveAgentModelOverride(bool useByokOpenAi, string role, string? model)
+    internal static void SaveSubagentModelOverride(bool useByokOpenAi, string? model)
     {
         var settings = AppSettingsStore.Load();
         var provider = AppSettingsStore.GetProviderProfileKey(useByokOpenAi);
@@ -89,7 +89,6 @@ internal static class SettingsWorkflowService
         }
         else
         {
-            models.Clear();
             models[AppSettingsStore.SubagentModelRole] = model.Trim();
         }
 

@@ -887,7 +887,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
                 Result = new ToolExecutionCompleteResult { Content = "CPUPercent 12" }
             }
         });
-        tracker.RecordSubagentMessage("sub-1", "CPU utilization is normal.");
+        tracker.RecordSubagentMessageDelta("sub-1", "CPU utilization ");
+        tracker.RecordSubagentMessageDelta("sub-1", "is normal.");
         tracker.RecordSubagentCompleted(new SubagentCompletedEvent
         {
             Data = new SubagentCompletedData
@@ -3444,7 +3445,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Proven read-only diagnostic tools execute automatically in all modes",
+        content.Should().MatchRegex(@"Proven read-only (commands and )?diagnostic tools execute automatically in all modes",
             "system message should clarify read-only tools work in all modes");
     }
 
