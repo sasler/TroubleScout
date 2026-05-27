@@ -31,9 +31,10 @@ internal sealed class SlashCommandHandlers
     internal Action<bool> ShowStatus { get; init; } = static _ => { };
     internal Action ShowStats { get; init; } = static () => { };
     internal Action ShowHistory { get; init; } = static () => { };
-    internal Func<ExecutionMode> GetExecutionMode { get; init; } = static () => ExecutionMode.Safe;
+    internal Func<ExecutionMode> GetExecutionMode { get; init; } = static () => ExecutionMode.Strict;
     internal Action<ExecutionMode> SetExecutionMode { get; init; } = static _ => { };
     internal Action<ExecutionMode> SetConsoleExecutionMode { get; init; } = static _ => { };
+    internal Func<bool> CanEnableAutoMode { get; init; } = static () => false;
     internal Func<string> GetTheme { get; init; } = static () => "dark";
     internal Action<string> SetTheme { get; init; } = static _ => { };
     internal Action<string> PersistTheme { get; init; } = static _ => { };
@@ -45,12 +46,14 @@ internal sealed class SlashCommandHandlers
     internal Func<Task> RefreshAvailableModels { get; init; } = static () => Task.CompletedTask;
     internal Func<int> GetAvailableModelCount { get; init; } = static () => 0;
     internal Func<IReadOnlyList<ModelSelectionEntry>> GetModelSelectionEntries { get; init; } = static () => Array.Empty<ModelSelectionEntry>();
+    internal Func<bool> UseByokOpenAi { get; init; } = static () => false;
+    internal Func<IReadOnlyDictionary<string, string>> GetAgentModelOverrides { get; init; } =
+        static () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    internal Action<string, string?> SaveAgentModelOverride { get; init; } = static (_, _) => { };
     internal Func<string, IReadOnlyList<ModelSelectionEntry>, ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
     internal Func<ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
-    internal Func<string, string, ModelSwitchBehavior?> PromptModelSwitchBehavior { get; init; } = static (_, _) => ModelSwitchBehavior.CleanSession;
     internal Func<ModelSelectionEntry, Action<string>?, Task<bool>> ChangeModel { get; init; } = static (_, _) => Task.FromResult(false);
     internal Action ClearRecordedHistory { get; init; } = static () => { };
-    internal Func<string, string, IReadOnlyList<ReportPromptEntry>, Task> RunSecondOpinion { get; init; } = static (_, _, _) => Task.CompletedTask;
     internal Func<string?> GetByokBaseUrl { get; init; } = static () => null;
     internal Func<string?> GetDefaultByokModel { get; init; } = static () => null;
     internal Func<string> GetOpenAiApiKeyEnvironmentVariable { get; init; } = static () => "OPENAI_API_KEY";
@@ -228,6 +231,12 @@ internal sealed class SlashCommandDispatcher
         if (parsed.FirstToken == "/model")
         {
             await HandleModelCommandAsync();
+            return SlashCommandResult.HandledCommand;
+        }
+
+        if (IsInvocation(parsed.Lower, "/agent-model"))
+        {
+            await HandleAgentModelCommandAsync(parsed.Trimmed);
             return SlashCommandResult.HandledCommand;
         }
 
@@ -698,6 +707,7 @@ internal sealed class SlashCommandDispatcher
         }
 
         var currentModel = _handlers.GetSelectedModelName() ?? string.Empty;
+        _handlers.ShowInfo("Select the primary model.");
         var selectedEntry = _handlers.PromptModelSelection(currentModel, selectionEntries);
         if (selectedEntry == null)
         {
@@ -705,34 +715,54 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (_handlers.IsCurrentModelAndSource(selectedEntry))
+        var configuredAgentModels = _handlers.GetAgentModelOverrides();
+        var currentSubagentModel = configuredAgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var configuredSubagent)
+            ? configuredSubagent
+            : currentModel;
+        var subagentChoices = selectionEntries
+            .Where(entry => entry.Source == selectedEntry.Source)
+            .Select(entry => entry with
+            {
+                IsCurrent = entry.ModelId.Equals(currentSubagentModel, StringComparison.OrdinalIgnoreCase)
+            })
+            .ToList();
+        if (subagentChoices.Count == 0)
+        {
+            _handlers.ShowWarning("No subagent models are available from the selected primary provider.");
+            return;
+        }
+
+        _handlers.ShowInfo("Select the subagent model. A faster or lower-cost model is recommended for evidence collection.");
+        var selectedSubagentEntry = _handlers.PromptModelSelection(currentSubagentModel, subagentChoices);
+        if (selectedSubagentEntry == null)
+        {
+            _handlers.ShowInfo($"Keeping current subagent model: {currentSubagentModel}");
+            return;
+        }
+
+        var primaryChanged = !_handlers.IsCurrentModelAndSource(selectedEntry);
+        var subagentChanged = !configuredAgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var existingSubagent)
+            || !existingSubagent.Equals(selectedSubagentEntry.ModelId, StringComparison.OrdinalIgnoreCase);
+        if (!primaryChanged && !subagentChanged)
         {
             return;
         }
 
-        var switchBehavior = ModelSwitchBehavior.CleanSession;
-        var priorConversation = Array.Empty<ReportPromptEntry>();
-
-        if (_handlers.HasRecordedHistory())
-        {
-            var behaviorChoice = _handlers.PromptModelSwitchBehavior(currentModel, selectedEntry.DisplayName);
-            if (!behaviorChoice.HasValue)
-            {
-                _handlers.ShowInfo($"Keeping current model: {currentModel}");
-                return;
-            }
-
-            switchBehavior = behaviorChoice.Value;
-            if (switchBehavior == ModelSwitchBehavior.SecondOpinion)
-            {
-                priorConversation = _handlers.GetRecordedPrompts().ToArray();
-            }
-        }
-
         var displayName = selectedEntry.DisplayName;
-        var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName}...", async updateStatus =>
+        var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName} with delegated model {selectedSubagentEntry.DisplayName}...", async updateStatus =>
         {
-            return await _handlers.ChangeModel(selectedEntry, updateStatus);
+            if (primaryChanged)
+            {
+                return await _handlers.ChangeModel(selectedEntry, updateStatus);
+            }
+
+            var (recreated, error) = await _handlers.RecreateCurrentCopilotSession();
+            if (!recreated && !string.IsNullOrWhiteSpace(error))
+            {
+                _handlers.ShowWarning(error);
+            }
+
+            return recreated;
         });
 
         if (!success)
@@ -740,18 +770,72 @@ internal sealed class SlashCommandDispatcher
             return;
         }
 
-        if (switchBehavior == ModelSwitchBehavior.CleanSession)
+        _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, selectedSubagentEntry.ModelId);
+        if (_handlers.HasRecordedHistory())
         {
             _handlers.ClearRecordedHistory();
         }
 
         _handlers.ShowModelSelectionSummary();
+    }
 
-        if (switchBehavior == ModelSwitchBehavior.SecondOpinion && priorConversation.Length > 0)
+    private async Task HandleAgentModelCommandAsync(string input)
+    {
+        var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        var selectedModel = parts.Length > 1 ? parts[1].Trim() : null;
+        if (string.IsNullOrWhiteSpace(selectedModel))
         {
-            var selectedModel = _handlers.GetSelectedModelName() ?? string.Empty;
-            _handlers.ShowInfo($"Asking {selectedModel} for a second opinion using the current session context...");
-            await _handlers.RunSecondOpinion(currentModel, selectedModel, priorConversation);
+            var configured = _handlers.GetAgentModelOverrides();
+            _handlers.ShowInfo(
+                $"Subagent model ({(_handlers.UseByokOpenAi() ? "byok" : "github")}): " +
+                (configured.TryGetValue(AppSettingsStore.SubagentModelRole, out var value) ? value : "inherit"));
+            await _handlers.RefreshAvailableModels();
+            var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+            var choices = _handlers.GetModelSelectionEntries().Where(entry => entry.Source == activeSource).ToList();
+            if (choices.Count == 0)
+            {
+                _handlers.ShowWarning("No models are available for the active provider.");
+                return;
+            }
+
+            var current = configured.TryGetValue(AppSettingsStore.SubagentModelRole, out var existing) ? existing : string.Empty;
+            selectedModel = _handlers.PromptModelSelection(current, choices)?.ModelId;
+            if (string.IsNullOrWhiteSpace(selectedModel))
+            {
+                return;
+            }
+        }
+
+        if (string.Equals(selectedModel, "inherit", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_handlers.GetExecutionMode() == ExecutionMode.Auto)
+            {
+                _handlers.ShowWarning("The subagent model cannot inherit or be cleared while auto mode is enabled.");
+                return;
+            }
+
+            _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, null);
+            _handlers.ShowSuccess("The subagent now inherits the primary model.");
+        }
+        else
+        {
+            await _handlers.RefreshAvailableModels();
+            var activeSource = _handlers.UseByokOpenAi() ? ModelSource.Byok : ModelSource.GitHub;
+            if (!_handlers.GetModelSelectionEntries().Any(entry =>
+                    entry.Source == activeSource && entry.ModelId.Equals(selectedModel, StringComparison.OrdinalIgnoreCase)))
+            {
+                _handlers.ShowWarning($"Model '{selectedModel}' is not available from the active provider.");
+                return;
+            }
+
+            _handlers.SaveAgentModelOverride(AppSettingsStore.SubagentModelRole, selectedModel);
+            _handlers.ShowSuccess($"Subagent model set to '{selectedModel}' for the active provider.");
+        }
+
+        var (recreated, error) = await _handlers.RecreateCurrentCopilotSession();
+        if (!recreated)
+        {
+            _handlers.ShowWarning($"Agent model was saved, but the AI session could not be recreated. {error}".Trim());
         }
     }
 
@@ -994,16 +1078,13 @@ internal sealed class SlashCommandDispatcher
 
         foreach (var server in additionalServers)
         {
-            if (_handlers.GetExecutionMode() == ExecutionMode.Safe)
+            var approved = _handlers.PromptCommandApproval(
+                $"New-PSSession -ComputerName '{server}'",
+                $"TroubleScout wants to establish a direct PowerShell session to {server}");
+            if (!approved)
             {
-                var approved = _handlers.PromptCommandApproval(
-                    $"New-PSSession -ComputerName '{server}'",
-                    $"TroubleScout wants to establish a direct PowerShell session to {server}");
-                if (!approved)
-                {
-                    _handlers.ShowWarning($"Connection to {server} was denied.");
-                    continue;
-                }
+                _handlers.ShowWarning($"Connection to {server} was denied.");
+                continue;
             }
 
             await _handlers.RunWithSpinnerAsync($"Connecting to {server}...", async _ =>
@@ -1163,13 +1244,19 @@ internal sealed class SlashCommandDispatcher
         if (parts.Length < 2)
         {
             _handlers.ShowInfo($"Current mode: {_handlers.GetExecutionMode().ToCliValue()}");
-            _handlers.ShowInfo("Usage: /mode <safe|yolo>");
+            _handlers.ShowInfo("Usage: /mode <strict|auto>");
             return;
         }
 
         if (!ExecutionModeParser.TryParse(parts[1], out var requestedMode))
         {
-            _handlers.ShowWarning("Invalid mode. Use: safe or yolo.");
+            _handlers.ShowWarning("Invalid mode. Use: strict or auto.");
+            return;
+        }
+
+        if (requestedMode == ExecutionMode.Auto && !_handlers.CanEnableAutoMode())
+        {
+            _handlers.ShowWarning("Auto mode requires an explicit subagent model for the active provider. Configure one with /agent-model <model>.");
             return;
         }
 
@@ -1349,7 +1436,7 @@ internal sealed class SlashCommandDispatcher
         {
             case SessionTranscriptLoadResult.Success:
                 _handlers.ShowSuccess($"Loaded {promptCount} transcript prompt(s) from '{targetPath}'.");
-                _handlers.ShowInfo("Loaded history is now available to /report and /model second-opinion context.");
+                _handlers.ShowInfo("Loaded history is now available to /report.");
                 break;
             case SessionTranscriptLoadResult.PathMissing:
                 ShowTranscriptUsage();

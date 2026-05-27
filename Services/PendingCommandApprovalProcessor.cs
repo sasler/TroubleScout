@@ -6,13 +6,25 @@ namespace TroubleScout.Services;
 internal sealed class PendingCommandApprovalProcessor(
     DiagnosticTools diagnosticTools,
     Func<string, int> recordPrompt,
-    Func<string, int, CancellationToken, bool, bool, Task<bool>> sendMessage)
+    Func<string, int, CancellationToken, Task<bool>> sendMessage)
 {
     internal async Task<bool> ProcessAsync(CancellationToken cancellationToken)
     {
         var pending = diagnosticTools.PendingCommands;
         if (pending.Count == 0)
         {
+            return false;
+        }
+
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            foreach (var command in pending)
+            {
+                diagnosticTools.LogDeniedCommand(command);
+            }
+
+            diagnosticTools.ClearPendingCommands();
+            ConsoleUI.ShowWarning("Protected command requests were not executed because headless mode cannot request approval.");
             return false;
         }
 
@@ -77,8 +89,6 @@ internal sealed class PendingCommandApprovalProcessor(
         return await sendMessage(
             followUpPrompt,
             promptIndex,
-            cancellationToken,
-            true,
-            true);
+            cancellationToken);
     }
 }

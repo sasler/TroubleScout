@@ -22,12 +22,6 @@ internal record ModelSelectionEntry(string ModelId, string DisplayName, ModelSou
 
 internal sealed record ByokPriceInfo(decimal? InputPricePerMillionTokens, decimal? OutputPricePerMillionTokens, string? DisplayText);
 
-internal enum ModelSwitchBehavior
-{
-    CleanSession,
-    SecondOpinion
-}
-
 internal sealed class ModelDiscoveryManager
 {
     internal sealed record ByokModelDiscoveryResult(List<ModelInfo> Models, Dictionary<string, ByokPriceInfo> PricingByModelId);

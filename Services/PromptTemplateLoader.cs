@@ -22,8 +22,6 @@ internal static class PromptTemplateIds
 
     internal const string TurnResponseFormattingRequirement = "turn.response-formatting-requirement";
     internal const string TurnExecutionSafetyRequirement = "turn.execution-safety-requirement";
-    internal const string TurnPostAnalysisContinue = "turn.post-analysis.continue";
-    internal const string TurnPostAnalysisApplyFix = "turn.post-analysis.apply-fix";
     internal const string TurnApprovedCommandFollowUp = "turn.approved-command-follow-up";
 
     internal static IReadOnlyCollection<string> All { get; } =
@@ -43,8 +41,6 @@ internal static class PromptTemplateIds
         AgentTicketInvestigator,
         TurnResponseFormattingRequirement,
         TurnExecutionSafetyRequirement,
-        TurnPostAnalysisContinue,
-        TurnPostAnalysisApplyFix,
         TurnApprovedCommandFollowUp
     ];
 }
@@ -71,8 +67,6 @@ internal static class PromptTemplateLoader
         [PromptTemplateIds.AgentTicketInvestigator] = "TroubleScout.Assets.prompts.agents.ticket-investigator.md",
         [PromptTemplateIds.TurnResponseFormattingRequirement] = "TroubleScout.Assets.prompts.turn.response-formatting-requirement.md",
         [PromptTemplateIds.TurnExecutionSafetyRequirement] = "TroubleScout.Assets.prompts.turn.execution-safety-requirement.md",
-        [PromptTemplateIds.TurnPostAnalysisContinue] = "TroubleScout.Assets.prompts.turn.post-analysis-continue.md",
-        [PromptTemplateIds.TurnPostAnalysisApplyFix] = "TroubleScout.Assets.prompts.turn.post-analysis-apply-fix.md",
         [PromptTemplateIds.TurnApprovedCommandFollowUp] = "TroubleScout.Assets.prompts.turn.approved-command-follow-up.md",
     };
 

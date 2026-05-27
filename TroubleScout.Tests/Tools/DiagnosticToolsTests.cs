@@ -2,6 +2,7 @@ using FluentAssertions;
 using Moq;
 using TroubleScout.Services;
 using TroubleScout.Tools;
+using TroubleScout.UI;
 using Xunit;
 
 namespace TroubleScout.Tests.Tools;
@@ -40,6 +41,10 @@ public class DiagnosticToolsTests : IDisposable
         
         var toolNames = tools.Select(t => t.Name).ToArray();
         toolNames.Should().Contain("run_powershell");
+        toolNames.Should().Contain("authorize_delegated_powershell");
+        toolNames.Should().Contain("authorize_delegated_mcp");
+        toolNames.Should().Contain("authorize_delegated_url");
+        toolNames.Should().Contain("run_delegated_powershell");
         toolNames.Should().Contain("get_system_info");
         toolNames.Should().Contain("get_event_logs");
         toolNames.Should().Contain("get_services");
@@ -91,6 +96,10 @@ public class DiagnosticToolsTests : IDisposable
         foreach (var toolName in new[]
         {
             "run_powershell",
+            "authorize_delegated_powershell",
+            "authorize_delegated_mcp",
+            "authorize_delegated_url",
+            "run_delegated_powershell",
             "connect_server",
             "connect_jea_server",
             "close_server_session"
@@ -232,6 +241,80 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
     }
 
+    [Fact]
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithoutGrant_ShouldNotQueueOrExecute()
+    {
+        var command = "Stop-Service -Name wuauserv";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+
+        var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
+        var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        result!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
+        _diagnosticTools.PendingCommands.Should().BeEmpty();
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithExactGrant_ShouldExecuteOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var command = "Stop-Service -Name wuauserv";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, true, "Requires approval"));
+        _mockExecutor.Setup(x => x.ActualComputerName).Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "Service stopped"));
+        _mockApprovalCallback.Setup(callback => callback(command, It.IsAny<string>()))
+            .ReturnsAsync(true);
+
+        var tools = _diagnosticTools.GetTools().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+        var authorization = await tools["authorize_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+        var grantId = authorization!.ToString()!.Split("authorizationId=", StringSplitOptions.None)[1].Trim();
+
+        var first = await tools["run_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command, ["authorizationId"] = grantId });
+        var second = await tools["run_delegated_powershell"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command, ["authorizationId"] = grantId });
+
+        first!.ToString().Should().Contain("Service stopped");
+        second!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedPowerShell_ProtectedHeadlessCommand_ShouldDenyWithoutPrompt()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => true;
+        try
+        {
+            var command = "Stop-Service -Name wuauserv";
+            _mockExecutor.Setup(x => x.ValidateCommand(command))
+                .Returns(new CommandValidation(true, true, "Requires approval"));
+
+            var tool = _diagnosticTools.GetTools().Single(item => item.Name == "authorize_delegated_powershell");
+            var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+            result!.ToString().Should().Contain("[DENIED]");
+            _mockApprovalCallback.Verify(callback => callback(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
     #endregion
 
     #region Pending Command Management Tests
@@ -313,7 +396,7 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         logs.Should().ContainSingle();
-        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.StrictReadOnly);
     }
 
     [Fact]
@@ -374,7 +457,7 @@ public class DiagnosticToolsTests : IDisposable
         logs.Should().ContainSingle();
         logs[0].Command.Should().Be("Get-SystemInfo");
         logs[0].Output.Should().Be("system output");
-        logs[0].ApprovalState.Should().Be(CommandApprovalState.SafeAuto);
+        logs[0].ApprovalState.Should().Be(CommandApprovalState.StrictReadOnly);
     }
 
     [Fact]
@@ -467,7 +550,7 @@ public class DiagnosticToolsTests : IDisposable
             .Returns(new CommandValidation(true, true, "Requires approval"));
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
-        _mockApprovalCallback.Setup(x => x.Invoke("Get-SystemInfo", "Requires approval"))
+        _mockApprovalCallback.Setup(x => x.Invoke(It.Is<string>(command => command.Contains("Get-CimInstance Win32_OperatingSystem", StringComparison.Ordinal)), "Requires approval"))
             .ReturnsAsync(true);
         _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
             .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
@@ -479,7 +562,7 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         result?.ToString().Should().Contain("System Info Output");
-        _mockApprovalCallback.Verify(x => x.Invoke("Get-SystemInfo", "Requires approval"), Times.Once);
+        _mockApprovalCallback.Verify(x => x.Invoke(It.Is<string>(command => command.Contains("Get-CimInstance Win32_OperatingSystem", StringComparison.Ordinal)), "Requires approval"), Times.Once);
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
     }
 
@@ -491,7 +574,7 @@ public class DiagnosticToolsTests : IDisposable
             .Returns(new CommandValidation(true, true, "Requires approval"));
         _mockExecutor.Setup(x => x.ActualComputerName)
             .Returns(_targetServer);
-        _mockApprovalCallback.Setup(x => x.Invoke("Get-SystemInfo", "Requires approval"))
+        _mockApprovalCallback.Setup(x => x.Invoke(It.Is<string>(command => command.Contains("Get-CimInstance Win32_OperatingSystem", StringComparison.Ordinal)), "Requires approval"))
             .ReturnsAsync(false);
 
         // Act
@@ -501,12 +584,12 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         result?.ToString().Should().Contain("DENIED");
-        _mockApprovalCallback.Verify(x => x.Invoke("Get-SystemInfo", "Requires approval"), Times.Once);
+        _mockApprovalCallback.Verify(x => x.Invoke(It.Is<string>(command => command.Contains("Get-CimInstance Win32_OperatingSystem", StringComparison.Ordinal)), "Requires approval"), Times.Once);
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
     }
 
     [Fact]
-    public async Task GetPerformanceCounters_ShouldValidateRepresentativeDisplayCommand()
+    public async Task GetPerformanceCounters_ShouldClassifyKnownReadOnlyCmdletWithoutPrompt()
     {
         // Arrange
         string? validatedCommand = null;
@@ -526,7 +609,42 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         result?.ToString().Should().Contain("counter output");
-        validatedCommand.Should().Be("Get-Counter (All)");
+        validatedCommand.Should().Be("Get-Counter");
+        _mockApprovalCallback.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetPerformanceCounters_AutoUnknown_ShouldReviewActualGeneratedPowerShellCommand()
+    {
+        string? evaluatedCommand = null;
+        var evaluator = new Mock<IAutoCommandApprovalEvaluator>();
+        evaluator.Setup(x => x.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, CancellationToken>((command, _) => evaluatedCommand = command)
+            .ReturnsAsync(new AutoCommandApprovalDecision(true, "gpt-5.4-mini", "Read-only performance query."));
+
+        _mockExecutor.Object.ExecutionMode = ExecutionMode.Auto;
+        _mockExecutor.Setup(x => x.ValidateCommand("Get-Counter"))
+            .Returns(new CommandValidation(true, true, "Not configured as safe.", CommandSafetyClassification.Unknown));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "counter output"));
+
+        var tools = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            autoCommandApprovalEvaluator: evaluator.Object);
+        var tool = tools.GetTools().First(t => t.Name == "get_performance_counters");
+
+        var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        result?.ToString().Should().Contain("counter output");
+        evaluatedCommand.Should().Contain("Get-Counter -Counter");
+        evaluatedCommand.Should().Contain("Select-Object -ExpandProperty CounterSamples");
+        evaluatedCommand.Should().Contain("$actualComputer = $env:COMPUTERNAME");
+        evaluatedCommand.Should().NotBe("Get-Counter (All)");
+        _mockApprovalCallback.VerifyNoOtherCalls();
     }
 
     #endregion

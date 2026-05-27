@@ -95,7 +95,7 @@ internal static class SlashCommandDocumentation
         sb.AppendLine("- **Command approval** - Yes / No / Explain. Explain shows a detail panel and re-prompts Yes / No.");
         sb.AppendLine("- **MCP approval** - Approve once / Approve this server for the session / Approve and persist (monitoring/ticketing only) / Deny.");
         sb.AppendLine("- **URL approval** - Allow this URL / Allow all URLs for this session / Deny.");
-        sb.AppendLine("- **Post-analysis action** - Continue investigating / Apply the fix / Stop for now.");
+        sb.AppendLine("- **Delegated protected work** - The primary agent requests approval before handing the exact operation to a sub-agent.");
         sb.AppendLine();
     }
 

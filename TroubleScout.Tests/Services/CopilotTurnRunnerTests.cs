@@ -6,6 +6,7 @@ using Xunit;
 
 namespace TroubleScout.Tests.Services;
 
+#pragma warning disable CS0618 // Test fixtures exercise child event attribution exposed by the SDK.
 public class CopilotTurnRunnerTests
 {
     [Theory]
@@ -184,6 +185,153 @@ public class CopilotTurnRunnerTests
         errors.Should().ContainSingle().Which.Should().Be(("Session Error", "boom"));
     }
 
+    [Fact]
+    public async Task RunAsync_SubagentLifecycle_ShouldEmitDurableUsageNotices()
+    {
+        var notices = new List<string>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData
+                {
+                    AgentDisplayName = "Server Evidence Collector",
+                    AgentName = "server-evidence-collector",
+                    AgentDescription = "Collects evidence",
+                    Model = "gpt-5-mini",
+                    ToolCallId = "sub-1"
+                }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData
+                {
+                    AgentDisplayName = "Server Evidence Collector",
+                    AgentName = "server-evidence-collector",
+                    Model = "gpt-5-mini",
+                    ToolCallId = "sub-1",
+                    TotalTokens = 120,
+                    TotalToolCalls = 2,
+                    Duration = TimeSpan.FromSeconds(1.5)
+                }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(session, showLiveStatusNotice: notices.Add));
+
+        notices.Should().Contain(message => message.Contains("Server Evidence Collector", StringComparison.Ordinal)
+            && message.Contains("gpt-5-mini", StringComparison.Ordinal)
+            && message.Contains("started", StringComparison.OrdinalIgnoreCase));
+        notices.Should().Contain(message => message.Contains("120 tokens", StringComparison.Ordinal)
+            && message.Contains("2 tools", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentFailure_ShouldEmitDurableUsageNotice()
+    {
+        var notices = new List<string>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentFailedEvent
+            {
+                Data = new SubagentFailedData
+                {
+                    AgentDisplayName = "Approval Reviewer",
+                    AgentName = "approval",
+                    Model = "gpt-4.1",
+                    ToolCallId = "sub-2",
+                    TotalTokens = 45,
+                    TotalToolCalls = 1,
+                    Duration = TimeSpan.FromSeconds(2),
+                    Error = "timeout"
+                }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(session, showLiveStatusNotice: notices.Add));
+
+        notices.Should().Contain(message => message.Contains("Approval Reviewer", StringComparison.Ordinal)
+            && message.Contains("failed", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("45 tokens", StringComparison.Ordinal)
+            && message.Contains("1 tool", StringComparison.Ordinal)
+            && !message.Contains("1 tools", StringComparison.Ordinal)
+            && message.Contains("2", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentMessage_ShouldAuditWithoutRenderingIntoRootResponse()
+    {
+        var output = new StringBuilder();
+        var captured = new List<(string Parent, string Text)>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantMessageDeltaEvent
+            {
+                Id = Guid.NewGuid(),
+                Data = new AssistantMessageDeltaData
+                {
+                    MessageId = "child-message",
+                    ParentToolCallId = "sub-1",
+                    DeltaContent = "delegated finding"
+                }
+            });
+            session.Emit(CreateDelta("root reply", "root-message"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeAiResponse: text => output.Append(text),
+            recordSubagentMessageDelta: (parent, text) => captured.Add((parent, text))));
+
+        result.ResponseText.Should().Be("root reply");
+        output.ToString().Should().Be("root reply");
+        captured.Should().ContainSingle().Which.Should().Be(("sub-1", "delegated finding"));
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentCompletion_ShouldDisplayReturnedFindingsAndMetricsSeparately()
+    {
+        (string Content, string? Model, long? Tokens, bool Success)? displayed = null;
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData { AgentDisplayName = "Evidence", AgentName = "evidence", AgentDescription = "Collect evidence", Model = "gpt-5-mini", ToolCallId = "sub-1" }
+            });
+            session.Emit(new AssistantMessageDeltaEvent
+            {
+                Id = Guid.NewGuid(),
+                Data = new AssistantMessageDeltaData { MessageId = "sub-message", ParentToolCallId = "sub-1", DeltaContent = "disk queue is elevated" }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData { AgentDisplayName = "Evidence", AgentName = "evidence", Model = "gpt-5-mini", ToolCallId = "sub-1", TotalTokens = 72 }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(
+            session,
+            showSubagentResult: (_, model, content, _, tokens, _, success, _) => displayed = (content, model, tokens, success)));
+
+        displayed.Should().NotBeNull();
+        displayed!.Value.Content.Should().Be("disk queue is elevated");
+        displayed.Value.Model.Should().Be("gpt-5-mini");
+        displayed.Value.Tokens.Should().Be(72);
+        displayed.Value.Success.Should().BeTrue();
+    }
+
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
         {
@@ -209,6 +357,9 @@ public class CopilotTurnRunnerTests
         Action<string>? writeAiResponse = null,
         Action<string>? writeReasoningText = null,
         Action<string, string>? showError = null,
+        Action<string>? showLiveStatusNotice = null,
+        Action<string, string>? recordSubagentMessageDelta = null,
+        Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
         => new()
         {
@@ -221,7 +372,10 @@ public class CopilotTurnRunnerTests
             {
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
-                ShowError = showError ?? ((_, _) => { })
+                ShowError = showError ?? ((_, _) => { }),
+                ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
+                RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { }),
+                ShowSubagentResult = showSubagentResult ?? ((_, _, _, _, _, _, _, _) => { })
             }
         };
 
@@ -270,3 +424,4 @@ public class CopilotTurnRunnerTests
         public void Dispose() => dispose();
     }
 }
+#pragma warning restore CS0618

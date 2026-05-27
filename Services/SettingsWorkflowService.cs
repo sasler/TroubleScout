@@ -68,6 +68,33 @@ internal static class SettingsWorkflowService
         AppSettingsStore.Save(settings);
     }
 
+    internal static void SaveSubagentModelOverride(bool useByokOpenAi, string? model)
+    {
+        var settings = AppSettingsStore.Load();
+        var provider = AppSettingsStore.GetProviderProfileKey(useByokOpenAi);
+        settings.AgentModelProfiles ??= new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        if (!settings.AgentModelProfiles.TryGetValue(provider, out var models))
+        {
+            models = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            settings.AgentModelProfiles[provider] = models;
+        }
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            models.Remove(AppSettingsStore.SubagentModelRole);
+            if (models.Count == 0)
+            {
+                settings.AgentModelProfiles.Remove(provider);
+            }
+        }
+        else
+        {
+            models[AppSettingsStore.SubagentModelRole] = model.Trim();
+        }
+
+        AppSettingsStore.Save(settings);
+    }
+
     internal static (IReadOnlyDictionary<string, string>? Overrides, string? Append) NormalizeSystemPromptSettings(
         IReadOnlyDictionary<string, string>? overrides,
         string? append)

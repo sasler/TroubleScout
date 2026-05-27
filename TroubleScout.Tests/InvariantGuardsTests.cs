@@ -12,7 +12,7 @@ namespace TroubleScout.Tests;
 /// during refactors but hard to catch with conventional behavioral tests.
 ///
 /// AGENTS.md calls these out explicitly: per-server MCP approval, JEA must
-/// never use AddScript, IncludeSubAgentStreamingEvents stays false, the
+/// never use AddScript, delegated event streaming is kept out of the main reply, the
 /// PauseForApproval/ResumeAfterApproval pairing around prompts, and the
 /// cancellation token reaching CopilotSession.SendAsync.
 /// </summary>
@@ -158,7 +158,6 @@ public class InvariantGuardsTests
             "PromptCommandApproval",
             "PromptUrlApproval",
             "PromptMcpApproval",
-            "PromptPostAnalysisAction",
             "PromptMcpRoleSelection",
             "PromptBatchApproval",
         };
@@ -179,20 +178,18 @@ public class InvariantGuardsTests
     }
 
     [Fact]
-    public void CopilotSessionConfigBuilder_KeepsSubAgentStreamingDisabled()
+    public void CopilotSessionConfigBuilder_CapturesSubAgentEventsForAuditing()
     {
-        // Re-asserting the AGENTS.md rule from a different angle than the
-        // existing assertion in TroubleshootingSessionTests so neither test
-        // can silently drift.
-        var source = ReadRepoFile(Path.Combine("Services", "CopilotSessionConfigBuilder.cs"));
-        source.Should().MatchRegex(
-            @"IncludeSubAgentStreamingEvents\s*=\s*false",
-            "AGENTS.md requires IncludeSubAgentStreamingEvents to stay false until the " +
-            "TUI is updated to render sub-agent deltas separately.");
-        source.Should().NotMatchRegex(
+        var configSource = ReadRepoFile(Path.Combine("Services", "CopilotSessionConfigBuilder.cs"));
+        configSource.Should().MatchRegex(
             @"IncludeSubAgentStreamingEvents\s*=\s*true",
-            "Setting IncludeSubAgentStreamingEvents = true requires a coordinated TUI " +
-            "change; do not enable it without updating the rendering pipeline.");
+            "reports require delegated tools and returned findings to be attributed to the subagent.");
+
+        var runnerSource = ReadRepoFile(Path.Combine("Services", "CopilotTurnRunner.cs"));
+        runnerSource.Should().Contain("RecordSubagentMessageDelta",
+            "child deltas must be routed into audit capture instead of the main response.");
+        runnerSource.Should().Contain("RecordSubagentMessage",
+            "child final messages must be routed into audit capture instead of the main response.");
     }
 
     [Fact]

@@ -14,13 +14,6 @@ public partial class TroubleshootingSession : IAsyncDisposable
 {
     private const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
-    private const int MaxSecondOpinionTurns = 8;
-    private const int MaxSecondOpinionPromptChars = 24_000;
-    private const int MaxSecondOpinionUserPromptChars = 2_000;
-    private const int MaxSecondOpinionReplyChars = 3_000;
-    private const int MaxSecondOpinionCommandChars = 800;
-    private const int MaxSecondOpinionToolOutputChars = 3_000;
-
     private string _targetServer;
     private PowerShellExecutor _executor;
     private DiagnosticTools _diagnosticTools;
@@ -62,6 +55,8 @@ public partial class TroubleshootingSession : IAsyncDisposable
     private string? _configuredTicketingMcpServer;
     private readonly SessionPermissionHandler _permissionHandler;
     private readonly SessionEventTelemetry _telemetry;
+    private readonly IAutoCommandApprovalEvaluator _autoCommandApprovalEvaluator;
+    private string? _subagentModelOverride;
 
     private SystemMessageConfig _systemMessageConfig;
 
@@ -97,14 +92,15 @@ public partial class TroubleshootingSession : IAsyncDisposable
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
         bool debugMode = false,
-        ExecutionMode executionMode = ExecutionMode.Safe,
+        ExecutionMode executionMode = ExecutionMode.Strict,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
         string? byokOpenAiApiKey = null,
         bool byokExplicitlyRequested = false,
         bool modelExplicitlyRequested = false,
         IReadOnlyList<string>? additionalInitialServers = null,
-        (string ServerName, string ConfigurationName)? initialJeaSession = null)
+        (string ServerName, string ConfigurationName)? initialJeaSession = null,
+        string? subagentModel = null)
     {
         _targetServer = string.IsNullOrWhiteSpace(targetServer) ? "localhost" : targetServer;
         _additionalInitialServers = (additionalInitialServers ?? Array.Empty<string>())
@@ -124,6 +120,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
         _useByokOpenAi = useByokOpenAi;
         _byokExplicitlyRequested = byokExplicitlyRequested;
         _modelExplicitlyRequested = modelExplicitlyRequested;
+        _subagentModelOverride = string.IsNullOrWhiteSpace(subagentModel) ? null : subagentModel.Trim();
         _byokOpenAiBaseUrl = string.IsNullOrWhiteSpace(byokOpenAiBaseUrl) ? DefaultOpenAiBaseUrl : byokOpenAiBaseUrl.Trim();
         _byokOpenAiApiKey = string.IsNullOrWhiteSpace(byokOpenAiApiKey)
             ? Environment.GetEnvironmentVariable(OpenAiApiKeyEnvironmentVariable)
@@ -135,6 +132,13 @@ public partial class TroubleshootingSession : IAsyncDisposable
         ConsoleUI.CurrentTheme = AppSettingsStore.NormalizeTheme(settings.Theme);
         _configuredMonitoringMcpServer = settings.MonitoringMcpServer;
         _configuredTicketingMcpServer = settings.TicketingMcpServer;
+        if (_executionMode == ExecutionMode.Auto
+            && !AppSettingsStore.GetAgentModelsForProvider(settings, useByokOpenAi).ContainsKey(AppSettingsStore.SubagentModelRole))
+        {
+            _executionMode = ExecutionMode.Strict;
+            ConsoleUI.ShowWarning("Auto mode requires an explicit subagent model for the active provider. Starting in strict mode; configure one with /agent-model <model>.");
+        }
+        _autoCommandApprovalEvaluator = new DelegateAutoCommandApprovalEvaluator(EvaluateUnknownCommandAsync);
         _permissionHandler = new SessionPermissionHandler(
             () => _executionMode,
             () => _configuredSafeCommands,
@@ -142,7 +146,9 @@ public partial class TroubleshootingSession : IAsyncDisposable
             (command, reason, impact) => ConsoleUI.PromptCommandApproval(command, reason, impact: impact),
             ConsoleUI.PromptUrlApproval,
             ConsoleUI.PromptMcpApproval,
-            settings);
+            settings,
+            _autoCommandApprovalEvaluator,
+            RecordAutoAuthorization);
         _permissionHandler.SeedPersistedMcpApprovals(settings.PersistedApprovedMcpServers);
         _telemetry = new SessionEventTelemetry(
             _sessionUsageTracker,
@@ -171,11 +177,12 @@ public partial class TroubleshootingSession : IAsyncDisposable
         IReadOnlyList<string>? skillDirectories = null,
         IReadOnlyList<string>? disabledSkills = null,
         bool debugMode = false,
-        ExecutionMode executionMode = ExecutionMode.Safe,
+        ExecutionMode executionMode = ExecutionMode.Strict,
         bool useByokOpenAi = false,
         string? byokOpenAiBaseUrl = null,
         string? byokOpenAiApiKey = null,
-        (string ServerName, string ConfigurationName)? initialJeaSession = null)
+        (string ServerName, string ConfigurationName)? initialJeaSession = null,
+        string? subagentModel = null)
         : this(
             servers.Count > 0 ? servers[0] : "localhost",
             model,
@@ -188,7 +195,8 @@ public partial class TroubleshootingSession : IAsyncDisposable
             byokOpenAiBaseUrl,
             byokOpenAiApiKey,
             additionalInitialServers: servers.Count > 1 ? servers.Skip(1).ToList() : null,
-            initialJeaSession: initialJeaSession)
+            initialJeaSession: initialJeaSession,
+            subagentModel: subagentModel)
     {
     }
 
@@ -450,32 +458,17 @@ public partial class TroubleshootingSession : IAsyncDisposable
     /// Send a message and process the response with streaming
     /// </summary>
     public async Task<bool> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default)
-        => await SendMessageAsync(
-            userMessage,
-            promptIndexOverride: null,
-            cancellationToken,
-            showPostAnalysisActionPrompt: false,
-            forcePostAnalysisActionPrompt: false);
+        => await SendMessageAsync(userMessage, promptIndexOverride: null, cancellationToken);
 
     private async Task<bool> SendMessageAsync(
         string userMessage,
         int? promptIndexOverride,
-        CancellationToken cancellationToken = default,
-        bool showPostAnalysisActionPrompt = false,
-        bool forcePostAnalysisActionPrompt = false)
+        CancellationToken cancellationToken = default)
         => await SessionMessageCoordinator.SendMessageAsync(
             userMessage,
             promptIndexOverride,
             cancellationToken,
-            showPostAnalysisActionPrompt,
-            forcePostAnalysisActionPrompt,
-            CreateMessageRequest(),
-            (prompt, promptIndex, token, showPrompt, forcePrompt) => SendMessageAsync(
-                prompt,
-                promptIndex,
-                token,
-                showPostAnalysisActionPrompt: showPrompt,
-                forcePostAnalysisActionPrompt: forcePrompt));
+            CreateMessageRequest());
 
     internal static async Task RunActivityWatchdogAsync(
         LiveThinkingIndicator indicator,
@@ -496,12 +489,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
         => await new PendingCommandApprovalProcessor(
                 _diagnosticTools,
                 RecordPrompt,
-                (prompt, promptIndex, token, showPrompt, forcePrompt) => SendMessageAsync(
-                    prompt,
-                    promptIndex,
-                    token,
-                    showPostAnalysisActionPrompt: showPrompt,
-                    forcePostAnalysisActionPrompt: forcePrompt))
+                (prompt, promptIndex, token) => SendMessageAsync(prompt, promptIndex, token))
             .ProcessAsync(cancellationToken);
 
     /// <summary>
@@ -621,12 +609,7 @@ public partial class TroubleshootingSession : IAsyncDisposable
             SlashCommands,
             CreateSlashCommandDispatcher,
             RecordPrompt,
-            (input, promptIndex, token) => SendMessageAsync(
-                input,
-                promptIndex,
-                token,
-                showPostAnalysisActionPrompt: true,
-                forcePostAnalysisActionPrompt: false));
+            (input, promptIndex, token) => SendMessageAsync(input, promptIndex, token));
 
     private bool IsCurrentModel(string modelId)
     {
@@ -772,37 +755,6 @@ public partial class TroubleshootingSession : IAsyncDisposable
     private bool HasRecordedConversationHistory() => _historyTracker.HasRecordedConversationHistory();
 
     private List<ReportPromptEntry> GetRecordedPromptSnapshot() => _historyTracker.GetRecordedPromptSnapshot();
-
-    private async Task<bool> RequestSecondOpinionAsync(
-        string previousModel,
-        string newModel,
-        IReadOnlyList<ReportPromptEntry> priorConversation,
-        CancellationToken cancellationToken = default)
-    {
-        if (priorConversation.Count == 0)
-        {
-            return true;
-        }
-
-        var reportPrompt = $"Second opinion request after switching from {previousModel} to {newModel}.";
-        var promptIndex = RecordPrompt(reportPrompt);
-        var secondOpinionPrompt = SecondOpinionService.BuildSecondOpinionPrompt(
-            previousModel,
-            newModel,
-            priorConversation,
-            MaxSecondOpinionTurns,
-            MaxSecondOpinionPromptChars,
-            MaxSecondOpinionUserPromptChars,
-            MaxSecondOpinionReplyChars,
-            MaxSecondOpinionCommandChars,
-            MaxSecondOpinionToolOutputChars);
-        return await SendMessageAsync(
-            secondOpinionPrompt,
-            promptIndex,
-            cancellationToken,
-            showPostAnalysisActionPrompt: true,
-            forcePostAnalysisActionPrompt: false);
-    }
 
     public async ValueTask DisposeAsync()
     {

@@ -2,15 +2,15 @@ namespace TroubleScout.Services;
 
 public enum ExecutionMode
 {
-    Safe,
-    Yolo
+    Strict,
+    Auto
 }
 
 public static class ExecutionModeParser
 {
     public static bool TryParse(string? input, out ExecutionMode mode)
     {
-        mode = ExecutionMode.Safe;
+        mode = ExecutionMode.Strict;
 
         if (string.IsNullOrWhiteSpace(input))
         {
@@ -19,11 +19,11 @@ public static class ExecutionModeParser
 
         switch (input.Trim().ToLowerInvariant())
         {
-            case "safe":
-                mode = ExecutionMode.Safe;
+            case "strict":
+                mode = ExecutionMode.Strict;
                 return true;
-            case "yolo":
-                mode = ExecutionMode.Yolo;
+            case "auto":
+                mode = ExecutionMode.Auto;
                 return true;
             default:
                 return false;
@@ -34,9 +34,9 @@ public static class ExecutionModeParser
     {
         return mode switch
         {
-            ExecutionMode.Safe => "safe",
-            ExecutionMode.Yolo => "yolo",
-            _ => "safe"
+            ExecutionMode.Strict => "strict",
+            ExecutionMode.Auto => "auto",
+            _ => "strict"
         };
     }
 }

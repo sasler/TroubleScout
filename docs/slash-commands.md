@@ -54,7 +54,7 @@ Save or load a redacted session transcript JSON file.
 
 - `load` validates a transcript file and replaces the current recorded history after confirmation when history already exists.
 
-Loaded transcripts are immediately available to `/report` and `/model` second-opinion context.
+Loaded transcripts are immediately available to `/report`.
 
 Transcript persistence is always explicit; TroubleScout does not automatically write transcript files.
 
@@ -99,19 +99,27 @@ Examples:
 /jea server1 JEA-Admins
 ```
 
-### `/mode <safe|yolo>`
+### `/mode <strict|auto>`
 
 Set the PowerShell execution mode for the current session.
 
-- `safe` (default): only commands matching the safe list (`Get-*`, `Select-*`, `Sort-*`, etc.) auto-execute. Mutations require approval.
+- `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.
 
-- `yolo`: remediation commands can execute without confirmation. Use with care.
+- `auto`: unknown command candidates can be evaluated in a no-tools safety session using the selected subagent model; known mutations still require approval.
 
 ## Configuration
 
 ### `/model`
 
-Choose another AI model and session handoff mode interactively.
+Choose the primary model followed by the same-provider delegated evidence model; model changes start a clean AI session.
+
+A faster or lower-cost subagent model is recommended for high-volume evidence collection.
+
+### `/agent-model [model|inherit]`
+
+Backward-compatible shortcut to configure the active-provider delegated model and Auto safety review.
+
+An explicit subagent model must be selected before `/mode auto` can be enabled.
 
 ### `/reasoning [auto|<effort>]`
 
@@ -221,7 +229,7 @@ deserve mention here.
 - **Command approval** - Yes / No / Explain. Explain shows a detail panel and re-prompts Yes / No.
 - **MCP approval** - Approve once / Approve this server for the session / Approve and persist (monitoring/ticketing only) / Deny.
 - **URL approval** - Allow this URL / Allow all URLs for this session / Deny.
-- **Post-analysis action** - Continue investigating / Apply the fix / Stop for now.
+- **Delegated protected work** - The primary agent requests approval before handing the exact operation to a sub-agent.
 
 ## Cancellation
 

@@ -1,5 +1,7 @@
 using GitHub.Copilot;
 using Spectre.Console;
+using System.Text;
+using System.Text.Json;
 using TroubleScout.Services;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -11,7 +13,11 @@ public partial class TroubleshootingSession
     private DiagnosticTools CreateDiagnosticTools() =>
         new(_executor, PromptApprovalAsync, _targetServer, RecordCommandAction,
             s => ConnectAdditionalServerAsync(s), GetExecutorForServer, CloseAdditionalServerSessionAsync,
-            (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName));
+            (serverName, configurationName) => ConnectJeaServerAsync(serverName, configurationName),
+            _autoCommandApprovalEvaluator,
+            RecordAutoAuthorization,
+            _permissionHandler.AuthorizeDelegatedMcpAsync,
+            _permissionHandler.AuthorizeDelegatedUrlAsync);
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
         => SessionSystemPromptFactory.Create(new SessionSystemPromptRequest(
@@ -163,12 +169,13 @@ public partial class TroubleshootingSession
             availableMcpServers,
             _configuredMonitoringMcpServer,
             _configuredTicketingMcpServer,
-            _telemetry.HandleSessionLifecycleStateEvent,
+            HandleSessionLifecycleStateEvent,
             _permissionHandler.HandleAsync,
             _configurationWarnings,
             provider,
             _skillDirectories,
-            _disabledSkills));
+            _disabledSkills,
+            GetConfiguredAgentModels()));
     }
 
     private string? GetMcpServerRole(string serverName)
@@ -222,6 +229,121 @@ public partial class TroubleshootingSession
         _serverManager.SetExecutionMode(mode);
     }
 
+    private void RecordAutoAuthorization(string command, AutoCommandApprovalDecision decision)
+    {
+        ConsoleUI.ShowLiveStatusNotice($"Approval subagent ({decision.Model}) marked command read-only: {decision.Rationale}");
+        RecordCommandAction(new CommandActionLog(
+            DateTimeOffset.Now,
+            decision.Model,
+            $"Safety review: {command}",
+            $"Authorization rationale: {decision.Rationale}",
+            CommandApprovalState.ApprovedByAutoAgent,
+            "Approval subagent"));
+    }
+
+    private async Task<AutoCommandApprovalDecision?> EvaluateUnknownCommandAsync(string command, CancellationToken cancellationToken)
+    {
+        var models = GetConfiguredAgentModels();
+        if (_copilotClient == null || !models.TryGetValue(AppSettingsStore.SubagentModelRole, out var approvalModel) || string.IsNullOrWhiteSpace(approvalModel))
+        {
+            return null;
+        }
+
+        var config = new SessionConfig
+        {
+            Model = approvalModel,
+            Provider = _useByokOpenAi
+                ? new ProviderConfig
+                {
+                    Type = "openai",
+                    BaseUrl = _byokOpenAiBaseUrl,
+                    ApiKey = _byokOpenAiApiKey,
+                    WireApi = GetByokWireApi(approvalModel)
+                }
+                : null,
+            Streaming = !_useByokOpenAi,
+            Tools = [],
+            ClientName = "TroubleScout-Approval",
+            OnPermissionRequest = (_, _) => Task.FromResult(new PermissionRequestResult { Kind = PermissionRequestResultKind.Rejected })
+        };
+
+        var response = new StringBuilder();
+        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            await using var evaluationSession = await _copilotClient.CreateSessionAsync(config);
+            using var subscription = evaluationSession.On<SessionEvent>(evt =>
+            {
+                switch (evt)
+                {
+                    case AssistantMessageDeltaEvent delta:
+                        response.Append(delta.Data?.DeltaContent);
+                        break;
+                    case AssistantMessageEvent message when response.Length == 0:
+                        response.Append(message.Data?.Content);
+                        break;
+                    case AssistantUsageEvent usage:
+                        _telemetry.RecordExternalUsage(usage);
+                        break;
+                    case SessionIdleEvent:
+                        done.TrySetResult(true);
+                        break;
+                    case SessionErrorEvent:
+                        done.TrySetResult(false);
+                        break;
+                }
+            });
+
+            var prompt = $$"""
+                You are a command safety reviewer. You have no tools and must never execute a command.
+                Decide whether this PowerShell command is strictly read-only. Data shaping such as Where-Object, Select-Object, Sort-Object, and output-only Format-Table or Format-List is read-only. Any mutation, write, process or service action, download, secret access, or uncertainty is not read-only.
+                Return JSON only: {"verdict":"read_only|not_read_only","rationale":"brief reason"}
+                Command:
+                {{command}}
+                """;
+            await evaluationSession.SendAsync(new MessageOptions { Prompt = prompt }, cancellationToken);
+            var completed = await done.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            return completed ? ParseAutoApprovalDecision(response.ToString(), approvalModel) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static AutoCommandApprovalDecision? ParseAutoApprovalDecision(string response, string model)
+    {
+        var text = response.Trim();
+        if (text.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstNewline = text.IndexOf('\n');
+            var closingFence = text.LastIndexOf("```", StringComparison.Ordinal);
+            text = firstNewline >= 0 && closingFence > firstNewline
+                ? text[(firstNewline + 1)..closingFence].Trim()
+                : text;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var verdict = document.RootElement.GetProperty("verdict").GetString();
+            var rationale = document.RootElement.GetProperty("rationale").GetString();
+            if (string.IsNullOrWhiteSpace(rationale))
+            {
+                return null;
+            }
+
+            return new AutoCommandApprovalDecision(
+                string.Equals(verdict, "read_only", StringComparison.OrdinalIgnoreCase),
+                model,
+                rationale.Trim());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     internal StatusBarInfo BuildStatusBarInfo()
         => SessionStatusBuilder.BuildStatusBarInfo(CreateStatusSnapshot());
 
@@ -252,7 +374,37 @@ public partial class TroubleshootingSession
             _permissionHandler.GetApprovedMcpServersSnapshot(),
             _permissionHandler.GetPersistedApprovedMcpServersSnapshot(),
             _executionMode.ToString(),
-            EffectiveTargetServer);
+            EffectiveTargetServer,
+            AppSettingsStore.ResolveGitHubBillingDisplayMode(AppSettingsStore.Load().GitHubBillingDisplayMode),
+            GetConfiguredAgentModels());
+
+    private IReadOnlyDictionary<string, string> GetConfiguredAgentModels()
+    {
+        var models = new Dictionary<string, string>(
+            AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), _useByokOpenAi),
+            StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_subagentModelOverride))
+        {
+            models[AppSettingsStore.SubagentModelRole] = _subagentModelOverride;
+        }
+
+        return models;
+    }
+
+    private void HandleSessionLifecycleStateEvent(SessionEvent evt)
+    {
+        _telemetry.HandleSessionLifecycleStateEvent(evt);
+        switch (evt)
+        {
+            case SubagentStartedEvent:
+                _permissionHandler.BeginSubagentRun();
+                break;
+            case SubagentCompletedEvent:
+            case SubagentFailedEvent:
+                _permissionHandler.EndSubagentRun();
+                break;
+        }
+    }
 
     private IReadOnlyList<string>? GetAdditionalTargetsForDisplay()
         => SessionTargetDisplay.GetAdditionalTargetsForDisplay(EffectiveTargetServers);
@@ -281,11 +433,16 @@ public partial class TroubleshootingSession
                 totalToolCalls: _sessionUsageTracker.TotalToolCalls,
                 p50ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.5),
                 p95ToolsPerTurn: _sessionUsageTracker.GetTurnToolCountQuantile(0.95),
-                costEstimate: _sessionUsageTracker.GetCostEstimateDisplay()),
+                costEstimate: _useByokOpenAi
+                    ? _sessionUsageTracker.GetCostEstimateDisplay()
+                    : AppSettingsStore.ResolveGitHubBillingDisplayMode(AppSettingsStore.Load().GitHubBillingDisplayMode) == AppSettingsStore.AiCreditsBillingMode
+                        ? _sessionUsageTracker.GetAiCreditsDisplay()
+                        : _sessionUsageTracker.GetCostEstimateDisplay()),
             ShowHistory = () => ConsoleUI.ShowCommandHistory(_executor.GetCommandHistory()),
             GetExecutionMode = () => _executionMode,
             SetExecutionMode = SetExecutionMode,
             SetConsoleExecutionMode = ConsoleUI.SetExecutionMode,
+            CanEnableAutoMode = () => GetConfiguredAgentModels().ContainsKey(AppSettingsStore.SubagentModelRole),
             GetTheme = () => ConsoleUI.CurrentTheme,
             SetTheme = theme => ConsoleUI.CurrentTheme = theme,
             PersistTheme = SettingsWorkflowService.PersistThemeSetting,
@@ -297,14 +454,17 @@ public partial class TroubleshootingSession
             RefreshAvailableModels = RefreshAvailableModelsAsync,
             GetAvailableModelCount = () => _modelDiscovery.AvailableModels.Count,
             GetModelSelectionEntries = GetModelSelectionEntries,
+            UseByokOpenAi = () => _useByokOpenAi,
+            GetAgentModelOverrides = GetConfiguredAgentModels,
+            SaveAgentModelOverride = (_, model) =>
+            {
+                _subagentModelOverride = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+                SettingsWorkflowService.SaveSubagentModelOverride(_useByokOpenAi, model);
+            },
             PromptModelSelection = ConsoleUI.PromptModelSelection,
             IsCurrentModelAndSource = IsCurrentModelAndSource,
-            PromptModelSwitchBehavior = ConsoleUI.PromptModelSwitchBehavior,
             ChangeModel = ChangeModelAsync,
             ClearRecordedHistory = ClearRecordedConversationHistory,
-            RunSecondOpinion = async (previousModel, selectedModel, prompts) =>
-                await InteractiveSessionLoop.RunCancelableAiOperationAsync(token =>
-                    RequestSecondOpinionAsync(previousModel, selectedModel, prompts, token)),
             GetByokBaseUrl = () => _byokOpenAiBaseUrl,
             GetDefaultByokModel = () => _selectedModel ?? _requestedModel,
             GetOpenAiApiKeyEnvironmentVariable = () => OpenAiApiKeyEnvironmentVariable,

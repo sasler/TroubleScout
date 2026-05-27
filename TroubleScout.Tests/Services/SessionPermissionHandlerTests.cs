@@ -55,11 +55,11 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_YoloMode_ShouldApproveNonReadRequestWithoutPrompt()
+    public async Task HandleAsync_AutoMode_ShouldNotBypassNonShellPermissions()
     {
         var promptCount = 0;
         var handler = CreateHandler(
-            getExecutionMode: () => ExecutionMode.Yolo,
+            getExecutionMode: () => ExecutionMode.Auto,
             promptCommandApproval: (_, _, _) =>
             {
                 promptCount++;
@@ -68,8 +68,8 @@ public class SessionPermissionHandlerTests
 
         var result = await handler.HandleAsync(new PermissionRequest { Kind = "write" }, new PermissionInvocation());
 
-        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
-        promptCount.Should().Be(0);
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
     }
 
     [Fact]
@@ -109,6 +109,105 @@ public class SessionPermissionHandlerTests
 
         readOnly.Kind.Should().Be(PermissionRequestResultKind.Approved);
         blocked.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+    }
+
+    [Theory]
+    [InlineData("$ErrorActionPreference='Stop'; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,@{n='FreeGB';e={[math]::Round($_.FreePhysicalMemory/1MB,1)}}")]
+    [InlineData("$ErrorActionPreference='Stop'; Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddHours(-24)} -MaxEvents 25 | Select-Object TimeCreated,Id,ProviderName")]
+    [InlineData("$os = Get-CimInstance Win32_OperatingSystem\n$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1\n$disk = Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{N='UsedGB';E={[math]::Round($_.Used/1GB,1)}}\n[PSCustomObject]@{ Host = $env:COMPUTERNAME; OS = $os.Caption; CPU = $cpu.Name; Disk = $disk }")]
+    [InlineData("# Recent critical/error events (last 6 hours)\n$since = (Get-Date).AddHours(-6)\n$events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=$since} -ErrorAction SilentlyContinue\n$events | Group-Object ProviderName | Select-Object Count,Name")]
+    [InlineData("# Top CPU/RAM consuming processes\nGet-Process | Sort-Object CPU -Descending | Select-Object -First 6 Name, @{N='CPU_s';E={[math]::Round($_.CPU,1)}}, @{N='RAM_MB';E={[math]::Round($_.WorkingSet64/1MB,1)}}")]
+    [InlineData("Get-EventLog -LogName System -EntryType Error,Warning -Newest 5 | Select-Object TimeGenerated, EntryType, Source, Message | ForEach-Object { \"$($_.TimeGenerated) [$($_.EntryType)] $($_.Source): $($_.Message)\" }")]
+    [InlineData("Get-WinEvent -LogName System -MaxEvents 10 -FilterHashtable @{LogName='System'; Level=1,2,3; StartTime=(Get-Date).AddHours(-24)} | Select-Object TimeCreated, LevelDisplayName, ProviderName, Id, Message")]
+    public async Task HandleAsync_ReadOnlyHealthSnapshotShellRequests_ShouldAutoApproveWithoutPrompt(string command)
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptCommandApproval: (_, _, _) =>
+        {
+            promptCount++;
+            return ApprovalResult.Denied;
+        });
+
+        var result = await handler.HandleAsync(CreateShellPermissionRequest(command), new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task HandleAsync_CommentPrefixedMutatingShellRequest_ShouldStillRequirePrompt()
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptCommandApproval: (_, _, _) =>
+        {
+            promptCount++;
+            return ApprovalResult.Denied;
+        });
+
+        var result = await handler.HandleAsync(
+            CreateShellPermissionRequest("# Stop the service if required\nStop-Service -Name BITS"),
+            new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("$value = Get-Item Env:TEMP; $value.AddHours(1)")]
+    [InlineData("$value = Get-Item Env:TEMP; $value.Round(1)")]
+    public async Task HandleAsync_ReadOnlyNamedMethodOnUnknownObject_ShouldStillRequirePrompt(string command)
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptCommandApproval: (_, _, _) =>
+        {
+            promptCount++;
+            return ApprovalResult.Denied;
+        });
+
+        var result = await handler.HandleAsync(CreateShellPermissionRequest(command), new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleAsync_AutoUnknownReadOnlyVerdict_ShouldAuthorizeWithoutHumanPrompt()
+    {
+        var promptCount = 0;
+        var authorizationCount = 0;
+        var handler = CreateHandler(
+            getExecutionMode: () => ExecutionMode.Auto,
+            promptCommandApproval: (_, _, _) =>
+            {
+                promptCount++;
+                return ApprovalResult.Denied;
+            },
+            autoEvaluator: new FakeAutoEvaluator(new AutoCommandApprovalDecision(true, "gpt-5-mini", "queries inventory")),
+            recordAutoAuthorization: (_, _) => authorizationCount++);
+
+        var result = await handler.HandleAsync(
+            CreateShellPermissionRequest("Read-CustomInventory -Server localhost"),
+            new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(0);
+        authorizationCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleAsync_AutoKnownMutation_ShouldNotInvokeEvaluator()
+    {
+        var evaluator = new FakeAutoEvaluator(new AutoCommandApprovalDecision(true, "gpt-5-mini", "incorrect"));
+        var handler = CreateHandler(
+            getExecutionMode: () => ExecutionMode.Auto,
+            autoEvaluator: evaluator);
+
+        var result = await handler.HandleAsync(
+            CreateShellPermissionRequest("Restart-Service spooler"),
+            new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        evaluator.CallCount.Should().Be(0);
     }
 
     [Fact]
@@ -196,6 +295,205 @@ public class SessionPermissionHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_ActiveSubagentProtectedUrlWithoutPreauthorization_ShouldRejectWithoutPrompt()
+    {
+        var promptCount = 0;
+        var handler = CreateHandler(promptUrlApproval: (_, _) =>
+        {
+            promptCount++;
+            return UrlApprovalResult.ApproveThisUrl;
+        });
+        handler.BeginSubagentRun();
+
+        var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+        result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task EndSubagentRun_WhenConcurrentExtraCompletionOccurs_ShouldNotBypassNextSubagentProtection()
+    {
+        for (var attempt = 0; attempt < 500; attempt++)
+        {
+            var promptCount = 0;
+            var handler = CreateHandler(promptUrlApproval: (_, _) =>
+            {
+                promptCount++;
+                return UrlApprovalResult.ApproveThisUrl;
+            });
+
+            handler.BeginSubagentRun();
+            using var ready = new CountdownEvent(2);
+            using var release = new ManualResetEventSlim(false);
+            var endTasks = Enumerable.Range(0, 2)
+                .Select(_ => Task.Run(() =>
+                {
+                    ready.Signal();
+                    release.Wait();
+                    handler.EndSubagentRun();
+                }))
+                .ToArray();
+
+            ready.Wait();
+            release.Set();
+            await Task.WhenAll(endTasks);
+
+            handler.BeginSubagentRun();
+            var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+            result.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            promptCount.Should().Be(0);
+            handler.EndSubagentRun();
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedUrl_ThenActiveSubagent_ShouldUseExistingExactApproval()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var promptCount = 0;
+        var handler = CreateHandler(promptUrlApproval: (_, _) =>
+        {
+            promptCount++;
+            return UrlApprovalResult.ApproveThisUrl;
+        });
+
+        var authorization = await handler.AuthorizeDelegatedUrlAsync("https://example.com/logs", "read logs");
+        handler.BeginSubagentRun();
+        var result = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+
+        authorization.Should().Contain("[APPROVED]");
+        result.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        promptCount.Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedUrl_ApproveAllChoice_ShouldStillPermitOnlyExactInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            var handler = CreateHandler(promptUrlApproval: (_, _) => UrlApprovalResult.ApproveAllUrls);
+
+            var authorization = await handler.AuthorizeDelegatedUrlAsync("https://example.com/logs", "read logs");
+            handler.BeginSubagentRun();
+            var exact = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+            var repeated = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/logs"), new PermissionInvocation());
+            var different = await handler.HandleAsync(CreateUrlPermissionRequest("https://example.com/admin"), new PermissionInvocation());
+
+            authorization.Should().Contain("[APPROVED]");
+            exact.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            repeated.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            different.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedMcpApproveOnce_ShouldPermitExactActiveSubagentInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+        var promptCount = 0;
+        var handler = CreateHandler(promptMcpApproval: (_, _, _, _) =>
+        {
+            promptCount++;
+            return McpApprovalResult.ApproveOnce;
+        });
+
+        var authorization = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+        handler.BeginSubagentRun();
+        var first = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+        var second = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+
+        authorization.Should().Contain("[APPROVED]");
+        first.Kind.Should().Be(PermissionRequestResultKind.Approved);
+        second.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        promptCount.Should().Be(1);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedMcp_ServerApprovalChoice_ShouldStillPermitOnlyExactInvocationOnce()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            var handler = CreateHandler(promptMcpApproval: (_, _, _, _) => McpApprovalResult.ApproveServerForSession);
+
+            var authorization = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+            handler.BeginSubagentRun();
+            var exact = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+            var repeated = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "mutate-alert", "{}"), new PermissionInvocation());
+            var different = await handler.HandleAsync(CreateMcpPermissionRequest("monitor", "delete-alert", "{}"), new PermissionInvocation());
+
+            authorization.Should().Contain("[APPROVED]");
+            exact.Kind.Should().Be(PermissionRequestResultKind.Approved);
+            repeated.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+            different.Kind.Should().Be(PermissionRequestResultKind.Rejected);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task AuthorizeDelegatedProtectedAccess_WhenHeadless_ShouldDenyWithoutPrompt()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => true;
+        try
+        {
+            var urlPromptCount = 0;
+            var mcpPromptCount = 0;
+            var handler = CreateHandler(
+                promptUrlApproval: (_, _) =>
+                {
+                    urlPromptCount++;
+                    return UrlApprovalResult.ApproveThisUrl;
+                },
+                promptMcpApproval: (_, _, _, _) =>
+                {
+                    mcpPromptCount++;
+                    return McpApprovalResult.ApproveOnce;
+                });
+
+            var url = await handler.AuthorizeDelegatedUrlAsync("https://example.com/protected", "inspect");
+            var mcp = await handler.AuthorizeDelegatedMcpAsync("monitor", "mutate-alert", "{}");
+
+            url.Should().Contain("[DENIED]");
+            mcp.Should().Contain("[DENIED]");
+            urlPromptCount.Should().Be(0);
+            mcpPromptCount.Should().Be(0);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
     public void SeedPersistedMcpApprovals_ShouldOnlySeedMappedRolesAndClearSeededApprovals()
     {
         WithTemporarySettingsPath(_ =>
@@ -228,16 +526,20 @@ public class SessionPermissionHandlerTests
         SessionPermissionHandler.CommandApprovalPrompt? promptCommandApproval = null,
         SessionPermissionHandler.UrlApprovalPrompt? promptUrlApproval = null,
         SessionPermissionHandler.McpApprovalPrompt? promptMcpApproval = null,
-        AppSettings? settings = null)
+        AppSettings? settings = null,
+        IAutoCommandApprovalEvaluator? autoEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
     {
         return new SessionPermissionHandler(
-            getExecutionMode ?? (() => ExecutionMode.Safe),
+            getExecutionMode ?? (() => ExecutionMode.Strict),
             getConfiguredSafeCommands ?? (() => null),
             getMcpServerRole ?? (_ => null),
             promptCommandApproval ?? ((_, _, _) => ApprovalResult.Denied),
             promptUrlApproval ?? ((_, _) => UrlApprovalResult.Deny),
             promptMcpApproval ?? ((_, _, _, _) => McpApprovalResult.Deny),
-            settings);
+            settings,
+            autoEvaluator,
+            recordAutoAuthorization);
     }
 
     private static PermissionRequestShell CreateShellPermissionRequest(string command)
@@ -301,6 +603,17 @@ public class SessionPermissionHandlerTests
             {
                 // Best-effort cleanup for temp test files.
             }
+        }
+    }
+
+    private sealed class FakeAutoEvaluator(AutoCommandApprovalDecision? decision) : IAutoCommandApprovalEvaluator
+    {
+        internal int CallCount { get; private set; }
+
+        public Task<AutoCommandApprovalDecision?> EvaluateAsync(string command, CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(decision);
         }
     }
 }

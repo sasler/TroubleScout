@@ -32,7 +32,7 @@ internal sealed class ServerConnectionManager
             return (true, null);
         }
 
-        if (!skipApproval && executionMode == ExecutionMode.Safe)
+        if (!skipApproval)
         {
             var approval = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}'",
@@ -102,7 +102,7 @@ internal sealed class ServerConnectionManager
             return (false, $"A session named '{serverName}' is already connected. Close it before connecting a different JEA configuration.");
         }
 
-        if (!skipApproval && executionMode == ExecutionMode.Safe)
+        if (!skipApproval)
         {
             var approval = ConsoleUI.PromptCommandApproval(
                 $"New-PSSession -ComputerName '{serverName}' -ConfigurationName '{configurationName}'",

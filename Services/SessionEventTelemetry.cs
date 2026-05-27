@@ -93,15 +93,26 @@ internal sealed class SessionEventTelemetry
                 break;
 
             case AssistantUsageEvent usageEvt:
-                CaptureUsageMetrics(usageEvt);
-                if (!string.IsNullOrEmpty(usageEvt.Data?.Model))
+                CaptureUsageMetrics(usageEvt, string.IsNullOrWhiteSpace(ReadStringProperty(usageEvt.Data, "ParentToolCallId")));
+                if (string.IsNullOrWhiteSpace(ReadStringProperty(usageEvt.Data, "ParentToolCallId"))
+                    && !string.IsNullOrEmpty(usageEvt.Data?.Model))
                 {
                     _setSelectedModel(usageEvt.Data.Model);
                 }
 
                 break;
+
+            case SubagentCompletedEvent subagentCompleted:
+                _sessionUsageTracker.RecordSubagentCompletion(subagentCompleted.Data?.TotalTokens);
+                break;
+
+            case SubagentFailedEvent subagentFailed:
+                _sessionUsageTracker.RecordSubagentFailure(subagentFailed.Data?.TotalTokens);
+                break;
         }
     }
+
+    internal void RecordExternalUsage(AssistantUsageEvent usageEvt) => CaptureUsageMetrics(usageEvt, false);
 
     internal async Task RefreshSessionUsageMetricsAsync(CopilotSession? copilotSession, CancellationToken cancellationToken)
     {
@@ -130,7 +141,7 @@ internal sealed class SessionEventTelemetry
         }
     }
 
-    private void CaptureUsageMetrics(AssistantUsageEvent usageEvt)
+    private void CaptureUsageMetrics(AssistantUsageEvent usageEvt, bool updateLastUsage)
     {
         var data = usageEvt.Data;
         if (data == null)
@@ -168,13 +179,23 @@ internal sealed class SessionEventTelemetry
 
         if (snapshot.HasAny)
         {
-            LastUsage = snapshot;
+            if (updateLastUsage)
+            {
+                LastUsage = snapshot;
+            }
 
             _sessionUsageTracker.RecordTurn(
                 snapshot.InputTokens ?? snapshot.PromptTokens,
                 snapshot.OutputTokens ?? snapshot.CompletionTokens,
                 _getActiveByokPricing(),
                 GetActivePremiumMultiplier());
+
+            var copilotUsage = GetPropertyValue(data, "CopilotUsage");
+            var nanoAiu = ReadLongProperty(copilotUsage, "TotalNanoAiu");
+            if (nanoAiu is > 0)
+            {
+                _sessionUsageTracker.RecordGitHubAiCredits(nanoAiu.Value / 1_000_000_000m);
+            }
         }
     }
 
@@ -281,6 +302,33 @@ internal sealed class SessionEventTelemetry
             if (value is float f)
             {
                 return (int)f;
+            }
+        }
+
+        return null;
+    }
+
+    private static long? ReadLongProperty(object? instance, params string[] propertyNames)
+    {
+        if (instance == null)
+        {
+            return null;
+        }
+
+        foreach (var name in propertyNames)
+        {
+            var prop = instance.GetType().GetProperty(
+                name,
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            var value = prop?.GetValue(instance);
+            if (value is long number)
+            {
+                return number;
+            }
+
+            if (value is int integer)
+            {
+                return integer;
             }
         }
 

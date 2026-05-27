@@ -56,6 +56,15 @@ internal sealed class CopilotTurnCallbacks
     public Action<string> ShowLiveStatusNotice { get; init; } = static _ => { };
     public Action<ToolExecutionStartEvent> RecordMcpToolAction { get; init; } = static _ => { };
     public Action<ToolExecutionCompleteEvent> RecordMcpToolComplete { get; init; } = static _ => { };
+    public Action<SubagentStartedEvent> RecordSubagentStarted { get; init; } = static _ => { };
+    public Action<SubagentCompletedEvent> RecordSubagentCompleted { get; init; } = static _ => { };
+    public Action<SubagentFailedEvent> RecordSubagentFailed { get; init; } = static _ => { };
+    public Action<ToolExecutionStartEvent> RecordSubagentToolAction { get; init; } = static _ => { };
+    public Action<ToolExecutionCompleteEvent> RecordSubagentToolComplete { get; init; } = static _ => { };
+    public Action<string, string> RecordSubagentMessageDelta { get; init; } = static (_, _) => { };
+    public Action<string, string> RecordSubagentMessage { get; init; } = static (_, _) => { };
+    public Action<string, string?> ShowSubagentStarted { get; init; } = static (_, _) => { };
+    public Action<string, string?, string, TimeSpan?, long?, long?, bool, string?> ShowSubagentResult { get; init; } = static (_, _, _, _, _, _, _, _) => { };
     public Action IncrementToolInvocation { get; init; } = static () => { };
 }
 
@@ -94,6 +103,7 @@ internal sealed class CopilotTurnRunner
         var currentStreamMessageId = string.Empty;
         var processedDeltaIds = new HashSet<string>();
         var responseBuffer = new StringBuilder();
+        var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
         Task? abortTask = null;
 
@@ -178,12 +188,28 @@ internal sealed class CopilotTurnRunner
                         }
 
                         thinkingIndicator.ShowToolExecution(BuildToolDisplay(toolStart, request.ToolDescriptions));
-                        request.Callbacks.RecordMcpToolAction(toolStart);
+                        var startParentToolCallId = ReadStringProperty(toolStart.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(startParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentToolAction(toolStart);
+                        }
+                        else
+                        {
+                            request.Callbacks.RecordMcpToolAction(toolStart);
+                        }
                         request.Callbacks.IncrementToolInvocation();
                         break;
 
                     case ToolExecutionCompleteEvent toolComplete:
-                        request.Callbacks.RecordMcpToolComplete(toolComplete);
+                        var completeParentToolCallId = ReadStringProperty(toolComplete.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(completeParentToolCallId))
+                        {
+                            request.Callbacks.RecordSubagentToolComplete(toolComplete);
+                        }
+                        else
+                        {
+                            request.Callbacks.RecordMcpToolComplete(toolComplete);
+                        }
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
@@ -196,28 +222,114 @@ internal sealed class CopilotTurnRunner
                         {
                             pendingStreamLineBreak = true;
                         }
-                        thinkingIndicator.UpdateStatus($"Delegating to {subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "sub-agent"}");
+                        var startedName = subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "subagent";
+                        var startedModel = subagentStarted.Data?.Model;
+                        thinkingIndicator.UpdateStatus($"Delegating to {startedName}");
+                        request.Callbacks.ShowLiveStatusNotice(
+                            string.IsNullOrWhiteSpace(startedModel)
+                                ? $"Subagent started: {startedName}"
+                                : $"Subagent started: {startedName} ({startedModel})");
+                        if (!string.IsNullOrWhiteSpace(subagentStarted.Data?.ToolCallId))
+                        {
+                            subagentOutput[subagentStarted.Data.ToolCallId] = new StringBuilder();
+                        }
+                        request.Callbacks.ShowSubagentStarted(startedName, startedModel);
+                        request.Callbacks.RecordSubagentStarted(subagentStarted);
                         break;
 
-                    case SubagentCompletedEvent:
+                    case SubagentCompletedEvent subagentCompleted:
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Processing delegated results");
+                        var completedName = subagentCompleted.Data?.AgentDisplayName ?? subagentCompleted.Data?.AgentName ?? "subagent";
+                        var completedSuffix = new List<string>();
+                        if (subagentCompleted.Data?.TotalTokens is long tokens && tokens > 0)
+                        {
+                            completedSuffix.Add($"{tokens:N0} tokens");
+                        }
+                        if (subagentCompleted.Data?.TotalToolCalls is long tools && tools > 0)
+                        {
+                            completedSuffix.Add(FormatToolCount(tools));
+                        }
+                        request.Callbacks.ShowLiveStatusNotice(
+                            $"Subagent completed: {completedName}" +
+                            (completedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", completedSuffix)})"));
+                        var completedToolCallId = subagentCompleted.Data?.ToolCallId;
+                        var completedResult = !string.IsNullOrWhiteSpace(completedToolCallId)
+                            && subagentOutput.Remove(completedToolCallId, out var completedBuffer)
+                                ? completedBuffer.ToString()
+                                : string.Empty;
+                        request.Callbacks.ShowSubagentResult(
+                            completedName,
+                            subagentCompleted.Data?.Model,
+                            completedResult,
+                            subagentCompleted.Data?.Duration,
+                            subagentCompleted.Data?.TotalTokens,
+                            subagentCompleted.Data?.TotalToolCalls,
+                            true,
+                            null);
+                        request.Callbacks.RecordSubagentCompleted(subagentCompleted);
                         break;
 
-                    case SubagentFailedEvent:
+                    case SubagentFailedEvent subagentFailed:
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
                         }
                         thinkingIndicator.UpdateStatus("Delegated task failed");
+                        var failedName = subagentFailed.Data?.AgentDisplayName ?? subagentFailed.Data?.AgentName ?? "subagent";
+                        var failedSuffix = new List<string>();
+                        if (subagentFailed.Data?.Duration is TimeSpan failedDuration)
+                        {
+                            failedSuffix.Add($"{failedDuration.TotalSeconds:0.#}s");
+                        }
+                        if (subagentFailed.Data?.TotalTokens is long failedTokens && failedTokens > 0)
+                        {
+                            failedSuffix.Add($"{failedTokens:N0} tokens");
+                        }
+                        if (subagentFailed.Data?.TotalToolCalls is long failedTools && failedTools > 0)
+                        {
+                            failedSuffix.Add(FormatToolCount(failedTools));
+                        }
+                        request.Callbacks.ShowLiveStatusNotice(
+                            $"Subagent failed: {failedName}" +
+                            (failedSuffix.Count == 0 ? string.Empty : $" ({string.Join(", ", failedSuffix)})"));
+                        var failedToolCallId = subagentFailed.Data?.ToolCallId;
+                        var failedResult = !string.IsNullOrWhiteSpace(failedToolCallId)
+                            && subagentOutput.Remove(failedToolCallId, out var failedBuffer)
+                                ? failedBuffer.ToString()
+                                : string.Empty;
+                        request.Callbacks.ShowSubagentResult(
+                            failedName,
+                            subagentFailed.Data?.Model,
+                            failedResult,
+                            subagentFailed.Data?.Duration,
+                            subagentFailed.Data?.TotalTokens,
+                            subagentFailed.Data?.TotalToolCalls,
+                            false,
+                            subagentFailed.Data?.Error);
+                        request.Callbacks.RecordSubagentFailed(subagentFailed);
                         break;
 
                     case AssistantMessageDeltaEvent delta:
                         if (!processedDeltaIds.Add(delta.Id.ToString()))
                         {
+                            break;
+                        }
+
+                        var deltaParentToolCallId = ReadStringProperty(delta.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(deltaParentToolCallId))
+                        {
+                            var delegatedDelta = delta.Data?.DeltaContent ?? string.Empty;
+                            if (!subagentOutput.TryGetValue(deltaParentToolCallId, out var delegatedBuffer))
+                            {
+                                delegatedBuffer = new StringBuilder();
+                                subagentOutput[deltaParentToolCallId] = delegatedBuffer;
+                            }
+                            delegatedBuffer.Append(delegatedDelta);
+                            request.Callbacks.RecordSubagentMessageDelta(deltaParentToolCallId, delegatedDelta);
                             break;
                         }
 
@@ -259,6 +371,22 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case AssistantMessageEvent msg:
+                        var messageParentToolCallId = ReadStringProperty(msg.Data, "ParentToolCallId");
+                        if (!string.IsNullOrWhiteSpace(messageParentToolCallId))
+                        {
+                            var delegatedMessage = msg.Data?.Content ?? string.Empty;
+                            if (!subagentOutput.TryGetValue(messageParentToolCallId, out var finalDelegatedBuffer))
+                            {
+                                subagentOutput[messageParentToolCallId] = new StringBuilder(delegatedMessage);
+                            }
+                            else if (finalDelegatedBuffer.Length == 0)
+                            {
+                                finalDelegatedBuffer.Append(delegatedMessage);
+                            }
+                            request.Callbacks.RecordSubagentMessage(messageParentToolCallId, delegatedMessage);
+                            break;
+                        }
+
                         if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
                             if (hasStartedReasoning)
@@ -376,6 +504,9 @@ internal sealed class CopilotTurnRunner
             }
         }
     }
+
+    private static string FormatToolCount(long count)
+        => $"{count:N0} {(count == 1 ? "tool" : "tools")}";
 
     internal static async Task RunActivityWatchdogAsync(
         ITurnThinkingIndicator indicator,

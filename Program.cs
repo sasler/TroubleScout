@@ -17,12 +17,13 @@ if (startupJeaParseResult.HasError)
 string? prompt = null;
 string? model = null;
 bool modelSpecifiedByCli = false;
+string? subagentModel = null;
 string? mcpConfigPath = null;
 var skillDirectories = new List<string>();
 var disabledSkills = new List<string>();
 var appVersion = GetAppVersion();
 var debugMode = false;
-var executionMode = ExecutionMode.Safe;
+var executionMode = ExecutionMode.Strict;
 var useByokOpenAi = false;
 string? byokOpenAiBaseUrl = null;
 string? byokOpenAiApiKey = null;
@@ -61,6 +62,12 @@ for (int i = 0; i < args.Length; i++)
             Console.WriteLine("--model (-m) requires a model ID (e.g. gpt-4.1, gpt-5-mini).");
             Console.WriteLine("Available models can be viewed by running TroubleScout interactively and using /model.");
             return 1;
+        case "--subagent-model" when i + 1 < args.Length:
+            subagentModel = args[++i];
+            break;
+        case "--subagent-model":
+            Console.WriteLine("--subagent-model requires a model ID (e.g. gpt-5-mini).");
+            return 1;
         case "--mcp-config" when i + 1 < args.Length:
             mcpConfigPath = args[++i];
             break;
@@ -91,12 +98,12 @@ for (int i = 0; i < args.Length; i++)
         case "--mode" when i + 1 < args.Length:
             if (!ExecutionModeParser.TryParse(args[++i], out executionMode))
             {
-                Console.WriteLine("Invalid mode. Use: safe or yolo.");
+                Console.WriteLine("Invalid mode. Use: strict or auto.");
                 return 1;
             }
             break;
         case "--mode":
-            Console.WriteLine("--mode requires a value: safe or yolo.");
+            Console.WriteLine("--mode requires a value: strict or auto.");
             return 1;
         case "--byok-openai":
             useByokOpenAi = true;
@@ -193,7 +200,7 @@ if (!string.IsNullOrWhiteSpace(prompt))
     try
     {
         // Headless mode - single prompt execution
-        await RunHeadlessModeAsync(servers, prompt, model, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+        await RunHeadlessModeAsync(servers, prompt, model, subagentModel, mcpConfigPath, skillDirectories, disabledSkills, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
     }
     finally
     {
@@ -206,7 +213,7 @@ else
     try
     {
         // Interactive mode with full TUI
-        await RunInteractiveModeAsync(servers, model, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
+        await RunInteractiveModeAsync(servers, model, subagentModel, mcpConfigPath, skillDirectories, disabledSkills, appVersion, debugMode, executionMode, useByokOpenAi, byokOpenAiBaseUrl, byokOpenAiApiKey, byokProviderSpecifiedByCli && useByokOpenAi, modelSpecifiedByCli, startupJea);
     }
     finally
     {
@@ -287,6 +294,7 @@ static string GetAppVersion()
 static async Task RunInteractiveModeAsync(
     IReadOnlyList<string> servers,
     string? model,
+    string? subagentModel,
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
@@ -323,8 +331,9 @@ static async Task RunInteractiveModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional,
-        initialJeaSession);
+        additionalInitialServers: additional,
+        initialJeaSession: initialJeaSession,
+        subagentModel: subagentModel);
     
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing...", async updateStatus =>
@@ -360,6 +369,7 @@ static async Task RunHeadlessModeAsync(
     IReadOnlyList<string> servers,
     string prompt,
     string? model,
+    string? subagentModel,
     string? mcpConfigPath,
     IReadOnlyList<string> skillDirectories,
     IReadOnlyList<string> disabledSkills,
@@ -392,8 +402,9 @@ static async Task RunHeadlessModeAsync(
         byokOpenAiApiKey,
         byokExplicitlyRequested: byokExplicitlyRequested,
         modelExplicitlyRequested: modelExplicitlyRequested,
-        additional,
-        initialJeaSession);
+        additionalInitialServers: additional,
+        initialJeaSession: initialJeaSession,
+        subagentModel: subagentModel);
 
     // Initialize with animated spinner
     var success = await ConsoleUI.RunWithSpinnerAsync("Initializing TroubleScout...", async updateStatus =>

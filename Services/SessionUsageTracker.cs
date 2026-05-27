@@ -16,6 +16,9 @@ internal sealed class SessionUsageTracker
     private int _totalTurns;
     private decimal _estimatedCostUsd;
     private double _estimatedPremiumRequests;
+    private decimal _githubAiCredits;
+    private int _subagentCalls;
+    private long _subagentTokens;
 
     private readonly List<double> _turnElapsedMillis = new();
     private readonly List<int> _turnToolCounts = new();
@@ -30,6 +33,9 @@ internal sealed class SessionUsageTracker
     public int TotalTurns => _totalTurns;
     public decimal EstimatedCostUsd => _estimatedCostUsd;
     public double EstimatedPremiumRequests => _estimatedPremiumRequests;
+    public decimal GitHubAiCredits => _githubAiCredits;
+    public int SubagentCalls => _subagentCalls;
+    public long SubagentTokens => _subagentTokens;
 
     public int CompletedTurns { get { lock (_completedTurnLock) return _completedTurns; } }
     public int FailedTurns { get { lock (_completedTurnLock) return _failedTurns; } }
@@ -69,6 +75,26 @@ internal sealed class SessionUsageTracker
         }
     }
 
+    public void RecordGitHubAiCredits(decimal credits)
+    {
+        if (credits > 0)
+        {
+            _githubAiCredits += credits;
+        }
+    }
+
+    public void RecordSubagentCompletion(long? totalTokens)
+    {
+        _subagentCalls++;
+        _subagentTokens += totalTokens ?? 0;
+    }
+
+    public void RecordSubagentFailure(long? totalTokens)
+    {
+        _subagentCalls++;
+        _subagentTokens += totalTokens ?? 0;
+    }
+
     public void Reset()
     {
         _totalInputTokens = 0;
@@ -76,6 +102,9 @@ internal sealed class SessionUsageTracker
         _totalTurns = 0;
         _estimatedCostUsd = 0;
         _estimatedPremiumRequests = 0;
+        _githubAiCredits = 0;
+        _subagentCalls = 0;
+        _subagentTokens = 0;
 
         lock (_completedTurnLock)
         {
@@ -167,4 +196,9 @@ internal sealed class SessionUsageTracker
 
         return null;
     }
+
+    public string? GetAiCreditsDisplay() =>
+        _githubAiCredits > 0
+            ? $"~{_githubAiCredits.ToString("0.####", CultureInfo.InvariantCulture)} AI credits"
+            : null;
 }

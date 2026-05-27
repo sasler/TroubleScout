@@ -5,7 +5,7 @@ using GitHub.Copilot;
 
 namespace TroubleScout.Services;
 
-internal sealed record ShellPermissionAssessment(string Command, CommandValidation Validation, string PromptReason, string ImpactText);
+internal sealed record ShellPermissionAssessment(string Command, string FullCommand, CommandValidation Validation, string PromptReason, string ImpactText);
 
 internal static class PermissionEvaluator
 {
@@ -28,6 +28,7 @@ internal static class PermissionEvaluator
         var validation = PowerShellExecutor.ValidateStandaloneCommand(fullCommand, executionMode, configuredSafeCommands);
         return new ShellPermissionAssessment(
             TrimPermissionPreview(fullCommand),
+            fullCommand,
             validation,
             validation.Reason ?? BuildPermissionPromptReason("shell"),
             BuildShellPermissionImpactText(validation));
@@ -129,13 +130,13 @@ internal static class PermissionEvaluator
     {
         return kind switch
         {
-            "mcp" => "Allow this MCP tool invocation in Safe mode?",
-            "shell" => "Allow this shell command in Safe mode?",
-            "write" => "Allow this file write in Safe mode?",
+            "mcp" => "Allow this MCP tool invocation in Strict mode?",
+            "shell" => "Allow this shell command in Strict mode?",
+            "write" => "Allow this file write in Strict mode?",
             "read" => "Allow this file read?",
             "url" => "Allow this URL fetch?",
             "custom-tool" => "Allow this custom tool invocation?",
-            _ => $"Allow this tool operation in Safe mode? (kind: {Spectre.Console.Markup.Escape(kind)})"
+            _ => $"Allow this tool operation in Strict mode? (kind: {Spectre.Console.Markup.Escape(kind)})"
         };
     }
 
@@ -266,6 +267,17 @@ internal static class PermissionEvaluator
     private static bool LooksLikePowerShellCommand(string command)
     {
         var trimmed = command.TrimStart();
+        while (trimmed.StartsWith("#", StringComparison.Ordinal))
+        {
+            var newlineIndex = trimmed.IndexOfAny(['\r', '\n']);
+            if (newlineIndex < 0)
+            {
+                return false;
+            }
+
+            trimmed = trimmed[(newlineIndex + 1)..].TrimStart();
+        }
+
         if (string.IsNullOrWhiteSpace(trimmed))
         {
             return false;

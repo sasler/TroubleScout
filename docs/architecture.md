@@ -26,7 +26,7 @@ TroubleshootingSession (per-process Copilot session orchestrator)
         └── Services/                  ── Infrastructure (no UI):
             ├── PowerShellExecutor      runspace lifecycle, JEA endpoints,
             │                            command execution.
-            ├── CommandValidator        Safe-mode classification (Get-* auto,
+            ├── CommandValidator        Strict/Auto AST classification (Get-* auto,
             │                            mutations require approval, sensitive
             │                            commands blocked).
             ├── PermissionEvaluator     Composes validator + safe-list +
@@ -85,10 +85,13 @@ Approvals are gated at three layers:
 | MCP tool | Per-server, not per-tool | `ConsoleUI.PromptMcpApproval` returning `McpApprovalResult` (`ApproveOnce`, `ApproveServerForSession`, `ApproveServerPersist`, `Deny`). Persistent only for monitoring/ticketing role-mapped servers. |
 | Outbound URL | Web fetches inside the session | `ConsoleUI.PromptUrlApproval` (this URL / all URLs for session / deny). |
 
-Read-only commands (`Get-*` and similar) auto-execute via
+Proven read-only commands (`Get-*` and output-shaping pipelines) auto-execute via
 `AppSettingsStore.DefaultSafeCommands`. Read-only-shaped MCP tools
 (`get_*`, `list_*`, `search_*`, `find_*`, `describe_*`, `read_*`, `query_*`,
-`inspect_*`) auto-execute via `McpReadOnlyHeuristic`. Sensitive commands such
+`inspect_*`) auto-execute via `McpReadOnlyHeuristic`. In `auto` mode, only
+parseable PowerShell commands that remain unknown after deterministic
+classification can be checked in a no-tools safety session using the selected subagent model.
+Sensitive commands such
 as `Get-Credential` and `Get-Secret` are blocked outright.
 
 While the live thinking indicator is running, every prompt invocation must be

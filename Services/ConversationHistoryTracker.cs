@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using GitHub.Copilot;
 using TroubleScout.Tools;
 using TroubleScout.UI;
@@ -7,10 +8,26 @@ namespace TroubleScout.Services;
 
 internal sealed class ConversationHistoryTracker
 {
+    private static readonly HashSet<string> LocallyLoggedDiagnosticTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "run_powershell",
+        "run_delegated_powershell",
+        "get_system_info",
+        "get_event_logs",
+        "get_services",
+        "get_processes",
+        "get_disk_space",
+        "get_network_info",
+        "get_performance_counters"
+    };
+
     private readonly List<ReportPromptEntry> _reportPrompts = [];
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
     private readonly Dictionary<string, McpActionLocation> _pendingMcpActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, McpActionLocation> _pendingSubagentActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, McpActionLocation> _pendingSubagentToolActions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StringBuilder> _subagentReturnedFindings = new(StringComparer.Ordinal);
 
     private readonly record struct McpActionLocation(int PromptIndex, int ActionIndex);
 
@@ -70,7 +87,7 @@ internal sealed class ConversationHistoryTracker
             actionLog.Command,
             actionLog.Output,
             actionLog.ApprovalState.ToString(),
-            "PowerShell");
+            actionLog.Source ?? "PowerShell");
 
         AppendActionToCurrentPrompt(entry);
     }
@@ -78,23 +95,30 @@ internal sealed class ConversationHistoryTracker
     internal void RecordMcpToolAction(ToolExecutionStartEvent toolStart)
     {
         var mcpServerName = ReadStringProperty(toolStart.Data, "McpServerName", "MCPServerName", "ServerName");
-        if (string.IsNullOrWhiteSpace(mcpServerName))
+        var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
+        var isDelegatedAuthorization = toolName.StartsWith("authorize_delegated_", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(mcpServerName)
+            && !isDelegatedAuthorization
+            && LocallyLoggedDiagnosticTools.Contains(toolName))
         {
             return;
         }
 
-        var toolName = toolStart.Data?.ToolName ?? "unknown-tool";
+        var source = isDelegatedAuthorization
+            ? "Delegation Authorization"
+            : string.IsNullOrWhiteSpace(mcpServerName) ? "Tool" : "MCP";
+
         var argumentsPreview = FormatArgumentsForReport(toolStart.Data?.Arguments);
 
         var toolCallId = ReadStringProperty(toolStart.Data, "ToolCallId");
 
         var entry = new ReportActionEntry(
             DateTimeOffset.Now,
-            mcpServerName,
+            isDelegatedAuthorization ? "Primary agent" : mcpServerName ?? "Primary agent",
             toolName,
             string.Empty,
-            "MCP",
-            "MCP")
+            isDelegatedAuthorization ? "Preauthorization" : source,
+            source)
         {
             Arguments = argumentsPreview,
             ToolCallId = toolCallId
@@ -162,6 +186,171 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
+    internal void RecordSubagentStarted(SubagentStartedEvent started)
+    {
+        var data = started.Data;
+        if (data == null)
+        {
+            return;
+        }
+
+        var name = data.AgentDisplayName ?? data.AgentName ?? "subagent";
+        var toolCallId = data.ToolCallId;
+        var model = string.IsNullOrWhiteSpace(data.Model) ? string.Empty : $"Model: {data.Model}";
+        AppendActionToCurrentPrompt(new ReportActionEntry(
+            DateTimeOffset.Now,
+            name,
+            "Delegated investigation",
+            model,
+            "Delegated",
+            "Subagent")
+        {
+            ToolCallId = toolCallId
+        });
+
+        if (!string.IsNullOrWhiteSpace(toolCallId))
+        {
+            lock (_reportLock)
+            {
+                _pendingSubagentActions[toolCallId] = new McpActionLocation(
+                    _lastPromptIndex,
+                    _reportPrompts[_lastPromptIndex].Actions.Count - 1);
+            }
+        }
+    }
+
+    internal void RecordSubagentCompleted(SubagentCompletedEvent completed) =>
+        CompleteSubagentAction(
+            completed.Data?.ToolCallId,
+            completed.Data?.Duration,
+            completed.Data?.TotalTokens,
+            completed.Data?.TotalToolCalls,
+            success: true,
+            error: null);
+
+    internal void RecordSubagentFailed(SubagentFailedEvent failed) =>
+        CompleteSubagentAction(
+            failed.Data?.ToolCallId,
+            failed.Data?.Duration,
+            failed.Data?.TotalTokens,
+            failed.Data?.TotalToolCalls,
+            success: false,
+            error: failed.Data?.Error);
+
+    internal void RecordSubagentToolAction(ToolExecutionStartEvent toolStart)
+    {
+        var data = toolStart.Data;
+        var parentToolCallId = ReadStringProperty(data, "ParentToolCallId");
+        if (data == null || string.IsNullOrWhiteSpace(parentToolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentActions.TryGetValue(parentToolCallId, out var parentLocation)
+                || parentLocation.PromptIndex < 0
+                || parentLocation.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var parentActions = _reportPrompts[parentLocation.PromptIndex].Actions;
+            if (parentLocation.ActionIndex < 0 || parentLocation.ActionIndex >= parentActions.Count)
+            {
+                return;
+            }
+
+            var parent = parentActions[parentLocation.ActionIndex];
+            var toolCallId = data.ToolCallId;
+            var mcpServerName = ReadStringProperty(data, "McpServerName", "MCPServerName", "ServerName");
+            parentActions.Add(new ReportActionEntry(
+                DateTimeOffset.Now,
+                string.IsNullOrWhiteSpace(mcpServerName) ? parent.Target : mcpServerName,
+                data.ToolName ?? data.McpToolName ?? "unknown-tool",
+                string.Empty,
+                "Delegated",
+                "Subagent Tool")
+            {
+                Arguments = FormatArgumentsForReport(data.Arguments),
+                ToolCallId = toolCallId
+            });
+
+            if (!string.IsNullOrWhiteSpace(toolCallId))
+            {
+                _pendingSubagentToolActions[toolCallId] = new McpActionLocation(parentLocation.PromptIndex, parentActions.Count - 1);
+            }
+        }
+    }
+
+    internal void RecordSubagentToolComplete(ToolExecutionCompleteEvent toolComplete)
+    {
+        var data = toolComplete.Data;
+        if (data == null || string.IsNullOrWhiteSpace(data.ToolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentToolActions.Remove(data.ToolCallId, out var location)
+                || location.PromptIndex < 0
+                || location.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var actions = _reportPrompts[location.PromptIndex].Actions;
+            if (location.ActionIndex < 0 || location.ActionIndex >= actions.Count)
+            {
+                return;
+            }
+
+            var existing = actions[location.ActionIndex];
+            actions[location.ActionIndex] = existing with
+            {
+                Output = ExtractOutput(data) ?? string.Empty,
+                Success = data.Success,
+                SafetyApproval = data.Success ? "Delegated" : "Failed"
+            };
+        }
+    }
+
+    internal void RecordSubagentMessageDelta(string parentToolCallId, string content)
+    {
+        if (string.IsNullOrWhiteSpace(parentToolCallId) || string.IsNullOrEmpty(content))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_subagentReturnedFindings.TryGetValue(parentToolCallId, out var buffer))
+            {
+                buffer = new StringBuilder();
+                _subagentReturnedFindings[parentToolCallId] = buffer;
+            }
+
+            buffer.Append(content);
+        }
+    }
+
+    internal void RecordSubagentMessage(string parentToolCallId, string content)
+    {
+        if (string.IsNullOrWhiteSpace(parentToolCallId) || string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_subagentReturnedFindings.ContainsKey(parentToolCallId))
+            {
+                _subagentReturnedFindings[parentToolCallId] = new StringBuilder(content);
+            }
+        }
+    }
+
     internal void ClearRecordedConversationHistory()
     {
         lock (_reportLock)
@@ -169,6 +358,9 @@ internal sealed class ConversationHistoryTracker
             _reportPrompts.Clear();
             _lastPromptIndex = -1;
             _pendingMcpActions.Clear();
+            _pendingSubagentActions.Clear();
+            _pendingSubagentToolActions.Clear();
+            _subagentReturnedFindings.Clear();
         }
     }
 
@@ -180,6 +372,9 @@ internal sealed class ConversationHistoryTracker
             _reportPrompts.AddRange(SessionTranscriptService.RedactPrompts(prompts));
             _lastPromptIndex = _reportPrompts.Count - 1;
             _pendingMcpActions.Clear();
+            _pendingSubagentActions.Clear();
+            _pendingSubagentToolActions.Clear();
+            _subagentReturnedFindings.Clear();
         }
     }
 
@@ -217,6 +412,79 @@ internal sealed class ConversationHistoryTracker
             }
 
             _reportPrompts[_lastPromptIndex].Actions.Add(actionEntry);
+        }
+    }
+
+    private void CompleteSubagentAction(string? toolCallId, TimeSpan? duration, long? tokens, long? tools, bool success, string? error)
+    {
+        if (string.IsNullOrWhiteSpace(toolCallId))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (!_pendingSubagentActions.TryGetValue(toolCallId, out var location)
+                || location.PromptIndex < 0
+                || location.PromptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var actions = _reportPrompts[location.PromptIndex].Actions;
+            if (location.ActionIndex < 0 || location.ActionIndex >= actions.Count)
+            {
+                return;
+            }
+
+            var parts = new List<string>();
+            if (duration.HasValue)
+            {
+                parts.Add($"{duration.Value.TotalSeconds:0.#}s");
+            }
+            if (tokens is > 0)
+            {
+                parts.Add($"{tokens:N0} tokens");
+            }
+            if (tools is > 0)
+            {
+                parts.Add($"{tools:N0} {(tools == 1 ? "tool" : "tools")}");
+            }
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                parts.Add(error);
+            }
+
+            var current = actions[location.ActionIndex];
+            if (!string.IsNullOrWhiteSpace(current.Output))
+            {
+                parts.Insert(0, current.Output);
+            }
+
+            actions[location.ActionIndex] = current with
+            {
+                Output = string.Join(", ", parts),
+                SafetyApproval = success ? "Delegated" : "Failed",
+                Success = success
+            };
+
+            if (_subagentReturnedFindings.Remove(toolCallId, out var returnedFindings)
+                && !string.IsNullOrWhiteSpace(returnedFindings.ToString()))
+            {
+                actions.Add(new ReportActionEntry(
+                    DateTimeOffset.Now,
+                    current.Target,
+                    "Returned findings",
+                    returnedFindings.ToString().Trim(),
+                    success ? "Delegated" : "Failed",
+                    "Subagent Result")
+                {
+                    Success = success,
+                    ToolCallId = toolCallId
+                });
+            }
+
+            _pendingSubagentActions.Remove(toolCallId);
         }
     }
 

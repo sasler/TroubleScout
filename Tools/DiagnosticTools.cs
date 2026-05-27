@@ -25,6 +25,14 @@ public class DiagnosticTools
     private readonly Func<string, PowerShellExecutor?>? _getExecutorCallback;
     private readonly Func<string, Task<bool>>? _closeSessionCallback;
     private readonly Func<string, string, Task<(bool Success, string? Error)>>? _connectJeaServerCallback;
+    private readonly IAutoCommandApprovalEvaluator? _autoCommandApprovalEvaluator;
+    private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
+    private readonly Func<string, string, string?, Task<string>>? _authorizeDelegatedMcpCallback;
+    private readonly Func<string, string?, Task<string>>? _authorizeDelegatedUrlCallback;
+    private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedPowerShellGrants = new(StringComparer.Ordinal);
+    private readonly object _delegatedGrantLock = new();
+
+    private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
 
@@ -36,7 +44,11 @@ public class DiagnosticTools
         Func<string, Task<(bool Success, string? Error)>>? connectServerCallback = null,
         Func<string, PowerShellExecutor?>? getExecutorCallback = null,
         Func<string, Task<bool>>? closeSessionCallback = null,
-        Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null)
+        Func<string, string, Task<(bool Success, string? Error)>>? connectJeaServerCallback = null,
+        IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null,
+        Func<string, string, string?, Task<string>>? authorizeDelegatedMcpCallback = null,
+        Func<string, string?, Task<string>>? authorizeDelegatedUrlCallback = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
@@ -46,6 +58,10 @@ public class DiagnosticTools
         _getExecutorCallback = getExecutorCallback;
         _closeSessionCallback = closeSessionCallback;
         _connectJeaServerCallback = connectJeaServerCallback;
+        _autoCommandApprovalEvaluator = autoCommandApprovalEvaluator;
+        _recordAutoAuthorization = recordAutoAuthorization;
+        _authorizeDelegatedMcpCallback = authorizeDelegatedMcpCallback;
+        _authorizeDelegatedUrlCallback = authorizeDelegatedUrlCallback;
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -75,7 +91,7 @@ public class DiagnosticTools
             _executor.ActualComputerName ?? _targetServer,
             command,
             output,
-            CommandApprovalState.SafeAuto));
+            CommandApprovalState.StrictReadOnly));
     }
 
     private void LogCommandAction(string target, string command, string output, CommandApprovalState approvalState)
@@ -91,29 +107,42 @@ public class DiagnosticTools
     private async Task<(bool ShouldExecute, string? TerminalOutput, CommandApprovalState ApprovalState)> EnsureCommandApprovedAsync(
         PowerShellExecutor executor,
         string target,
-        string displayCommand,
-        string validationCommand)
+        string validationCommand,
+        string? executionCommand = null)
     {
+        var reviewedCommand = executionCommand ?? validationCommand;
         var validation = executor.ValidateCommand(validationCommand);
         if (!validation.IsAllowed && !validation.RequiresApproval)
         {
-            executor.AddHistoryEntry($"[BLOCKED] {displayCommand}");
+            executor.AddHistoryEntry($"[BLOCKED] {reviewedCommand}");
             var blockedOutput = $"[BLOCKED] {validation.Reason}";
-            LogCommandAction(target, displayCommand, blockedOutput, CommandApprovalState.Blocked);
+            LogCommandAction(target, reviewedCommand, blockedOutput, CommandApprovalState.Blocked);
             return (false, blockedOutput, CommandApprovalState.Blocked);
         }
 
         if (!validation.RequiresApproval)
         {
-            return (true, null, CommandApprovalState.SafeAuto);
+            return (true, null, CommandApprovalState.StrictReadOnly);
         }
 
-        executor.AddHistoryEntry($"[PENDING APPROVAL] {displayCommand}");
-        var approved = await _approvalCallback(displayCommand, validation.Reason ?? "Requires user approval");
+        if (executor.ExecutionMode == ExecutionMode.Auto
+            && validation.Classification == CommandSafetyClassification.Unknown
+            && _autoCommandApprovalEvaluator != null)
+        {
+            var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(reviewedCommand);
+            if (decision is { IsReadOnly: true })
+            {
+                _recordAutoAuthorization?.Invoke(reviewedCommand, decision);
+                return (true, null, CommandApprovalState.ApprovedByAutoAgent);
+            }
+        }
+
+        executor.AddHistoryEntry($"[PENDING APPROVAL] {reviewedCommand}");
+        var approved = await _approvalCallback(reviewedCommand, validation.Reason ?? "Requires user approval");
         if (!approved)
         {
             const string deniedOutput = "[DENIED] User denied approval; command was not executed.";
-            LogCommandAction(target, displayCommand, deniedOutput, CommandApprovalState.Denied);
+            LogCommandAction(target, reviewedCommand, deniedOutput, CommandApprovalState.Denied);
             return (false, deniedOutput, CommandApprovalState.Denied);
         }
 
@@ -127,7 +156,23 @@ public class DiagnosticTools
     {
         yield return AIFunctionFactory.Create(RunPowerShellCommandAsync,
             "run_powershell",
-            "Execute a PowerShell command on the target Windows server. Read-only commands run automatically. Mutating commands require approval in Safe mode or run automatically in YOLO mode.");
+            "Execute a PowerShell command on the target Windows server. Proven read-only commands run automatically. Mutating commands require approval; in Auto mode only unknown read-only candidates can be reviewed automatically.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedPowerShellAsync,
+            "authorize_delegated_powershell",
+            "Primary-agent only. Obtain any required user approval before delegating an exact PowerShell command. Returns a one-use authorizationId for protected commands.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedMcpAsync,
+            "authorize_delegated_mcp",
+            "Primary-agent only. Obtain any required permission before delegating an exact MCP tool invocation.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedUrlAsync,
+            "authorize_delegated_url",
+            "Primary-agent only. Obtain any required permission before delegating access to an exact URL.");
+
+        yield return AIFunctionFactory.Create(RunDelegatedPowerShellAsync,
+            "run_delegated_powershell",
+            "Execute an exact PowerShell command as delegated evidence collection. Read-only commands run automatically; protected commands require a one-use authorizationId obtained by the primary agent.");
 
         yield return CreateReadOnlyTool(GetSystemInfoAsync,
             "get_system_info",
@@ -214,7 +259,21 @@ public class DiagnosticTools
             return $"[BLOCKED] {validation.Reason}";
         }
 
-        if (validation.RequiresApproval)
+        var approvalState = CommandApprovalState.StrictReadOnly;
+        if (validation.RequiresApproval
+            && executor.ExecutionMode == ExecutionMode.Auto
+            && validation.Classification == CommandSafetyClassification.Unknown
+            && _autoCommandApprovalEvaluator != null)
+        {
+            var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(command);
+            if (decision is { IsReadOnly: true })
+            {
+                approvalState = CommandApprovalState.ApprovedByAutoAgent;
+                _recordAutoAuthorization?.Invoke(command, decision);
+            }
+        }
+
+        if (validation.RequiresApproval && approvalState != CommandApprovalState.ApprovedByAutoAgent)
         {
             executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
             // Add to pending commands for user approval
@@ -248,7 +307,7 @@ public class DiagnosticTools
                 target,
                 command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+                approvalState));
             var errorOutput = $"[ERROR] {result.Error ?? "Unknown error occurred"}";
             return isAlternate ? $"[{sessionName}] {errorOutput}" : errorOutput;
         }
@@ -262,10 +321,145 @@ public class DiagnosticTools
             target,
             command,
             output,
-            executor.ExecutionMode == ExecutionMode.Yolo ? CommandApprovalState.AutoApprovedYolo : CommandApprovalState.SafeAuto));
+            approvalState));
 
         return isAlternate ? $"[{sessionName}] {output}" : output;
     }
+
+    private async Task<string> AuthorizeDelegatedPowerShellAsync(
+        [Description("The exact PowerShell command the subagent will run")] string command,
+        [Description("Optional: the server session name the subagent will target")] string? sessionName = null,
+        [Description("Optional: the reason for delegated evidence collection")] string? intent = null)
+    {
+        var resolved = ResolveExecutor(sessionName);
+        if (resolved.Error != null)
+        {
+            return resolved.Error;
+        }
+
+        var validation = resolved.Executor!.ValidateCommand(command);
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            return $"[BLOCKED] {validation.Reason}";
+        }
+
+        if (!validation.RequiresApproval)
+        {
+            return "[OK] This delegated command is read-only and does not require preauthorization.";
+        }
+
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            return "[DENIED] Protected delegated execution requires interactive approval, which is unavailable in headless mode.";
+        }
+
+        var approved = await _approvalCallback(command, validation.Reason ?? intent ?? "Requires user approval");
+        if (!approved)
+        {
+            return "[DENIED] User denied authorization for delegated execution.";
+        }
+
+        var authorizationId = Guid.NewGuid().ToString("N");
+        lock (_delegatedGrantLock)
+        {
+            _delegatedPowerShellGrants[authorizationId] =
+                new DelegatedPowerShellGrant(command, NormalizeSessionName(sessionName), CommandApprovalState.ApprovedByUser);
+        }
+
+        return $"[APPROVED] Delegate this exact command with authorizationId={authorizationId}";
+    }
+
+    private Task<string> AuthorizeDelegatedMcpAsync(
+        [Description("The exact MCP server name")] string serverName,
+        [Description("The exact MCP tool name")] string toolName,
+        [Description("Optional: serialized arguments or a concise argument description")] string? arguments = null)
+        => _authorizeDelegatedMcpCallback != null
+            ? _authorizeDelegatedMcpCallback(serverName, toolName, arguments)
+            : Task.FromResult("[ERROR] Delegated MCP preauthorization is unavailable in this session.");
+
+    private Task<string> AuthorizeDelegatedUrlAsync(
+        [Description("The exact URL the subagent will access")] string url,
+        [Description("Optional: the reason URL access is required")] string? intention = null)
+        => _authorizeDelegatedUrlCallback != null
+            ? _authorizeDelegatedUrlCallback(url, intention)
+            : Task.FromResult("[ERROR] Delegated URL preauthorization is unavailable in this session.");
+
+    private async Task<string> RunDelegatedPowerShellAsync(
+        [Description("The exact PowerShell command requested by the primary agent")] string command,
+        [Description("One-use authorizationId for a protected command; omit for proven read-only commands")] string? authorizationId = null,
+        [Description("Optional: the preconnected server session name")] string? sessionName = null)
+    {
+        var resolved = ResolveExecutor(sessionName);
+        if (resolved.Error != null)
+        {
+            return resolved.Error;
+        }
+
+        var executor = resolved.Executor!;
+        var validation = executor.ValidateCommand(command);
+        if (!validation.IsAllowed && !validation.RequiresApproval)
+        {
+            LogCommandAction(resolved.Target!, command, $"[BLOCKED] {validation.Reason}", CommandApprovalState.Blocked);
+            return $"[BLOCKED] {validation.Reason}";
+        }
+
+        var approvalState = CommandApprovalState.StrictReadOnly;
+        if (validation.RequiresApproval)
+        {
+            DelegatedPowerShellGrant? grant = null;
+            lock (_delegatedGrantLock)
+            {
+                if (!string.IsNullOrWhiteSpace(authorizationId)
+                    && _delegatedPowerShellGrants.TryGetValue(authorizationId, out var candidate)
+                    && candidate.Command.Equals(command, StringComparison.Ordinal)
+                    && string.Equals(candidate.SessionName, NormalizeSessionName(sessionName), StringComparison.OrdinalIgnoreCase))
+                {
+                    grant = candidate;
+                    _delegatedPowerShellGrants.Remove(authorizationId);
+                }
+            }
+
+            if (grant == null)
+            {
+                return "[PREAUTHORIZATION REQUIRED] The primary agent must authorize this exact protected command before delegation.";
+            }
+
+            approvalState = grant.ApprovalState;
+        }
+
+        var wrappedCommand = executor.IsJeaSession
+            ? command
+            : WrapCommandWithTargetVerification(command, executor, resolved.IsAlternate ? sessionName : null);
+        executor.AddHistoryEntry($"[EXECUTED] {command}");
+        ConsoleUI.ShowCommandExecution(command, resolved.IsAlternate ? sessionName! : _targetServer);
+        var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
+        var output = result.Success
+            ? string.IsNullOrWhiteSpace(result.Output) ? "[OK] Command completed with no output." : result.Output
+            : $"[ERROR] {result.Error ?? "Unknown error occurred"}";
+        LogCommandAction(resolved.Target!, command, output, approvalState);
+        return resolved.IsAlternate ? $"[{sessionName}] {output}" : output;
+    }
+
+    private (PowerShellExecutor? Executor, string? Target, bool IsAlternate, string? Error) ResolveExecutor(string? sessionName)
+    {
+        if (string.IsNullOrWhiteSpace(sessionName))
+        {
+            return (_executor, _executor.ActualComputerName ?? _targetServer, false, null);
+        }
+
+        if (_getExecutorCallback == null)
+        {
+            return (null, null, false, $"[ERROR] This tool instance does not support multiple sessions. Cannot target server '{sessionName}'.");
+        }
+
+        var executor = _getExecutorCallback(sessionName);
+        return executor == null
+            ? (null, null, false, $"[ERROR] No session found for server '{sessionName}'. Use connect_server first.")
+            : (executor, executor.ActualComputerName ?? sessionName, true, null);
+    }
+
+    private static string? NormalizeSessionName(string? sessionName)
+        => string.IsNullOrWhiteSpace(sessionName) ? null : sessionName.Trim();
 
     /// <summary>
     /// Establish a direct PowerShell session to a target server
@@ -362,15 +556,15 @@ public class DiagnosticTools
                 LastBoot = $os.LastBootUpTime
             } | Format-List
         ";
+        var wrappedCommand = WrapCommandWithTargetVerification(command);
         const string displayCommand = "Get-SystemInfo";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!approval.ShouldExecute)
         {
             return approval.TerminalOutput!;
         }
 
-        var wrappedCommand = WrapCommandWithTargetVerification(command);
         ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
@@ -447,7 +641,7 @@ public class DiagnosticTools
             ? $"Get-WinEvent -LogName '{normalizedLogName}' -MaxEvents {count}"
             : $"Get-WinEvent -LogName '{normalizedLogName}' -Level {entryType} -MaxEvents {count}";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!primaryApproval.ShouldExecute)
         {
             return primaryApproval.TerminalOutput!;
@@ -464,13 +658,13 @@ public class DiagnosticTools
         var fallbackDisplayCommand = string.IsNullOrEmpty(entryFilter)
             ? $"Get-EventLog -LogName '{normalizedLogName}' -Newest {count}"
             : $"Get-EventLog -LogName '{normalizedLogName}' -EntryType {entryType} -Newest {count}";
-        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackDisplayCommand, fallbackDisplayCommand);
+        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
+        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackDisplayCommand, wrappedFallback);
         if (!fallbackApproval.ShouldExecute)
         {
             return fallbackApproval.TerminalOutput!;
         }
 
-        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
@@ -537,7 +731,7 @@ public class DiagnosticTools
                 : $"Get-Service | Where-Object Status -eq '{stateFilter}'")
             : $"Get-Service -Name '*{nameFilterValue}*'";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!approval.ShouldExecute)
         {
             return approval.TerminalOutput!;
@@ -585,7 +779,7 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(command);
         var displayCommand = $"Get-Process -Top {top} -SortBy {sortProperty}";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!approval.ShouldExecute)
         {
             return approval.TerminalOutput!;
@@ -635,7 +829,7 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         const string displayCommand = "Get-Volume";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!primaryApproval.ShouldExecute)
         {
             return primaryApproval.TerminalOutput!;
@@ -650,13 +844,13 @@ public class DiagnosticTools
         }
 
         const string cmdletFallbackDisplayCommand = "Get-PSDrive -PSProvider FileSystem";
-        var cmdletFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cmdletFallbackDisplayCommand, cmdletFallbackDisplayCommand);
+        var wrappedCmdletFallback = WrapCommandWithTargetVerification(cmdletFallback);
+        var cmdletFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cmdletFallbackDisplayCommand, wrappedCmdletFallback);
         if (!cmdletFallbackApproval.ShouldExecute)
         {
             return cmdletFallbackApproval.TerminalOutput!;
         }
 
-        var wrappedCmdletFallback = WrapCommandWithTargetVerification(cmdletFallback);
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
         if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
@@ -665,13 +859,13 @@ public class DiagnosticTools
         }
 
         const string cimFallbackDisplayCommand = "Get-CimInstance Win32_LogicalDisk";
-        var cimFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cimFallbackDisplayCommand, cimFallbackDisplayCommand);
+        var wrappedCimFallback = WrapCommandWithTargetVerification(cimFallback);
+        var cimFallbackApproval = await EnsureCommandApprovedAsync(_executor, target, cimFallbackDisplayCommand, wrappedCimFallback);
         if (!cimFallbackApproval.ShouldExecute)
         {
             return cimFallbackApproval.TerminalOutput!;
         }
 
-        var wrappedCimFallback = WrapCommandWithTargetVerification(cimFallback);
         var cimResult = await _executor.ExecuteAsync(wrappedCimFallback);
         var cimOutput = cimResult.Success && string.IsNullOrWhiteSpace(cimResult.Error)
             ? cimResult.Output
@@ -721,7 +915,7 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(command);
         const string displayCommand = "Get-NetAdapter";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        var approval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, wrappedCommand);
         if (!approval.ShouldExecute)
         {
             return approval.TerminalOutput!;
@@ -763,7 +957,8 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(primaryCommand);
         var displayCommand = $"Get-Counter ({category})";
         var target = _executor.ActualComputerName ?? _targetServer;
-        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, displayCommand, displayCommand);
+        const string primaryValidationCommand = "Get-Counter";
+        var primaryApproval = await EnsureCommandApprovedAsync(_executor, target, primaryValidationCommand, wrappedCommand);
         if (!primaryApproval.ShouldExecute)
         {
             return primaryApproval.TerminalOutput!;
@@ -821,14 +1016,14 @@ public class DiagnosticTools
         };
 
         var fallbackDisplayCommand = $"Performance fallback ({category})";
-        var fallbackValidationCommand = "Get-CimInstance";
-        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackDisplayCommand, fallbackValidationCommand);
+        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
+        const string fallbackValidationCommand = "Get-CimInstance";
+        var fallbackApproval = await EnsureCommandApprovedAsync(_executor, target, fallbackValidationCommand, wrappedFallback);
         if (!fallbackApproval.ShouldExecute)
         {
             return fallbackApproval.TerminalOutput!;
         }
 
-        var wrappedFallback = WrapCommandWithTargetVerification(fallbackCommand);
         var fallbackResult = await _executor.ExecuteAsync(wrappedFallback);
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
@@ -904,12 +1099,14 @@ public sealed record PendingCommand(string Command, string Reason, PowerShellExe
 
 public enum CommandApprovalState
 {
-    SafeAuto,
+    StrictReadOnly,
     ApprovalRequested,
     ApprovedByUser,
-    AutoApprovedYolo,
+    ApprovedByAutoAgent,
     Denied,
-    Blocked
+    Blocked,
+    SafeAuto,
+    AutoApprovedYolo
 }
 
 public record CommandActionLog(
@@ -917,4 +1114,5 @@ public record CommandActionLog(
     string Target,
     string Command,
     string Output,
-    CommandApprovalState ApprovalState);
+    CommandApprovalState ApprovalState,
+    string? Source = null);

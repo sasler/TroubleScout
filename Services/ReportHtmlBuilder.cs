@@ -39,7 +39,13 @@ internal sealed record ReportSessionSummary(
     IReadOnlyList<string> ConfiguredSkills,
     IReadOnlyList<string> UsedSkills,
     string ExecutionMode,
-    string TargetServer);
+    string TargetServer)
+{
+    public IReadOnlyDictionary<string, string>? AgentModels { get; init; }
+    public string? GitHubBillingDisplayMode { get; init; }
+    public int SubagentCalls { get; init; }
+    public long SubagentTokens { get; init; }
+}
 
 internal static class ReportHtmlBuilder
 {
@@ -85,9 +91,11 @@ internal static class ReportHtmlBuilder
             {
                 switch (a.SafetyApproval)
                 {
+                    case "StrictReadOnly":
                     case "SafeAuto":
                         safeCount++;
                         break;
+                    case "ApprovedByAutoAgent":
                     case "AutoApprovedYolo":
                     case "ApprovedByUser":
                         approvedCount++;
@@ -175,8 +183,8 @@ internal static class ReportHtmlBuilder
 
         // Approval chips
         sb.AppendLine("    .approval-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }");
-        sb.AppendLine("    .approval-SafeAuto { background: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }");
-        sb.AppendLine("    .approval-AutoApprovedYolo { background: rgba(249,115,22,0.12); color: #f97316; border: 1px solid rgba(249,115,22,0.3); }");
+        sb.AppendLine("    .approval-StrictReadOnly, .approval-SafeAuto { background: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }");
+        sb.AppendLine("    .approval-ApprovedByAutoAgent, .approval-AutoApprovedYolo { background: rgba(249,115,22,0.12); color: #f97316; border: 1px solid rgba(249,115,22,0.3); }");
         sb.AppendLine("    .approval-ApprovedByUser { background: rgba(59,130,246,0.12); color: #3b82f6; border: 1px solid rgba(59,130,246,0.3); }");
         sb.AppendLine("    .approval-ApprovalRequested { background: rgba(234,179,8,0.12); color: #eab308; border: 1px solid rgba(234,179,8,0.3); }");
         sb.AppendLine("    .approval-Denied { background: rgba(239,68,68,0.12); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }");
@@ -405,6 +413,21 @@ internal static class ReportHtmlBuilder
             sb.AppendLine($"        <div><dt>Provider</dt><dd>{HtmlEncode(summary.CurrentProvider)}</dd></div>");
             sb.AppendLine($"        <div><dt>Target</dt><dd>{HtmlEncode(summary.TargetServer)}</dd></div>");
             sb.AppendLine($"        <div><dt>Execution mode</dt><dd>{HtmlEncode(summary.ExecutionMode)}</dd></div>");
+            if (summary.AgentModels is { Count: > 0 })
+            {
+                var subagentModel = summary.AgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var configuredModel)
+                    ? configuredModel
+                    : summary.AgentModels.Values.First();
+                sb.AppendLine($"        <div><dt>Subagent model</dt><dd>{HtmlEncode(subagentModel)}</dd></div>");
+            }
+            if (!string.IsNullOrWhiteSpace(summary.GitHubBillingDisplayMode))
+            {
+                sb.AppendLine($"        <div><dt>Billing display</dt><dd>{HtmlEncode(summary.GitHubBillingDisplayMode!)}</dd></div>");
+            }
+            if (summary.SubagentCalls > 0)
+            {
+                sb.AppendLine($"        <div><dt>Subagent usage</dt><dd>{summary.SubagentCalls.ToString(CultureInfo.InvariantCulture)} calls / {summary.SubagentTokens.ToString(CultureInfo.InvariantCulture)} tokens</dd></div>");
+            }
             if (summary.UsedMcpServers.Count > 0)
             {
                 sb.AppendLine($"        <div><dt>MCP servers used</dt><dd>{HtmlEncode(string.Join(", ", summary.UsedMcpServers))}</dd></div>");
@@ -454,7 +477,7 @@ internal static class ReportHtmlBuilder
 
         // ── Summary statistics cards ──
         sb.AppendLine("    <div class=\"summary-row\">");
-        sb.AppendLine($"      <div class=\"summary-card sc-green\"><div class=\"sc-val\">{safeCount}</div><div class=\"sc-lbl\">Safe (Auto)</div></div>");
+        sb.AppendLine($"      <div class=\"summary-card sc-green\"><div class=\"sc-val\">{safeCount}</div><div class=\"sc-lbl\">Read-only</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-blue\"><div class=\"sc-val\">{approvedCount}</div><div class=\"sc-lbl\">Approved</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-red\"><div class=\"sc-val\">{blockedCount}</div><div class=\"sc-lbl\">Blocked</div></div>");
         sb.AppendLine($"      <div class=\"summary-card sc-amber\"><div class=\"sc-val\">{deniedCount}</div><div class=\"sc-lbl\">Denied</div></div>");
@@ -494,6 +517,10 @@ internal static class ReportHtmlBuilder
                 {
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
                     var isMcp = string.Equals(action.Source, "MCP", StringComparison.OrdinalIgnoreCase);
+                    var isDelegationAuthorization = string.Equals(action.Source, "Delegation Authorization", StringComparison.OrdinalIgnoreCase);
+                    var isSubagentTool = string.Equals(action.Source, "Subagent Tool", StringComparison.OrdinalIgnoreCase);
+                    var isSubagentResult = string.Equals(action.Source, "Subagent Result", StringComparison.OrdinalIgnoreCase);
+                    var isTool = string.Equals(action.Source, "Tool", StringComparison.OrdinalIgnoreCase);
 
                     sb.AppendLine("            <div class=\"action-card\">");
                     sb.AppendLine("              <div class=\"action-header\">");
@@ -517,9 +544,8 @@ internal static class ReportHtmlBuilder
                     }
                     sb.AppendLine("              </div>");
 
-                    if (isMcp)
+                    if (isMcp || isDelegationAuthorization || isSubagentTool || isTool)
                     {
-                        // Tool call (server / tool name without args)
                         sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Tool call\" open>");
                         sb.AppendLine("                <summary>Tool call</summary>");
                         sb.AppendLine("                <div class=\"inner-content\">");
@@ -542,6 +568,15 @@ internal static class ReportHtmlBuilder
                         sb.AppendLine("                <div class=\"inner-content\">");
                         var outputText = string.IsNullOrWhiteSpace(action.Output) ? "(no output captured)" : action.Output;
                         sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(outputText)}</pre></div>");
+                        sb.AppendLine("                </div>");
+                        sb.AppendLine("              </details>");
+                    }
+                    else if (isSubagentResult)
+                    {
+                        sb.AppendLine("              <details class=\"inner-section\" data-md-section=\"Returned findings\" open>");
+                        sb.AppendLine("                <summary>Returned findings</summary>");
+                        sb.AppendLine("                <div class=\"inner-content\">");
+                        sb.AppendLine($"                  <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(action.Output)}</pre></div>");
                         sb.AppendLine("                </div>");
                         sb.AppendLine("              </details>");
                     }
@@ -796,7 +831,16 @@ internal static class ReportHtmlBuilder
             RedactList(summary.ConfiguredSkills),
             RedactList(summary.UsedSkills),
             SecretRedactor.Redact(summary.ExecutionMode),
-            SecretRedactor.Redact(summary.TargetServer));
+            SecretRedactor.Redact(summary.TargetServer))
+        {
+            AgentModels = summary.AgentModels?.ToDictionary(
+                entry => SecretRedactor.Redact(entry.Key),
+                entry => SecretRedactor.Redact(entry.Value),
+                StringComparer.OrdinalIgnoreCase),
+            GitHubBillingDisplayMode = SecretRedactor.Redact(summary.GitHubBillingDisplayMode),
+            SubagentCalls = summary.SubagentCalls,
+            SubagentTokens = summary.SubagentTokens
+        };
     }
 
     private static IReadOnlyList<string> RedactList(IReadOnlyList<string> values) =>

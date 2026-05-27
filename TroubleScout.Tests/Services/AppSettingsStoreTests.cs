@@ -138,6 +138,61 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Save_ThenLoad_ShouldPersistPerProviderSubagentModelAndBillingMode()
+    {
+        var settings = new AppSettings
+        {
+            AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+            {
+                ["github"] = new() { ["subagent"] = "gpt-5-mini" },
+                ["byok"] = new() { ["subagent"] = "cheap-byok-model" }
+            },
+            GitHubBillingDisplayMode = "ai-credits"
+        };
+
+        AppSettingsStore.Save(settings);
+        var loaded = AppSettingsStore.Load();
+
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: false)["subagent"].Should().Be("gpt-5-mini");
+        AppSettingsStore.GetAgentModelsForProvider(loaded, useByokOpenAi: true)["subagent"].Should().Be("cheap-byok-model");
+        loaded.GitHubBillingDisplayMode.Should().Be("ai-credits");
+    }
+
+    [Fact]
+    public void SaveSubagentModelOverride_ShouldUpdateAndRemoveConfiguredSubagentModel()
+    {
+        AppSettingsStore.Save(new AppSettings
+        {
+            AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+            {
+                ["github"] = new()
+                {
+                    ["subagent"] = "gpt-4.1"
+                }
+            }
+        });
+
+        SettingsWorkflowService.SaveSubagentModelOverride(false, "gpt-5-mini");
+        var updated = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), useByokOpenAi: false);
+
+        updated["subagent"].Should().Be("gpt-5-mini");
+
+        SettingsWorkflowService.SaveSubagentModelOverride(false, null);
+        var removed = AppSettingsStore.GetAgentModelsForProvider(AppSettingsStore.Load(), useByokOpenAi: false);
+
+        removed.Should().NotContainKey("subagent");
+    }
+
+    [Fact]
+    public void ResolveGitHubBillingDisplayMode_ShouldDefaultToCreditsAfterCutover()
+    {
+        AppSettingsStore.ResolveGitHubBillingDisplayMode(null, new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero))
+            .Should().Be("ai-credits");
+        AppSettingsStore.ResolveGitHubBillingDisplayMode(null, new DateTimeOffset(2026, 5, 31, 23, 59, 59, TimeSpan.Zero))
+            .Should().Be("premium-requests-legacy");
+    }
+
+    [Fact]
     public void Load_ShouldNormalizeMonitoringAndTicketingMcpServerNames()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);

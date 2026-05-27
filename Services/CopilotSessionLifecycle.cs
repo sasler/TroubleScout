@@ -38,7 +38,8 @@ internal sealed record SessionConfigBuildRequest(
     ICollection<string> ConfigurationWarnings,
     ProviderConfig? Provider,
     IReadOnlyList<string> SkillDirectories,
-    IReadOnlyList<string> DisabledSkills);
+    IReadOnlyList<string> DisabledSkills,
+    IReadOnlyDictionary<string, string>? AgentModels = null);
 
 internal static class CopilotSessionLifecycle
 {
@@ -102,7 +103,8 @@ internal static class CopilotSessionLifecycle
             ConfigurationWarnings: request.ConfigurationWarnings,
             Provider: request.Provider,
             SkillDirectories: request.SkillDirectories,
-            DisabledSkills: request.DisabledSkills));
+            DisabledSkills: request.DisabledSkills,
+            AgentModels: request.AgentModels));
 
     private static void ResetCapabilities(CopilotSessionLifecycleRequest request)
     {

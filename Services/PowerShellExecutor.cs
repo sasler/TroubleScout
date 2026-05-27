@@ -20,8 +20,18 @@ public record PowerShellResult(
 public record CommandValidation(
     bool IsAllowed,
     bool RequiresApproval,
-    string? Reason = null
+    string? Reason = null,
+    CommandSafetyClassification Classification = CommandSafetyClassification.Unknown
 );
+
+public enum CommandSafetyClassification
+{
+    ReadOnly,
+    Mutating,
+    Blocked,
+    Unknown,
+    Invalid
+}
 
 /// <summary>
 /// Executes PowerShell commands locally or remotely via WinRM
@@ -40,7 +50,7 @@ public class PowerShellExecutor : IDisposable
     private readonly object _historyLock = new();
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private readonly SemaphoreSlim _initLock = new(1, 1);
-    private ExecutionMode _executionMode = ExecutionMode.Safe;
+    private ExecutionMode _executionMode = ExecutionMode.Strict;
     private IReadOnlyList<string>? _customSafeCommands;
     private HashSet<string>? _jeaAllowedCommands;
 

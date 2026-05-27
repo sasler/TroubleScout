@@ -15,9 +15,14 @@ internal sealed class SessionPermissionHandler
     private readonly CommandApprovalPrompt _promptCommandApproval;
     private readonly UrlApprovalPrompt _promptUrlApproval;
     private readonly McpApprovalPrompt _promptMcpApproval;
+    private readonly IAutoCommandApprovalEvaluator? _autoCommandApprovalEvaluator;
+    private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
     private readonly HashSet<string> _approvedUrlsForSession = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _approvedDelegatedUrls = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _approvedMcpServersForSession = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _approvedDelegatedMcpInvocations = new(StringComparer.Ordinal);
     private readonly HashSet<string> _persistedSeededApprovals = new(StringComparer.OrdinalIgnoreCase);
+    private int _activeSubagentCount;
     private bool _allowAllUrlsForSession;
     private AppSettings? _appSettings;
 
@@ -28,7 +33,9 @@ internal sealed class SessionPermissionHandler
         CommandApprovalPrompt promptCommandApproval,
         UrlApprovalPrompt promptUrlApproval,
         McpApprovalPrompt promptMcpApproval,
-        AppSettings? appSettings = null)
+        AppSettings? appSettings = null,
+        IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
+        Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null)
     {
         _getExecutionMode = getExecutionMode;
         _getConfiguredSafeCommands = getConfiguredSafeCommands;
@@ -37,21 +44,18 @@ internal sealed class SessionPermissionHandler
         _promptUrlApproval = promptUrlApproval;
         _promptMcpApproval = promptMcpApproval;
         _appSettings = appSettings;
+        _autoCommandApprovalEvaluator = autoCommandApprovalEvaluator;
+        _recordAutoAuthorization = recordAutoAuthorization;
     }
 
-    internal Task<PermissionRequestResult> HandleAsync(PermissionRequest request, PermissionInvocation invocation)
+    internal async Task<PermissionRequestResult> HandleAsync(PermissionRequest request, PermissionInvocation invocation)
     {
         _ = invocation;
 
         var kind = PermissionEvaluator.NormalizePermissionKind(request.Kind);
         if (kind is "read" or "custom-tool")
         {
-            return Task.FromResult(Approved());
-        }
-
-        if (_getExecutionMode() == ExecutionMode.Yolo)
-        {
-            return Task.FromResult(Approved());
+            return Approved();
         }
 
         if (kind == "shell")
@@ -64,38 +68,63 @@ internal sealed class SessionPermissionHandler
             {
                 if (shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
                 {
-                    return Task.FromResult(Approved());
+                    return Approved();
                 }
 
                 if (!shellAssessment.Validation.IsAllowed && !shellAssessment.Validation.RequiresApproval)
                 {
-                    return Task.FromResult(Rejected());
+                    return Rejected();
+                }
+
+                if (_getExecutionMode() == ExecutionMode.Auto
+                    && shellAssessment.Validation.Classification == CommandSafetyClassification.Unknown
+                    && _autoCommandApprovalEvaluator != null)
+                {
+                    var decision = await _autoCommandApprovalEvaluator.EvaluateAsync(shellAssessment.FullCommand);
+                    if (decision is { IsReadOnly: true })
+                    {
+                        _recordAutoAuthorization?.Invoke(shellAssessment.Command, decision);
+                        return Approved();
+                    }
+                }
+
+                if (Volatile.Read(ref _activeSubagentCount) > 0)
+                {
+                    return Rejected();
                 }
 
                 var shellApproval = _promptCommandApproval(
                     shellAssessment.Command,
                     shellAssessment.PromptReason,
                     shellAssessment.ImpactText);
-                return Task.FromResult(shellApproval == ApprovalResult.Approved ? Approved() : Rejected());
+                return shellApproval == ApprovalResult.Approved ? Approved() : Rejected();
             }
         }
 
         if (kind == "url")
         {
+            if (Volatile.Read(ref _activeSubagentCount) > 0)
+            {
+                var delegatedUrl = NormalizeUrlForApproval(GetUrlFromPermissionRequest(request));
+                return !string.IsNullOrWhiteSpace(delegatedUrl) && _approvedDelegatedUrls.Remove(delegatedUrl)
+                    ? Approved()
+                    : Rejected();
+            }
+
             if (TryIsApprovedUrlRequest(request))
             {
-                return Task.FromResult(Approved());
+                return Approved();
             }
 
             var url = GetUrlFromPermissionRequest(request);
             var intention = GetUrlPermissionIntention(request);
             var urlApproval = _promptUrlApproval(url ?? "URL fetch", intention);
-            return Task.FromResult(CreateUrlPermissionApprovalResult(url, urlApproval));
+            return CreateUrlPermissionApprovalResult(url, urlApproval);
         }
 
         if (kind == "mcp")
         {
-            return Task.FromResult(HandleMcpPermissionRequest(request));
+            return HandleMcpPermissionRequest(request);
         }
 
         var description = PermissionEvaluator.DescribePermissionRequest(request);
@@ -103,13 +132,85 @@ internal sealed class SessionPermissionHandler
             description,
             PermissionEvaluator.BuildPermissionPromptReason(kind),
             null);
-        return Task.FromResult(approval == ApprovalResult.Approved ? Approved() : Rejected());
+        return approval == ApprovalResult.Approved ? Approved() : Rejected();
     }
 
     internal void ResetUrlApprovals()
     {
         _approvedUrlsForSession.Clear();
+        _approvedDelegatedUrls.Clear();
         _allowAllUrlsForSession = false;
+    }
+
+    internal void BeginSubagentRun() => Interlocked.Increment(ref _activeSubagentCount);
+
+    internal void EndSubagentRun()
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _activeSubagentCount);
+            if (current <= 0)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _activeSubagentCount, current - 1, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    internal Task<string> AuthorizeDelegatedUrlAsync(string url, string? intention)
+    {
+        var normalizedUrl = NormalizeUrlForApproval(url);
+        if (string.IsNullOrWhiteSpace(normalizedUrl))
+        {
+            return Task.FromResult("[ERROR] An exact URL is required for delegated authorization.");
+        }
+
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            return Task.FromResult("[DENIED] Protected delegated URL access requires interactive approval, which is unavailable in headless mode.");
+        }
+
+        var approval = _promptUrlApproval(url, intention);
+        if (approval == UrlApprovalResult.Deny)
+        {
+            return Task.FromResult("[DENIED] User denied delegated URL access.");
+        }
+
+        _approvedDelegatedUrls.Add(normalizedUrl);
+        return Task.FromResult("[APPROVED] Delegate access to this exact URL once.");
+    }
+
+    internal Task<string> AuthorizeDelegatedMcpAsync(string serverName, string toolName, string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(toolName))
+        {
+            return Task.FromResult("[ERROR] Exact MCP server and tool names are required for delegated authorization.");
+        }
+
+        if (_approvedMcpServersForSession.Contains(serverName)
+            || McpReadOnlyHeuristic.IsReadOnlyToolName(toolName))
+        {
+            return Task.FromResult("[OK] This delegated MCP invocation is already allowed.");
+        }
+
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            return Task.FromResult("[DENIED] Protected delegated MCP access requires interactive approval, which is unavailable in headless mode.");
+        }
+
+        var role = _getMcpServerRole(serverName);
+        var approval = _promptMcpApproval(serverName, toolName, arguments, role);
+        if (approval == McpApprovalResult.Deny)
+        {
+            return Task.FromResult("[DENIED] User denied delegated MCP access.");
+        }
+
+        _approvedDelegatedMcpInvocations.Add(BuildDelegatedMcpKey(serverName, toolName, arguments));
+        return Task.FromResult("[APPROVED] Delegate this exact MCP invocation once; delegated authorization does not grant broader server trust.");
     }
 
     internal void UpdateAppSettings(AppSettings? settings)
@@ -263,6 +364,17 @@ internal sealed class SessionPermissionHandler
             return Approved();
         }
 
+        var delegatedKey = BuildDelegatedMcpKey(serverName, toolName ?? string.Empty, argumentsPreview);
+        if (_approvedDelegatedMcpInvocations.Remove(delegatedKey))
+        {
+            return Approved();
+        }
+
+        if (Volatile.Read(ref _activeSubagentCount) > 0)
+        {
+            return Rejected();
+        }
+
         var role = _getMcpServerRole(serverName);
         var approval = _promptMcpApproval(
             serverName,
@@ -330,5 +442,8 @@ internal sealed class SessionPermissionHandler
             ? parsed.AbsoluteUri
             : url.Trim();
     }
+
+    private static string BuildDelegatedMcpKey(string serverName, string toolName, string? arguments) =>
+        $"{serverName.Trim()}\n{toolName.Trim()}\n{arguments?.Trim() ?? string.Empty}";
 
 }

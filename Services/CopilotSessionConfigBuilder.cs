@@ -17,7 +17,8 @@ internal sealed record CopilotSessionConfigOptions(
     ICollection<string>? ConfigurationWarnings = null,
     ProviderConfig? Provider = null,
     IReadOnlyList<string>? SkillDirectories = null,
-    IReadOnlyList<string>? DisabledSkills = null);
+    IReadOnlyList<string>? DisabledSkills = null,
+    IReadOnlyDictionary<string, string>? AgentModels = null);
 
 internal static class CopilotSessionConfigBuilder
 {
@@ -33,11 +34,28 @@ internal static class CopilotSessionConfigBuilder
             SystemMessage = options.SystemMessage,
             // Some OpenAI-compatible gateways reject streaming usage options emitted by the SDK.
             Streaming = !options.UseByokOpenAi,
-            IncludeSubAgentStreamingEvents = false,
+            // Child events are retained for report/audit attribution and are not rendered in the root response stream.
+            IncludeSubAgentStreamingEvents = true,
             Tools = options.Tools.Cast<AIFunctionDeclaration>().ToList(),
             DefaultAgent = new DefaultAgentConfig
             {
-                ExcludedTools = ["web_search"]
+                ExcludedTools =
+                [
+                    "web_search",
+                    "shell",
+                    "shell.exec",
+                    "bash",
+                    "powershell",
+                    "run_powershell",
+                    "run_delegated_powershell",
+                    "get_system_info",
+                    "get_event_logs",
+                    "get_services",
+                    "get_processes",
+                    "get_disk_space",
+                    "get_network_info",
+                    "get_performance_counters"
+                ]
             },
             CustomAgents = BuildCustomAgentConfigs(options),
             ClientName = "TroubleScout",
@@ -73,78 +91,53 @@ internal static class CopilotSessionConfigBuilder
 
     private static IList<CustomAgentConfig> BuildCustomAgentConfigs(CopilotSessionConfigOptions options)
     {
-        var agents = new List<CustomAgentConfig>
-        {
+        var delegatedMcpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase);
+        AddConfiguredRoleServer(options.MonitoringMcpServer, options.AvailableMcpServers, delegatedMcpServers);
+        AddConfiguredRoleServer(options.TicketingMcpServer, options.AvailableMcpServers, delegatedMcpServers);
+
+        return
+        [
             new()
             {
-                Name = "server-evidence-collector",
-                DisplayName = "Server Evidence Collector",
-                Description = "Collects targeted server and MCP evidence, then returns only the relevant findings.",
+                Name = "troubleshooting-subagent",
+                DisplayName = "Troubleshooting Subagent",
+                Description = "Collects targeted server, MCP, and research evidence, then returns only relevant findings.",
                 Infer = true,
+                Model = GetSubagentModel(options),
+                Tools =
+                [
+                    "get_system_info",
+                    "get_event_logs",
+                    "get_services",
+                    "get_processes",
+                    "get_disk_space",
+                    "get_network_info",
+                    "get_performance_counters",
+                    "run_delegated_powershell",
+                    "web_search"
+                ],
+                McpServers = delegatedMcpServers.Count == 0 ? null : delegatedMcpServers,
                 Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentServerEvidenceCollector)
-            },
-            new()
-            {
-                Name = "issue-researcher",
-                DisplayName = "Issue Researcher",
-                Description = "Researches detected errors, symptoms, and event IDs on the web and returns concise findings.",
-                Infer = true,
-                Tools = ["web_search"],
-                Prompt = PromptTemplateLoader.Render(PromptTemplateIds.AgentIssueResearcher)
             }
-        };
-
-        var monitoringAgent = BuildRoleScopedAgent(
-            "monitoring-investigator",
-            "Monitoring Investigator",
-            options.MonitoringMcpServer,
-            options.AvailableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentMonitoringInvestigator));
-        if (monitoringAgent != null)
-        {
-            agents.Add(monitoringAgent);
-        }
-
-        var ticketingAgent = BuildRoleScopedAgent(
-            "ticket-investigator",
-            "Ticket Investigator",
-            options.TicketingMcpServer,
-            options.AvailableMcpServers,
-            PromptTemplateLoader.Render(PromptTemplateIds.AgentTicketInvestigator));
-        if (ticketingAgent != null)
-        {
-            agents.Add(ticketingAgent);
-        }
-
-        return agents;
+        ];
     }
 
-    private static CustomAgentConfig? BuildRoleScopedAgent(
-        string name,
-        string displayName,
+    private static void AddConfiguredRoleServer(
         string? configuredServerName,
         IReadOnlyDictionary<string, McpServerConfig> availableMcpServers,
-        string prompt)
+        IDictionary<string, McpServerConfig> delegatedMcpServers)
     {
-        if (string.IsNullOrWhiteSpace(configuredServerName)
-            || !availableMcpServers.TryGetValue(configuredServerName, out var serverConfig))
+        if (!string.IsNullOrWhiteSpace(configuredServerName)
+            && availableMcpServers.TryGetValue(configuredServerName, out var serverConfig))
         {
-            return null;
+            delegatedMcpServers[configuredServerName] = serverConfig;
         }
-
-        return new CustomAgentConfig
-        {
-            Name = name,
-            DisplayName = displayName,
-            Description = $"Uses the mapped MCP role '{configuredServerName}' and returns concise findings.",
-            Infer = true,
-            McpServers = new Dictionary<string, McpServerConfig>(StringComparer.OrdinalIgnoreCase)
-            {
-                [configuredServerName] = serverConfig
-            },
-            Prompt = prompt
-        };
     }
+
+    private static string? GetSubagentModel(CopilotSessionConfigOptions options) =>
+        options.AgentModels != null && options.AgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var model) && !string.IsNullOrWhiteSpace(model)
+            ? model.Trim()
+            : null;
 
     private static void ValidateConfiguredMcpRole(
         string roleName,

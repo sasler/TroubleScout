@@ -1,3 +1,4 @@
+using GitHub.Copilot;
 using TroubleScout.Services;
 using Xunit;
 
@@ -72,6 +73,61 @@ public class SessionUsageTrackerTests
         var tracker = new SessionUsageTracker();
 
         Assert.Null(tracker.GetCostEstimateDisplay());
+    }
+
+    [Fact]
+    public void RecordGitHubAiCredits_AndSubagentCompletion_ShouldTrackDelegatedBilling()
+    {
+        var tracker = new SessionUsageTracker();
+
+        tracker.RecordGitHubAiCredits(0.75m);
+        tracker.RecordSubagentCompletion(120);
+
+        Assert.Equal("~0.75 AI credits", tracker.GetAiCreditsDisplay());
+        Assert.Equal(1, tracker.SubagentCalls);
+        Assert.Equal(120, tracker.SubagentTokens);
+    }
+
+    [Fact]
+    public void RecordSubagentFailure_ShouldTrackFailedDelegatedUsage()
+    {
+        var tracker = new SessionUsageTracker();
+
+        tracker.RecordSubagentFailure(45);
+
+        Assert.Equal(1, tracker.SubagentCalls);
+        Assert.Equal(45, tracker.SubagentTokens);
+    }
+
+    [Fact]
+    public void HandleSessionLifecycleStateEvent_SubagentFailure_ShouldRecordFailedDelegatedUsage()
+    {
+        var tracker = new SessionUsageTracker();
+        var telemetry = new SessionEventTelemetry(
+            tracker,
+            new HashSet<string>(),
+            new HashSet<string>(),
+            () => false,
+            () => null,
+            () => null,
+            _ => { },
+            _ => { },
+            _ => { });
+
+        telemetry.HandleSessionLifecycleStateEvent(new SubagentFailedEvent
+        {
+            Data = new SubagentFailedData
+            {
+                AgentDisplayName = "Server Evidence Collector",
+                AgentName = "server-evidence-collector",
+                ToolCallId = "sub-1",
+                TotalTokens = 45,
+                Error = "timeout"
+            }
+        });
+
+        Assert.Equal(1, tracker.SubagentCalls);
+        Assert.Equal(45, tracker.SubagentTokens);
     }
 
     [Fact]

@@ -26,7 +26,9 @@ internal sealed record SessionStatusSnapshot(
     IReadOnlyCollection<string> ApprovedMcpServers,
     IReadOnlyList<string> PersistedApprovedMcpServers,
     string ExecutionMode,
-    string EffectiveTargetServer);
+    string EffectiveTargetServer,
+    string GitHubBillingDisplayMode,
+    IReadOnlyDictionary<string, string> AgentModels);
 
 internal static class SessionStatusBuilder
 {
@@ -48,7 +50,9 @@ internal static class SessionStatusBuilder
             ReasoningEffort = snapshot.ReasoningDisplay,
             SessionInputTokens = snapshot.UsageTracker.TotalInputTokens > 0 ? snapshot.UsageTracker.TotalInputTokens : null,
             SessionOutputTokens = snapshot.UsageTracker.TotalOutputTokens > 0 ? snapshot.UsageTracker.TotalOutputTokens : null,
-            SessionCostEstimate = GetSessionCostEstimateDisplay(snapshot)
+            SessionCostEstimate = GetSessionCostEstimateDisplay(snapshot),
+            SubagentCalls = snapshot.UsageTracker.SubagentCalls,
+            SubagentTokens = snapshot.UsageTracker.SubagentTokens > 0 ? snapshot.UsageTracker.SubagentTokens : null
         };
     }
 
@@ -61,6 +65,7 @@ internal static class SessionStatusBuilder
         fields.Add((ConsoleUI.StatusSectionSeparator, "Provider"));
         fields.Add(("Provider", snapshot.ActiveProviderDisplayName ?? "default"));
         fields.Add(("Auth mode", snapshot.UseByokOpenAi ? "BYOK (OpenAI)" : "GitHub Copilot"));
+        fields.Add(("Subagent model", snapshot.AgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var subagentModel) ? subagentModel : "inherit"));
         fields.Add(("GitHub auth", snapshot.IsGitHubCopilotAuthenticated ? "Authenticated" : "Not authenticated"));
         fields.Add(("BYOK", !string.IsNullOrWhiteSpace(snapshot.ByokApiKey) && LooksLikeUrl(snapshot.ByokBaseUrl) ? "Configured" : "Not configured"));
         if (!string.IsNullOrWhiteSpace(snapshot.ReasoningDisplay))
@@ -69,7 +74,10 @@ internal static class SessionStatusBuilder
         }
         fields.Add(("Session ID", snapshot.SessionId));
 
-        if (snapshot.ToolInvocationCount > 0 || (snapshot.LastUsage != null && snapshot.LastUsage.HasAny))
+        if (snapshot.ToolInvocationCount > 0
+            || snapshot.UsageTracker.SubagentCalls > 0
+            || !snapshot.UseByokOpenAi
+            || (snapshot.LastUsage != null && snapshot.LastUsage.HasAny))
         {
             fields.Add((ConsoleUI.StatusSectionSeparator, "Usage"));
         }
@@ -77,6 +85,23 @@ internal static class SessionStatusBuilder
         if (snapshot.ToolInvocationCount > 0)
         {
             fields.Add(("Tools used", snapshot.ToolInvocationCount.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        if (snapshot.UsageTracker.SubagentCalls > 0)
+        {
+            fields.Add(("Subagents used", snapshot.UsageTracker.SubagentCalls.ToString(CultureInfo.InvariantCulture)));
+            fields.Add(("Subagent tokens", snapshot.UsageTracker.SubagentTokens.ToString("N0", CultureInfo.InvariantCulture)));
+        }
+
+        if (!snapshot.UseByokOpenAi)
+        {
+            fields.Add(("Billing display", snapshot.GitHubBillingDisplayMode));
+        }
+
+        var costDisplay = GetSessionCostEstimateDisplay(snapshot);
+        if (!string.IsNullOrWhiteSpace(costDisplay))
+        {
+            fields.Add(("Session cost", costDisplay));
         }
 
         if (snapshot.LastUsage != null && snapshot.LastUsage.HasAny)
@@ -114,7 +139,6 @@ internal static class SessionStatusBuilder
         }
         AddCapabilityField(fields, "Skills configured", snapshot.ConfiguredSkills);
         AddCapabilityField(fields, "Skills used", snapshot.RuntimeSkills.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
-
         if (snapshot.ConfigurationWarnings.Count > 0)
         {
             fields.Add(("Capability warnings", string.Join(" | ", snapshot.ConfigurationWarnings)));
@@ -145,7 +169,13 @@ internal static class SessionStatusBuilder
             ConfiguredSkills: snapshot.ConfiguredSkills.ToList(),
             UsedSkills: snapshot.RuntimeSkills.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
             ExecutionMode: snapshot.ExecutionMode,
-            TargetServer: snapshot.EffectiveTargetServer);
+            TargetServer: snapshot.EffectiveTargetServer)
+        {
+            AgentModels = new Dictionary<string, string>(snapshot.AgentModels, StringComparer.OrdinalIgnoreCase),
+            GitHubBillingDisplayMode = snapshot.UseByokOpenAi ? null : snapshot.GitHubBillingDisplayMode,
+            SubagentCalls = snapshot.UsageTracker.SubagentCalls,
+            SubagentTokens = snapshot.UsageTracker.SubagentTokens
+        };
     }
 
     private static string? GetSessionCostEstimateDisplay(SessionStatusSnapshot snapshot)
@@ -153,6 +183,11 @@ internal static class SessionStatusBuilder
         if (snapshot.UseByokOpenAi)
         {
             return snapshot.UsageTracker.GetCostEstimateDisplay();
+        }
+
+        if (snapshot.GitHubBillingDisplayMode == AppSettingsStore.AiCreditsBillingMode)
+        {
+            return snapshot.UsageTracker.GetAiCreditsDisplay();
         }
 
         return snapshot.SessionPremiumRequestCost is > 0

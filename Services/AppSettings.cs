@@ -19,10 +19,17 @@ public sealed class AppSettings
     public string? TicketingMcpServer { get; set; }
     public List<string>? PersistedApprovedMcpServers { get; set; }
     public string? Theme { get; set; }
+    public Dictionary<string, Dictionary<string, string>>? AgentModelProfiles { get; set; }
+    public string? GitHubBillingDisplayMode { get; set; }
 }
 
 public static class AppSettingsStore
 {
+    internal const string GitHubProviderProfile = "github";
+    internal const string ByokProviderProfile = "byok";
+    internal const string AiCreditsBillingMode = "ai-credits";
+    internal const string LegacyPremiumRequestsBillingMode = "premium-requests-legacy";
+    internal const string SubagentModelRole = "subagent";
     private static string? _settingsPath;
     internal static readonly string[] DefaultSafeCommands =
     [
@@ -51,11 +58,23 @@ public static class AppSettingsStore
 
     private const string DefaultInvestigationApproach = """
         ## Investigation Approach
+        - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
+        - Delegate high-volume server evidence collection to the evidence-collection sub-agent and use its concise findings
+        - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
+        - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+        - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
+        - Return a complete answer for the current request and then stop; the user can send another query for additional work
+        - If one relevant diagnostic approach yields no results, try the next most likely source before concluding
+        - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
+        """;
+
+    private const string LegacyDefaultInvestigationApproach = """
+        ## Investigation Approach
         - When investigating an issue, exhaust ALL available diagnostic tools and data sources before asking the user for more information
         - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted the relevant diagnostics
         - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
         - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
-        - When you are ready for the user to choose what happens next, end with a short `## Ready for next action` section
+        - Return a complete answer for the current request and then stop; the user can send another query for additional work
         - If one diagnostic approach yields no results, try alternative approaches before concluding
         - Gather data from ALL relevant sources (event logs, services, processes, performance counters, disk, network) in a single investigation pass
         """;
@@ -90,12 +109,29 @@ public static class AppSettingsStore
     private const string DefaultSafetyGuidance = """
         ## Safety
         - Only read-only Get-* commands execute automatically
-        - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
-        - In Safe mode, only mutating PowerShell commands (run_powershell with Set-*, Stop-*, Start-*, Remove-*, Restart-* etc.) require user confirmation
-        - In YOLO mode, remediation commands can execute without confirmation
-        - For ANY mutating task, you MUST call the run_powershell tool with the exact command
+        - Proven read-only diagnostic tools execute automatically in all modes
+        - In Strict mode, mutations and unknown commands require user confirmation
+        - In Auto mode, only parseable commands not classified deterministically may be reviewed by the configured subagent model; mutations still require user confirmation
+        - For ANY mutating task, you MUST obtain authorization for the exact command and delegate only that authorized operation to the troubleshooting subagent
         - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
-        - Never claim a command was executed unless run_powershell returned execution output
+        - Never claim a command was executed unless the delegated execution tool returned execution output
+        - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
+        - If no tool was executed, clearly state that no command has been run yet
+        - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
+        - If a capability is unavailable after an attempt, clearly state what you tried and what was unavailable
+        - Never suggest commands that could cause data loss without clear warnings
+        - Always consider the impact of recommended actions
+        """;
+
+    private const string LegacyDefaultSafetyGuidance = """
+        ## Safety
+        - Only read-only Get-* commands execute automatically
+        - Read-only diagnostic tools execute automatically in ALL modes (Safe and YOLO) — never wait for approval before using them
+        - In Strict mode, mutating PowerShell commands delegated through run_delegated_powershell require user confirmation before delegation
+        - In YOLO mode, remediation commands can execute without confirmation
+        - For ANY mutating task, you MUST authorize the exact command before delegating it through run_delegated_powershell
+        - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
+        - Never claim a command was executed unless run_delegated_powershell returned execution output
         - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
         - If no tool was executed, clearly state that no command has been run yet
         - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability
@@ -195,7 +231,9 @@ public static class AppSettingsStore
             MonitoringMcpServer = NormalizeOptionalValue(settings.MonitoringMcpServer),
             TicketingMcpServer = NormalizeOptionalValue(settings.TicketingMcpServer),
             PersistedApprovedMcpServers = NormalizeMcpServerList(settings.PersistedApprovedMcpServers),
-            Theme = NormalizeTheme(settings.Theme)
+            Theme = NormalizeTheme(settings.Theme),
+            AgentModelProfiles = NormalizeAgentModelProfiles(settings.AgentModelProfiles),
+            GitHubBillingDisplayMode = NormalizeGitHubBillingDisplayMode(settings.GitHubBillingDisplayMode)
         };
 
         var json = JsonSerializer.Serialize(persisted, new JsonSerializerOptions
@@ -253,6 +291,20 @@ public static class AppSettingsStore
             changed = true;
         }
 
+        var normalizedAgentModelProfiles = NormalizeAgentModelProfiles(settings.AgentModelProfiles);
+        if (!AgentProfilesEqual(settings.AgentModelProfiles, normalizedAgentModelProfiles))
+        {
+            settings.AgentModelProfiles = normalizedAgentModelProfiles;
+            changed = true;
+        }
+
+        var normalizedBillingMode = NormalizeGitHubBillingDisplayMode(settings.GitHubBillingDisplayMode);
+        if (!string.Equals(settings.GitHubBillingDisplayMode, normalizedBillingMode, StringComparison.Ordinal))
+        {
+            settings.GitHubBillingDisplayMode = normalizedBillingMode;
+            changed = true;
+        }
+
         if (settings.SafeCommands == null)
         {
             settings.SafeCommands = DefaultSafeCommands.ToList();
@@ -274,7 +326,23 @@ public static class AppSettingsStore
                     continue;
                 }
 
-                normalizedOverrides[entry.Key.Trim()] = entry.Value;
+                var key = entry.Key.Trim();
+                if (key.Equals("investigation_approach", StringComparison.OrdinalIgnoreCase)
+                    && IsLegacyDefaultInvestigationApproach(entry.Value))
+                {
+                    normalizedOverrides[key] = DefaultInvestigationApproach;
+                    changed = true;
+                }
+                else if (key.Equals("safety", StringComparison.OrdinalIgnoreCase)
+                    && IsLegacyDefaultSafetyGuidance(entry.Value))
+                {
+                    normalizedOverrides[key] = DefaultSafetyGuidance;
+                    changed = true;
+                }
+                else
+                {
+                    normalizedOverrides[key] = entry.Value;
+                }
             }
 
             foreach (var (key, value) in DefaultSystemPromptOverrides)
@@ -374,6 +442,102 @@ public static class AppSettingsStore
 
         var normalized = value.Trim().ToLowerInvariant();
         return SupportedThemes.Contains(normalized) ? normalized : "dark";
+    }
+
+    private static bool IsLegacyDefaultInvestigationApproach(string value) =>
+        string.Equals(value.Trim(), LegacyDefaultInvestigationApproach.Trim(), StringComparison.Ordinal)
+        || (value.Contains("exhaust ALL available diagnostic tools", StringComparison.Ordinal)
+            && value.Contains("Gather data from ALL relevant sources", StringComparison.Ordinal));
+
+    private static bool IsLegacyDefaultSafetyGuidance(string value) =>
+        string.Equals(value.Trim(), LegacyDefaultSafetyGuidance.Trim(), StringComparison.Ordinal)
+        || (value.Contains("Safe and YOLO", StringComparison.Ordinal)
+            && value.Contains("In YOLO mode", StringComparison.Ordinal));
+
+    internal static string GetProviderProfileKey(bool useByokOpenAi) =>
+        useByokOpenAi ? ByokProviderProfile : GitHubProviderProfile;
+
+    internal static IReadOnlyDictionary<string, string> GetAgentModelsForProvider(AppSettings settings, bool useByokOpenAi)
+    {
+        var profile = GetProviderProfileKey(useByokOpenAi);
+        return settings.AgentModelProfiles != null
+            && settings.AgentModelProfiles.TryGetValue(profile, out var models)
+                ? models
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    internal static string ResolveGitHubBillingDisplayMode(string? value, DateTimeOffset? now = null)
+    {
+        var normalized = NormalizeGitHubBillingDisplayMode(value);
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        return (now ?? DateTimeOffset.Now) >= new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero)
+            ? AiCreditsBillingMode
+            : LegacyPremiumRequestsBillingMode;
+    }
+
+    internal static string? NormalizeGitHubBillingDisplayMode(string? value)
+    {
+        var normalized = NormalizeOptionalValue(value)?.ToLowerInvariant();
+        return normalized is AiCreditsBillingMode or LegacyPremiumRequestsBillingMode ? normalized : null;
+    }
+
+    internal static Dictionary<string, Dictionary<string, string>>? NormalizeAgentModelProfiles(
+        IReadOnlyDictionary<string, Dictionary<string, string>>? profiles)
+    {
+        if (profiles == null)
+        {
+            return null;
+        }
+
+        var normalized = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles)
+        {
+            var provider = profile.Key.Trim().ToLowerInvariant();
+            if (provider is not (GitHubProviderProfile or ByokProviderProfile) || profile.Value == null)
+            {
+                continue;
+            }
+
+            var configuredModels = profile.Value
+                .Where(entry => NormalizeOptionalValue(entry.Value) != null)
+                .ToDictionary(entry => entry.Key.Trim().ToLowerInvariant(), entry => entry.Value.Trim(), StringComparer.OrdinalIgnoreCase);
+            var subagentModel = configuredModels.TryGetValue(SubagentModelRole, out var selectedModel)
+                ? selectedModel
+                : new[] { "approval", "evidence", "research", "monitoring", "ticketing" }
+                    .Select(role => configuredModels.TryGetValue(role, out var legacyModel) ? legacyModel : null)
+                    .FirstOrDefault(model => model != null);
+
+            if (!string.IsNullOrWhiteSpace(subagentModel))
+            {
+                normalized[provider] = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [SubagentModelRole] = subagentModel
+                };
+            }
+        }
+
+        return normalized.Count == 0 ? null : normalized;
+    }
+
+    private static bool AgentProfilesEqual(
+        IReadOnlyDictionary<string, Dictionary<string, string>>? left,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? right)
+    {
+        var normalizedLeft = left ?? new Dictionary<string, Dictionary<string, string>>();
+        var normalizedRight = right ?? new Dictionary<string, Dictionary<string, string>>();
+        if (normalizedLeft.Count != normalizedRight.Count)
+        {
+            return false;
+        }
+
+        return normalizedLeft.All(profile => normalizedRight.TryGetValue(profile.Key, out var values)
+            && profile.Value.Count == values.Count
+            && profile.Value.All(value => values.TryGetValue(value.Key, out var model)
+                && string.Equals(value.Value, model, StringComparison.Ordinal)));
     }
 
     internal static List<string>? NormalizeMcpServerList(IEnumerable<string>? values)

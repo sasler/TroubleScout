@@ -29,7 +29,7 @@ internal static class SlashCommandRegistry
             [
                 "- `save` writes the current recorded prompts, assistant replies, tool actions, status bars, and session summary metadata to a versioned JSON file.",
                 "- `load` validates a transcript file and replaces the current recorded history after confirmation when history already exists.",
-                "Loaded transcripts are immediately available to `/report` and `/model` second-opinion context.",
+                "Loaded transcripts are immediately available to `/report`.",
                 "Transcript persistence is always explicit; TroubleScout does not automatically write transcript files."
             ],
             ["/transcript save C:\\Temp\\troublescout-session.json", "/transcript load C:\\Temp\\troublescout-session.json"]),
@@ -44,13 +44,16 @@ internal static class SlashCommandRegistry
                 "JEA executions never use `AddScript(...)`; commands are built with the PowerShell command API so no-language endpoints stay valid."
             ],
             ["/jea server1 JEA-Admins"]),
-        new(Diagnostics, "/mode <safe|yolo>", "Set the PowerShell execution mode for the current session.", ["/mode"],
+        new(Diagnostics, "/mode <strict|auto>", "Set the PowerShell execution mode for the current session.", ["/mode"],
             [
-                "- `safe` (default): only commands matching the safe list (`Get-*`, `Select-*`, `Sort-*`, etc.) auto-execute. Mutations require approval.",
-                "- `yolo`: remediation commands can execute without confirmation. Use with care."
+                "- `strict` (default): proven read-only commands auto-execute; mutations and unknown commands require approval.",
+                "- `auto`: unknown command candidates can be evaluated in a no-tools safety session using the selected subagent model; known mutations still require approval."
             ]),
 
-        new(Configuration, "/model", "Choose another AI model and session handoff mode interactively.", ["/model"]),
+        new(Configuration, "/model", "Choose the primary model followed by the same-provider delegated evidence model; model changes start a clean AI session.", ["/model"],
+            ["A faster or lower-cost subagent model is recommended for high-volume evidence collection."]),
+        new(Configuration, "/agent-model [model|inherit]", "Backward-compatible shortcut to configure the active-provider delegated model and Auto safety review.", ["/agent-model"],
+            ["An explicit subagent model must be selected before `/mode auto` can be enabled."]),
         new(Configuration, "/reasoning [auto|<effort>]", "Set the reasoning effort for the current model when supported.", ["/reasoning"],
             ["With no argument, prompts interactively."]),
         new(Configuration, "/settings", "Open `settings.json` in the default editor, then reload prompt and safety configuration after the editor exits.", ["/settings"]),

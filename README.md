@@ -134,9 +134,10 @@ If you want to use an OpenAI-compatible provider instead, configure it from insi
 Useful related options:
 
 - `--model` selects a specific model.
+- `--subagent-model` selects the model used for delegated evidence collection.
 - `--openai-base-url` points to a compatible endpoint.
 - `--openai-api-key` passes the API key directly.
-- `/model` switches models interactively.
+- `/model` selects the primary model and then a same-provider sub-agent model; a faster or lower-cost delegated model is usually appropriate.
 - `/reasoning` sets the reasoning effort for supported models.
 - `/byok` configures or switches BYOK mode from inside the app.
 
@@ -172,9 +173,10 @@ A short reference is shown below. The full per-command documentation lives in
 | `/clear` | Start a new AI session. |
 | `/settings` | Open `settings.json`, then reload prompt and safety configuration. |
 | `/mcp-role` | Configure monitoring and ticketing MCP role mappings. |
-| `/model` | Choose another model or provider. |
+| `/model` | Choose the primary model followed by the delegated evidence model; changes start a clean session. |
 | `/reasoning [auto or effort]` | Set reasoning effort for the current model when supported. |
-| `/mode <safe or yolo>` | Change the PowerShell execution mode. |
+| `/mode <strict or auto>` | Change the PowerShell execution mode. `auto` reviews only unknown read-only command candidates in a no-tools safety session using the selected subagent model. |
+| `/agent-model [model or inherit]` | Backward-compatible shortcut for the delegated model used by investigation and Auto safety review. |
 | `/server server1 [server2 ...]` | Connect to one or more additional servers, using spaces or commas. |
 | `/jea [server] [configurationName]` | Connect to a JEA constrained endpoint. |
 | `/login` | Run GitHub Copilot login inside TroubleScout. |
@@ -183,7 +185,7 @@ A short reference is shown below. The full per-command documentation lives in
 | `/capabilities` | Show configured and used MCP servers and skills. |
 | `/history` | Show PowerShell command history. |
 | `/report` | Generate and open the HTML session report. |
-| `/transcript save or load <path>` | Save or load a redacted transcript for report and second-opinion context. |
+| `/transcript save or load <path>` | Save or load a redacted transcript for reporting. |
 | `/exit` or `/quit` | End the session. |
 
 ## Command-Line Reference
@@ -194,7 +196,8 @@ A short reference is shown below. The full per-command documentation lives in
 | `--prompt`, `-p` | Run a single prompt in headless mode. |
 | `--jea <server> <configurationName>` | Preconnect one JEA session at startup. |
 | `--model`, `-m` | Select a model such as `gpt-4.1`. |
-| `--mode <safe or yolo>` | Set the PowerShell execution mode. |
+| `--subagent-model` | Select the same-provider model used for delegated evidence collection. |
+| `--mode <strict or auto>` | Set the PowerShell execution mode (default: `strict`). |
 | `--mcp-config` | Set a custom MCP config path. |
 | `--skills-dir` | Add an extra skills directory. |
 | `--disable-skill` | Disable a loaded skill by name. |
@@ -289,7 +292,9 @@ the app with `/settings`, which reloads after you save.
 | `ByokOpenAiBaseUrl` | string | Override OpenAI-compatible endpoint URL. |
 | `ByokOpenAiApiKey` | string | Plain API key (only when DPAPI encryption is unavailable). Avoid hand-editing. |
 | `ByokOpenAiApiKeyEncrypted` | string | DPAPI-encrypted API key, set automatically by `/byok`. |
-| `SafeCommands` | string[] | PowerShell command patterns that auto-execute in Safe mode (defaults: `Get-*`, `Select-*`, `Sort-*`, `Where-*`, `Measure-*`, `Test-*`, `ConvertTo-*`, `ConvertFrom-*`, `Compare-*`, `Find-*`, `Format-*`, ...). Replace, don't append. |
+| `SafeCommands` | string[] | PowerShell command patterns proven read-only in Strict and Auto modes (defaults include `Get-*`, `Select-*`, `Sort-*`, `Where-*`, `Measure-*`, and output-only `Format-*` commands). Replace, don't append. |
+| `AgentModelProfiles` | object | Per-provider (`github`/`byok`) selected `subagent` model for delegated investigation and Auto safety review. |
+| `GitHubBillingDisplayMode` | string | `ai-credits` or `premium-requests-legacy`; unset profiles default to AI Credits on and after June 1, 2026. |
 | `SystemPromptOverrides` | object<string, string> | Replace specific system-prompt sections by key. |
 | `SystemPromptAppend` | string | Free-form text appended to the end of the system prompt. |
 | `MonitoringMcpServer` | string | MCP server mapped to the `monitoring` role. Manage with `/mcp-role`. |

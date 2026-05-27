@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text.Json;
 using TroubleScout;
 using TroubleScout.Services;
+using TroubleScout.Tools;
 using TroubleScout.UI;
 using Xunit;
 using PermissionDecisionApproveForSession = GitHub.Copilot.Rpc.PermissionDecisionApproveForSession;
@@ -182,10 +183,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public async Task Constructor_WithExecutionMode_ShouldSetCurrentExecutionMode()
     {
         // Arrange & Act
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         // Assert
-        session.CurrentExecutionMode.Should().Be(ExecutionMode.Yolo);
+        session.CurrentExecutionMode.Should().Be(ExecutionMode.Strict);
     }
 
     [Fact]
@@ -697,7 +698,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         // Arrange - add an additional executor via the private field
         var additionalExecutors = GetPrivateField<Dictionary<string, PowerShellExecutor>>(_session, "_additionalExecutors");
         var altExecutor = new PowerShellExecutor("server2");
-        altExecutor.ExecutionMode = ExecutionMode.Safe;
+        altExecutor.ExecutionMode = ExecutionMode.Strict;
         additionalExecutors["server2"] = altExecutor;
 
         var method = typeof(TroubleshootingSession)
@@ -705,10 +706,10 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         method.Should().NotBeNull();
 
         // Act
-        method!.Invoke(_session, [ExecutionMode.Yolo]);
+        method!.Invoke(_session, [ExecutionMode.Auto]);
 
         // Assert
-        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Yolo);
+        altExecutor.ExecutionMode.Should().Be(ExecutionMode.Auto);
         altExecutor.Dispose();
     }
 
@@ -792,6 +793,214 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void BuildReportHtml_ShouldRenderSubagentModelsBillingAndUsage()
+    {
+        var summary = new ReportSessionSummary(
+            CurrentModel: "gpt-5",
+            CurrentProvider: "GitHub Copilot",
+            ModelsUsed: ["gpt-5"],
+            ConfiguredMcpServers: [],
+            UsedMcpServers: [],
+            MonitoringMcp: null,
+            TicketingMcp: null,
+            ApprovedMcpServersForSession: [],
+            PersistedApprovedMcpServers: [],
+            ConfiguredSkills: [],
+            UsedSkills: [],
+            ExecutionMode: "Auto",
+            TargetServer: "localhost")
+        {
+            AgentModels = new Dictionary<string, string> { ["subagent"] = "gpt-4.1" },
+            GitHubBillingDisplayMode = "ai-credits",
+            SubagentCalls = 2,
+            SubagentTokens = 144
+        };
+
+        var html = ReportHtmlBuilder.BuildReportHtml(
+            [new ReportPromptEntry(DateTimeOffset.UtcNow, "check", [], "done")],
+            summary);
+
+        html.Should().Contain("Subagent model");
+        html.Should().Contain("gpt-4.1");
+        html.Should().NotContain("subagent=gpt-4.1");
+        html.Should().Contain("Billing display");
+        html.Should().Contain("ai-credits");
+        html.Should().Contain("Subagent usage");
+        html.Should().Contain("2 calls / 144 tokens");
+        html.Should().Contain("Read-only");
+        html.Should().NotContain("Safe (Auto)");
+    }
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixtures exercise child event attribution exposed by the SDK.
+    public void ConversationHistoryTracker_ShouldCaptureSubagentToolsAndReturnedFindingsForReport()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check performance");
+        tracker.RecordMcpToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = "authorize-1",
+                ToolName = "authorize_delegated_mcp",
+                Arguments = "{\"serverName\":\"monitoring-server\",\"toolName\":\"mutate-alert\"}"
+            }
+        });
+        tracker.RecordMcpToolComplete(new ToolExecutionCompleteEvent
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ToolCallId = "authorize-1",
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "[APPROVED] Delegate this exact MCP invocation once." }
+            }
+        });
+        tracker.RecordSubagentStarted(new SubagentStartedEvent
+        {
+            Data = new SubagentStartedData
+            {
+                AgentDisplayName = "Troubleshooting Subagent",
+                AgentName = "troubleshooting-subagent",
+                AgentDescription = "Collect evidence",
+                Model = "gpt-5.4-mini",
+                ToolCallId = "sub-1"
+            }
+        });
+        tracker.RecordSubagentToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ParentToolCallId = "sub-1",
+                ToolCallId = "tool-1",
+                ToolName = "get_performance_counters",
+                McpServerName = "monitoring-server",
+                Arguments = "{\"category\":\"CPU\"}"
+            }
+        });
+        tracker.RecordSubagentToolComplete(new ToolExecutionCompleteEvent
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ParentToolCallId = "sub-1",
+                ToolCallId = "tool-1",
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "CPUPercent 12" }
+            }
+        });
+        tracker.RecordSubagentMessageDelta("sub-1", "CPU utilization ");
+        tracker.RecordSubagentMessageDelta("sub-1", "is normal.");
+        tracker.RecordSubagentCompleted(new SubagentCompletedEvent
+        {
+            Data = new SubagentCompletedData
+            {
+                AgentDisplayName = "Troubleshooting Subagent",
+                AgentName = "troubleshooting-subagent",
+                Model = "gpt-5.4-mini",
+                ToolCallId = "sub-1",
+                Duration = TimeSpan.FromSeconds(1.5),
+                TotalTokens = 42,
+                TotalToolCalls = 1
+            }
+        });
+
+        var prompts = tracker.GetRecordedPromptSnapshot();
+        var actions = prompts.Single().Actions;
+        actions.Should().Contain(action => action.Source == "Delegation Authorization"
+            && action.Command == "authorize_delegated_mcp"
+            && action.Output.Contains("[APPROVED]", StringComparison.Ordinal));
+        actions.Should().Contain(action => action.Source == "Subagent Tool"
+            && action.Command == "get_performance_counters"
+            && action.Target == "monitoring-server"
+            && action.Output.Contains("CPUPercent 12", StringComparison.Ordinal));
+        actions.Should().Contain(action => action.Source == "Subagent"
+            && action.Output.Contains("Model: gpt-5.4-mini", StringComparison.Ordinal)
+            && action.Output.Contains("1.5s", StringComparison.Ordinal)
+            && action.Output.Contains("42 tokens", StringComparison.Ordinal));
+        actions.Should().Contain(action => action.Source == "Subagent Result"
+            && action.Output.Contains("CPU utilization is normal.", StringComparison.Ordinal));
+
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts);
+        html.Should().Contain("Subagent Tool");
+        html.Should().Contain("Delegation Authorization");
+        html.Should().Contain("get_performance_counters");
+        html.Should().Contain("monitoring-server");
+        html.Should().Contain("Model: gpt-5.4-mini");
+        html.Should().Contain("CPUPercent 12");
+        html.Should().Contain("Returned findings");
+        html.Should().Contain("CPU utilization is normal.");
+    }
+#pragma warning restore CS0618
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixture exercises SDK tool event persistence.
+    public void ConversationHistoryTracker_ShouldCapturePrimarySdkToolArgumentsAndOutputForReport()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check disk");
+        tracker.RecordMcpToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = "shell-1",
+                ToolName = "powershell",
+                Arguments = "{\"command\":\"Get-Volume | Select-Object DriveLetter,SizeRemaining\"}"
+            }
+        });
+        tracker.RecordMcpToolComplete(new ToolExecutionCompleteEvent
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ToolCallId = "shell-1",
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "C 123456" }
+            }
+        });
+
+        var prompts = tracker.GetRecordedPromptSnapshot();
+        var action = prompts.Single().Actions.Single();
+        action.Source.Should().Be("Tool");
+        action.Command.Should().Be("powershell");
+        action.Arguments.Should().Contain("Get-Volume");
+        action.Output.Should().Contain("C 123456");
+
+        var html = ReportHtmlBuilder.BuildReportHtml(prompts);
+        html.Should().Contain("Tool");
+        html.Should().Contain("Get-Volume");
+        html.Should().Contain("C 123456");
+    }
+#pragma warning restore CS0618
+
+    [Fact]
+#pragma warning disable CS0618 // Test fixture exercises SDK wrapper event de-duplication.
+    public void ConversationHistoryTracker_ShouldNotDuplicateLocallyLoggedDiagnosticToolActions()
+    {
+        var tracker = new ConversationHistoryTracker();
+        tracker.RecordPrompt("Check events");
+        tracker.RecordMcpToolAction(new ToolExecutionStartEvent
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = "tool-1",
+                ToolName = "get_event_logs",
+                Arguments = "{\"logName\":\"System\"}"
+            }
+        });
+        tracker.RecordCommandAction(new CommandActionLog(
+            DateTimeOffset.UtcNow,
+            "localhost",
+            "Get-WinEvent -LogName 'System' -MaxEvents 20",
+            "No errors.",
+            CommandApprovalState.StrictReadOnly));
+
+        var actions = tracker.GetRecordedPromptSnapshot().Single().Actions;
+
+        actions.Should().ContainSingle();
+        actions.Single().Source.Should().Be("PowerShell");
+        actions.Single().Command.Should().Contain("Get-WinEvent");
+    }
+#pragma warning restore CS0618
+
+    [Fact]
     public void GetRecordedPromptSnapshot_ShouldRedactStatusBarFields()
     {
         const string secret = "abcdef1234567890";
@@ -819,139 +1028,6 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         statusBar.Provider.Should().NotContain(secret);
         statusBar.ReasoningEffort.Should().NotContain(secret);
         statusBar.SessionCostEstimate.Should().NotContain(secret);
-    }
-
-    [Fact]
-    public void BuildSecondOpinionPrompt_ShouldIncludePriorConversationAndActions()
-    {
-        // Act
-        var prompt = BuildSecondOpinionPromptViaService(
-            "gpt-4.1",
-            "claude-sonnet-4.6",
-            (
-                Prompt: "The print spooler keeps stopping.",
-                Reply: "The spooler looks unstable. Check dependent services and recent crashes.",
-                Actions:
-                [
-                    (
-                        Command: "Get-Service Spooler",
-                        Output: "Status   Name               DisplayName\n------   ----               -----------\nStopped  Spooler            Print Spooler",
-                        SafetyApproval: "Approved",
-                        Source: "PowerShell",
-                        Target: "localhost"
-                    )
-                ]
-            ),
-            (
-                Prompt: "Also check the event logs.",
-                Reply: "Look for Service Control Manager events around the stop time.",
-                Actions: []
-            ));
-
-        // Assert
-        prompt.Should().Contain("second opinion");
-        prompt.Should().Contain("gpt-4.1");
-        prompt.Should().Contain("claude-sonnet-4.6");
-        prompt.Should().Contain("The print spooler keeps stopping.");
-        prompt.Should().Contain("Check dependent services");
-        prompt.Should().Contain("Get-Service Spooler");
-        prompt.Should().Contain("Print Spooler");
-        prompt.Should().Contain("Also check the event logs.");
-        prompt.Should().Contain("Service Control Manager");
-    }
-
-    [Fact]
-    public void BuildSecondOpinionPrompt_WhenHistoryIsLarge_ShouldKeepRecentTurnsAndMarkTruncation()
-    {
-        var prompts = Enumerable.Range(1, 10)
-            .Select(index => (
-                Prompt: $"Prompt {index} " + new string('P', 2300),
-                Reply: $"Reply {index} " + new string('R', 3300),
-                Actions: new[]
-                {
-                    (
-                        Command: $"Get-Thing-{index} " + new string('C', 900),
-                        Output: $"Output {index} " + new string('O', 3200),
-                        SafetyApproval: "Approved",
-                        Source: "PowerShell",
-                        Target: "localhost"
-                    )
-                }))
-            .ToArray();
-
-        var prompt = BuildSecondOpinionPromptViaService("gpt-4.1", "claude-sonnet-4.6", prompts);
-
-        prompt.Should().Contain("Only the most recent 8 turns are included.");
-        prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
-        prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
-        prompt.Should().NotContain($"## Turn 2{Environment.NewLine}");
-        prompt.Should().Contain($"## Turn 10{Environment.NewLine}");
-        prompt.Should().Contain("[truncated]");
-        prompt.Length.Should().BeLessOrEqualTo(24_000);
-    }
-
-    [Fact]
-    public void BuildSecondOpinionPrompt_WhenOlderTurnDoesNotFit_ShouldKeepNewestTurnsContiguous()
-    {
-        var prompt = SecondOpinionService.BuildSecondOpinionPrompt(
-            "gpt-4.1",
-            "claude-sonnet-4.6",
-            [
-                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-3), "Prompt 1", [], "Reply 1"),
-                new ReportPromptEntry(
-                    DateTimeOffset.UtcNow.AddMinutes(-2),
-                    "Prompt 2 " + new string('P', 23_500),
-                    [],
-                    "Reply 2"),
-                new ReportPromptEntry(DateTimeOffset.UtcNow.AddMinutes(-1), "Prompt 3", [], "Reply 3")
-            ],
-            8,
-            24_000,
-            24_000,
-            24_000,
-            24_000,
-            24_000);
-
-        prompt.Should().Contain($"## Turn 3{Environment.NewLine}");
-        prompt.Should().Contain("Older turns were omitted to fit prompt size limits.");
-        prompt.Should().NotContain($"## Turn 1{Environment.NewLine}");
-    }
-
-    [Fact]
-    public void BuildSecondOpinionPrompt_ShouldRedactSecretsAcrossReplayContext()
-    {
-        const string secret = "abcdef1234567890";
-        var prompt = SecondOpinionService.BuildSecondOpinionPrompt(
-            "gpt-4.1",
-            "claude-sonnet-4.6",
-            [
-                new ReportPromptEntry(
-                    DateTimeOffset.UtcNow,
-                    $"The app emitted api_key={secret}",
-                    [
-                        new ReportActionEntry(
-                            DateTimeOffset.UtcNow,
-                            "redmine",
-                            "get_issue",
-                            $"Bearer {secret}",
-                            "MCP",
-                            "MCP")
-                        {
-                            Arguments = $"{{\"token\":\"{secret}\"}}"
-                        }
-                    ],
-                    $"Prior answer mentioned token={secret}.")
-            ],
-            8,
-            24_000,
-            2_000,
-            3_000,
-            800,
-            3_000);
-
-        prompt.Should().NotContain(secret);
-        prompt.Should().Contain(SecretRedactor.Mask);
-        prompt.Should().Contain("Arguments:");
     }
 
     [Fact]
@@ -990,28 +1066,6 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             reply);
 
         return ReportHtmlBuilder.BuildReportHtml([promptEntry]);
-    }
-
-    private static string BuildSecondOpinionPromptViaService(
-        string previousModel,
-        string newModel,
-        params (string Prompt, string Reply, (string Command, string Output, string SafetyApproval, string Source, string Target)[] Actions)[] prompts)
-    {
-        var promptEntries = prompts
-            .Select(prompt => new ReportPromptEntry(
-                DateTimeOffset.Now,
-                prompt.Prompt,
-                prompt.Actions.Select(action => new ReportActionEntry(
-                    DateTimeOffset.Now,
-                    action.Target,
-                    action.Command,
-                    action.Output,
-                    action.SafetyApproval,
-                    action.Source)).ToList(),
-                prompt.Reply))
-            .ToList();
-
-        return SecondOpinionService.BuildSecondOpinionPrompt(previousModel, newModel, promptEntries, 8, 24_000, 2_000, 3_000, 800, 3_000);
     }
 
     private static bool InvokeIsCurrentModel(TroubleshootingSession session, string modelId)
@@ -1592,6 +1646,27 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task GetStatusFields_ShouldAlwaysShowSelectedSubagentModelInMainStatus()
+    {
+        await ExecuteWithTemporarySettingsPathAsync(async _ =>
+        {
+            AppSettingsStore.Save(new AppSettings
+            {
+                AgentModelProfiles = new Dictionary<string, Dictionary<string, string>>
+                {
+                    ["github"] = new() { ["subagent"] = "gpt-5-mini" }
+                }
+            });
+
+            await using var session = new TroubleshootingSession("localhost");
+
+            session.GetStatusFields().Should().Contain(field =>
+                field.Label == "Subagent model" && field.Value == "gpt-5-mini");
+            await Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public void GetStatusFields_WhenUsageIncludesContext_ShouldIncludeCombinedContextField()
     {
         // Arrange
@@ -1961,16 +2036,28 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     {
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
 
-        config.IncludeSubAgentStreamingEvents.Should().BeFalse();
+        config.IncludeSubAgentStreamingEvents.Should().BeTrue();
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
+        config.DefaultAgent.ExcludedTools.Should().Contain("run_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
         config.CustomAgents.Should().NotBeNull();
-        config.CustomAgents.Should().Contain(agent => agent.Name == "server-evidence-collector"
+        config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent"
             && agent.Infer == true
-            && string.Equals(agent.DisplayName, "Server Evidence Collector", StringComparison.Ordinal));
-        var issueResearcher = config.CustomAgents!.Single(agent => agent.Name == "issue-researcher");
-        issueResearcher.Infer.Should().BeTrue();
-        issueResearcher.Tools.Should().Equal("web_search");
+            && string.Equals(agent.DisplayName, "Troubleshooting Subagent", StringComparison.Ordinal));
+        config.CustomAgents!.Single().Tools.Should().Contain("web_search");
+    }
+
+    [Fact]
+    public async Task BuildSessionConfig_WithStartupSubagentModel_ShouldApplyDelegatedModelOverride()
+    {
+        await using var session = new TroubleshootingSession("localhost", subagentModel: "gpt-5-mini");
+
+        var config = InvokeBuildSessionConfig(session, "gpt-5");
+
+        config.CustomAgents!.Should().ContainSingle()
+            .Which.Model.Should().Be("gpt-5-mini");
     }
 
     [Fact]
@@ -2002,15 +2089,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
             var session = new TroubleshootingSession("localhost", mcpConfigPath: mcpConfigPath);
             var config = InvokeBuildSessionConfig(session, "gpt-4.1");
-            var customAgents = config.CustomAgents!;
-
-            var monitoringAgent = customAgents.Single(agent => agent.Name == "monitoring-investigator");
-            monitoringAgent.McpServers.Should().NotBeNull();
-            monitoringAgent.McpServers!.Keys.Should().Equal("zabbix");
-
-            var ticketingAgent = customAgents.Single(agent => agent.Name == "ticket-investigator");
-            ticketingAgent.McpServers.Should().NotBeNull();
-            ticketingAgent.McpServers!.Keys.Should().Equal("redmine");
+            var subagent = config.CustomAgents!.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent").Which;
+            subagent.McpServers.Should().NotBeNull();
+            subagent.McpServers!.Keys.Should().BeEquivalentTo("zabbix", "redmine");
         });
     }
 
@@ -2103,7 +2184,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task PermissionHandler_FileRead_ShouldApproveInSafeMode()
     {
-        // Arrange - default session is Safe mode
+        // Arrange - default session is Strict mode
         var config = InvokeBuildSessionConfig(_session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
 
@@ -2205,15 +2286,16 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PermissionHandler_Mcp_InYoloMode_ShouldApprove()
+    public async Task PermissionHandler_ReadOnlyMcp_ShouldApproveWithoutModeBypass()
     {
-        // Arrange - switch to YOLO mode
-        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
         var config = InvokeBuildSessionConfig(session, "gpt-4.1");
         var handler = config.OnPermissionRequest!;
 
         // Act
-        var result = await handler(new PermissionRequest { Kind = "mcp" }, new PermissionInvocation());
+        var result = await handler(
+            new PermissionRequestMcp { Kind = "mcp", ServerName = "inventory", ToolName = "list_assets", ToolTitle = "List assets", ReadOnly = true },
+            new PermissionInvocation());
 
         // Assert
         result.Kind.Should().Be(PermissionRequestResultKind.Approved);
@@ -2458,7 +2540,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         assessment.Should().NotBeNull();
         assessment!.Validation.IsAllowed.Should().BeTrue();
         assessment.Validation.RequiresApproval.Should().BeTrue();
-        assessment.PromptReason.Should().Contain("Safe mode");
+        assessment.PromptReason.Should().Contain("Strict mode");
         assessment.ImpactText.Should().Contain("not classified as read-only");
     }
 
@@ -2491,7 +2573,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         assessment!.Command.Should().Contain("...");
         assessment.Validation.IsAllowed.Should().BeTrue();
         assessment.Validation.RequiresApproval.Should().BeTrue();
-        assessment.PromptReason.Should().Contain("Safe mode");
+        assessment.PromptReason.Should().Contain("Strict mode");
     }
 
     [Fact]
@@ -2622,58 +2704,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
-    public void ShouldOfferPostAnalysisActionPrompt_WhenResponseContainsReadyForNextAction_ShouldReturnTrue()
-    {
-        var response = """
-            ## Findings
-            - The print spooler is failing after startup.
-
-            ## Ready for next action
-            - Continue investigating or apply the fix.
-            """;
-
-        InvokeShouldOfferPostAnalysisActionPrompt(response, forcePrompt: false).Should().BeTrue();
-    }
-
-    [Fact]
-    public void ShouldOfferPostAnalysisActionPrompt_WhenForcedByApprovedCommands_ShouldReturnTrue()
-    {
-        InvokeShouldOfferPostAnalysisActionPrompt("Interim update only.", forcePrompt: true).Should().BeTrue();
-    }
-
-    [Fact]
-    public void ShouldOfferPostAnalysisActionPrompt_WhenResponseIsInterimUpdate_ShouldReturnFalse()
-    {
-        var response = """
-            ## Investigating
-            - I am checking services and recent event logs now.
-            """;
-
-        InvokeShouldOfferPostAnalysisActionPrompt(response, forcePrompt: false).Should().BeFalse();
-    }
-
-    [Fact]
-    public void BuildPostAnalysisFollowUpPrompt_WhenContinuingInvestigation_ShouldAskForNextDiagnostics()
-    {
-        var prompt = InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ContinueInvestigating);
-
-        prompt.Should().Contain("Continue investigating");
-        prompt.Should().Contain("Ready for next action");
-        prompt.Should().NotContain("Apply the most appropriate remediation");
-    }
-
-    [Fact]
-    public void BuildPostAnalysisFollowUpPrompt_WhenApplyingFix_ShouldAskForRemediation()
-    {
-        var prompt = InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction.ApplyFix);
-
-        prompt.Should().Contain("Apply the most appropriate remediation");
-        prompt.Should().Contain("If you already recommended a fix");
-        prompt.Should().Contain("Ready for next action");
-    }
-
-    [Fact]
-    public void BuildApprovedCommandFollowUpPrompt_ShouldSummarizeResultsAndYieldControl()
+    public void BuildApprovedCommandFollowUpPrompt_ShouldSummarizeResultsAndStopNormally()
     {
         var prompt = InvokeBuildApprovedCommandFollowUpPrompt("""
             Command: Restart-Service Spooler
@@ -2682,7 +2713,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
             """);
 
         prompt.Should().Contain("approved command");
-        prompt.Should().Contain("Ready for next action");
+        prompt.Should().NotContain("Ready for next action");
         prompt.Should().NotContain("Please continue your analysis");
     }
 
@@ -2832,12 +2863,6 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
     private static string InvokeBuildPromptForExecutionSafety(string userMessage)
         => SessionPromptFlow.BuildPromptForExecutionSafety(userMessage);
-
-    private static bool InvokeShouldOfferPostAnalysisActionPrompt(string response, bool forcePrompt)
-        => SessionPromptFlow.ShouldOfferPostAnalysisActionPrompt(response, forcePrompt);
-
-    private static string InvokeBuildPostAnalysisFollowUpPrompt(PostAnalysisAction action)
-        => SessionPromptFlow.BuildPostAnalysisFollowUpPrompt(action);
 
     private static string InvokeBuildApprovedCommandFollowUpPrompt(string executionSummary)
         => SessionPromptFlow.BuildApprovedCommandFollowUpPrompt(executionSummary);
@@ -3402,8 +3427,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Attempt every relevant diagnostic tool",
-            "system message should encourage using all tools before giving up");
+        content.Should().Contain("Attempt the most relevant diagnostic sources",
+            "system message should favor targeted evidence collection");
     }
 
     [Fact]
@@ -3420,7 +3445,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         // Assert
         content.Should().NotBeNullOrWhiteSpace();
-        content.Should().Contain("Read-only diagnostic tools execute automatically in ALL modes",
+        content.Should().MatchRegex(@"Proven read-only (commands and )?diagnostic tools execute automatically in all modes",
             "system message should clarify read-only tools work in all modes");
     }
 
@@ -3507,15 +3532,15 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task ConnectAdditionalServer_NonExistentHost_ShouldReturnFailure()
     {
-        // Arrange — use Yolo mode to skip approval prompt, then invoke private method
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Yolo);
+        // Arrange - skip approval explicitly, then invoke the private method.
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         var method = typeof(TroubleshootingSession)
             .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         method.Should().NotBeNull();
 
         // Act — connection should fail for non-existent host
-        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", false])!;
+        var task = (Task<(bool Success, string? Error)>)method!.Invoke(session, ["nonexistent-host-12345", true])!;
         var result = await task;
 
         // Assert — should fail with connection error
@@ -3775,8 +3800,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     [Fact]
     public async Task ConnectAdditionalServer_SkipApproval_ShouldBypassApprovalInSafeMode()
     {
-        // Arrange — session in Safe mode; invoke with skipApproval=true via reflection
-        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Safe);
+        // Arrange - session in Strict mode; invoke with skipApproval=true via reflection
+        await using var session = new TroubleshootingSession("localhost", executionMode: ExecutionMode.Strict);
 
         var method = typeof(TroubleshootingSession)
             .GetMethod("ConnectAdditionalServerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -3882,7 +3907,7 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         content.Should().NotBeNullOrWhiteSpace();
         content.Should().Contain("## Primary JEA Endpoint: server1 (Configuration: JEA-Admins)");
         content.Should().Contain("assume they mean the current JEA target: server1");
-        content.Should().Contain("run_powershell with sessionName: \"server1\"");
+        content.Should().Contain("run_delegated_powershell with sessionName: \"server1\"");
         content.Should().Contain("Bootstrap/default session: localhost");
         content.Should().NotContain("Primary (default): localhost");
         session.DefaultSessionTarget.Should().Be("localhost");
