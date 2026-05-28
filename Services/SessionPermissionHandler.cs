@@ -144,6 +144,8 @@ internal sealed class SessionPermissionHandler
 
     internal void BeginSubagentRun() => Interlocked.Increment(ref _activeSubagentCount);
 
+    internal bool IsSubagentRunActive() => Volatile.Read(ref _activeSubagentCount) > 0;
+
     internal void EndSubagentRun()
     {
         while (true)

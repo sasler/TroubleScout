@@ -74,6 +74,7 @@ internal sealed class CopilotTurnRequest
     public required string Prompt { get; init; }
     public required Func<ITurnThinkingIndicator> CreateThinkingIndicator { get; init; }
     public required IReadOnlyDictionary<string, string> ToolDescriptions { get; init; }
+    public string? DefaultSubagentModel { get; init; }
     public CopilotTurnCallbacks Callbacks { get; init; } = new();
     public CancellationToken CancellationToken { get; init; }
 }
@@ -104,6 +105,7 @@ internal sealed class CopilotTurnRunner
         var processedDeltaIds = new HashSet<string>();
         var responseBuffer = new StringBuilder();
         var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
+        var subagentModels = new Dictionary<string, string>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
         Task? abortTask = null;
 
@@ -223,7 +225,9 @@ internal sealed class CopilotTurnRunner
                             pendingStreamLineBreak = true;
                         }
                         var startedName = subagentStarted.Data?.AgentDisplayName ?? subagentStarted.Data?.AgentName ?? "subagent";
-                        var startedModel = subagentStarted.Data?.Model;
+                        var startedModel = string.IsNullOrWhiteSpace(subagentStarted.Data?.Model)
+                            ? request.DefaultSubagentModel
+                            : subagentStarted.Data.Model;
                         thinkingIndicator.UpdateStatus($"Delegating to {startedName}");
                         request.Callbacks.ShowLiveStatusNotice(
                             string.IsNullOrWhiteSpace(startedModel)
@@ -232,6 +236,10 @@ internal sealed class CopilotTurnRunner
                         if (!string.IsNullOrWhiteSpace(subagentStarted.Data?.ToolCallId))
                         {
                             subagentOutput[subagentStarted.Data.ToolCallId] = new StringBuilder();
+                            if (!string.IsNullOrWhiteSpace(startedModel))
+                            {
+                                subagentModels[subagentStarted.Data.ToolCallId] = startedModel;
+                            }
                         }
                         request.Callbacks.ShowSubagentStarted(startedName, startedModel);
                         request.Callbacks.RecordSubagentStarted(subagentStarted);
@@ -261,9 +269,14 @@ internal sealed class CopilotTurnRunner
                             && subagentOutput.Remove(completedToolCallId, out var completedBuffer)
                                 ? completedBuffer.ToString()
                                 : string.Empty;
+                        var completedModel = ResolveSubagentDisplayModel(
+                            completedToolCallId,
+                            subagentModels,
+                            subagentCompleted.Data?.Model,
+                            request.DefaultSubagentModel);
                         request.Callbacks.ShowSubagentResult(
                             completedName,
-                            subagentCompleted.Data?.Model,
+                            completedModel,
                             completedResult,
                             subagentCompleted.Data?.Duration,
                             subagentCompleted.Data?.TotalTokens,
@@ -301,9 +314,14 @@ internal sealed class CopilotTurnRunner
                             && subagentOutput.Remove(failedToolCallId, out var failedBuffer)
                                 ? failedBuffer.ToString()
                                 : string.Empty;
+                        var failedModel = ResolveSubagentDisplayModel(
+                            failedToolCallId,
+                            subagentModels,
+                            subagentFailed.Data?.Model,
+                            request.DefaultSubagentModel);
                         request.Callbacks.ShowSubagentResult(
                             failedName,
-                            subagentFailed.Data?.Model,
+                            failedModel,
                             failedResult,
                             subagentFailed.Data?.Duration,
                             subagentFailed.Data?.TotalTokens,
@@ -583,6 +601,30 @@ internal sealed class CopilotTurnRunner
         return toolDescriptions.TryGetValue(toolName, out var desc)
             ? desc
             : $"Using {toolName}";
+    }
+
+    private static string? ResolveSubagentDisplayModel(
+        string? toolCallId,
+        Dictionary<string, string> startedModels,
+        string? eventModel,
+        string? configuredFallback)
+    {
+        var normalizedEventModel = string.IsNullOrWhiteSpace(eventModel) ? null : eventModel.Trim();
+        var normalizedFallback = string.IsNullOrWhiteSpace(configuredFallback) ? null : configuredFallback.Trim();
+        if (!string.IsNullOrWhiteSpace(toolCallId)
+            && startedModels.Remove(toolCallId, out var startedModel)
+            && !string.IsNullOrWhiteSpace(startedModel))
+        {
+            if (!string.IsNullOrWhiteSpace(normalizedEventModel)
+                && !startedModel.Equals(normalizedEventModel, StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{startedModel} (completion reported {normalizedEventModel})";
+            }
+
+            return startedModel;
+        }
+
+        return normalizedEventModel ?? normalizedFallback;
     }
 
     private static string? ReadStringProperty(object? instance, params string[] propertyNames)

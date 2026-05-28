@@ -10,7 +10,7 @@ namespace TroubleScout.Tools;
 /// <summary>
 /// Provides diagnostic tools for the Copilot AI agent to gather Windows Server information
 /// </summary>
-public class DiagnosticTools
+public partial class DiagnosticTools
 {
     private static readonly IReadOnlyDictionary<string, object?> SkipPermissionProperties =
         new ReadOnlyDictionary<string, object?>(
@@ -29,7 +29,10 @@ public class DiagnosticTools
     private readonly Action<string, AutoCommandApprovalDecision>? _recordAutoAuthorization;
     private readonly Func<string, string, string?, Task<string>>? _authorizeDelegatedMcpCallback;
     private readonly Func<string, string?, Task<string>>? _authorizeDelegatedUrlCallback;
+    private readonly Func<bool> _isSubagentRunActive;
+    private readonly DelegatedPowerShellScriptStore _scriptStore;
     private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedPowerShellGrants = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedScriptGrants = new(StringComparer.Ordinal);
     private readonly object _delegatedGrantLock = new();
 
     private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
@@ -48,7 +51,9 @@ public class DiagnosticTools
         IAutoCommandApprovalEvaluator? autoCommandApprovalEvaluator = null,
         Action<string, AutoCommandApprovalDecision>? recordAutoAuthorization = null,
         Func<string, string, string?, Task<string>>? authorizeDelegatedMcpCallback = null,
-        Func<string, string?, Task<string>>? authorizeDelegatedUrlCallback = null)
+        Func<string, string?, Task<string>>? authorizeDelegatedUrlCallback = null,
+        DelegatedPowerShellScriptStore? scriptStore = null,
+        Func<bool>? isSubagentRunActive = null)
     {
         _executor = executor;
         _approvalCallback = approvalCallback;
@@ -62,6 +67,8 @@ public class DiagnosticTools
         _recordAutoAuthorization = recordAutoAuthorization;
         _authorizeDelegatedMcpCallback = authorizeDelegatedMcpCallback;
         _authorizeDelegatedUrlCallback = authorizeDelegatedUrlCallback;
+        _scriptStore = scriptStore ?? new DelegatedPowerShellScriptStore();
+        _isSubagentRunActive = isSubagentRunActive ?? (() => false);
     }
 
     private static string EscapeSingleQuotes(string value)
@@ -84,6 +91,12 @@ public class DiagnosticTools
         });
     }
 
+    private string CurrentPowerShellSource()
+        => _isSubagentRunActive() ? "Subagent PowerShell" : "Main Agent PowerShell";
+
+    private CommandExecutionOrigin CurrentCommandOrigin()
+        => _isSubagentRunActive() ? CommandExecutionOrigin.SubagentPowerShell : CommandExecutionOrigin.MainAgentPowerShell;
+
     private void LogReadOnlyAction(string command, string output)
     {
         _actionLogger?.Invoke(new CommandActionLog(
@@ -91,17 +104,30 @@ public class DiagnosticTools
             _executor.ActualComputerName ?? _targetServer,
             command,
             output,
-            CommandApprovalState.StrictReadOnly));
+            CommandApprovalState.StrictReadOnly,
+            "Main Agent PowerShell"));
     }
 
-    private void LogCommandAction(string target, string command, string output, CommandApprovalState approvalState)
+    private void LogCommandAction(
+        string target,
+        string command,
+        string output,
+        CommandApprovalState approvalState,
+        string? source = null,
+        string? description = null,
+        string? codeKind = null,
+        string? scriptId = null)
     {
         _actionLogger?.Invoke(new CommandActionLog(
             DateTimeOffset.Now,
             target,
             command,
             output,
-            approvalState));
+            approvalState,
+            source ?? CurrentPowerShellSource(),
+            codeKind,
+            description,
+            scriptId));
     }
 
     private async Task<(bool ShouldExecute, string? TerminalOutput, CommandApprovalState ApprovalState)> EnsureCommandApprovedAsync(
@@ -162,6 +188,14 @@ public class DiagnosticTools
             "authorize_delegated_powershell",
             "Primary-agent only. Obtain any required user approval before delegating an exact PowerShell command. Returns a one-use authorizationId for protected commands.");
 
+        yield return AIFunctionFactory.Create(StageDelegatedPowerShellScriptAsync,
+            "stage_delegated_powershell_script",
+            "Primary-agent only. Write an exact PowerShell evidence-collection script to TroubleScout temp storage before delegating it. Returns a scriptId.");
+
+        yield return AIFunctionFactory.Create(AuthorizeDelegatedPowerShellScriptAsync,
+            "authorize_delegated_powershell_script",
+            "Primary-agent only. Obtain any required user approval before delegating a staged PowerShell script. Returns a one-use authorizationId for protected scripts.");
+
         yield return AIFunctionFactory.Create(AuthorizeDelegatedMcpAsync,
             "authorize_delegated_mcp",
             "Primary-agent only. Obtain any required permission before delegating an exact MCP tool invocation.");
@@ -173,6 +207,10 @@ public class DiagnosticTools
         yield return AIFunctionFactory.Create(RunDelegatedPowerShellAsync,
             "run_delegated_powershell",
             "Execute an exact PowerShell command as delegated evidence collection. Read-only commands run automatically; protected commands require a one-use authorizationId obtained by the primary agent.");
+
+        yield return AIFunctionFactory.Create(RunDelegatedPowerShellScriptAsync,
+            "run_delegated_powershell_script",
+            "Execute a staged PowerShell script as delegated evidence collection. Read-only scripts run automatically; protected scripts require a one-use authorizationId obtained by the primary agent.");
 
         yield return CreateReadOnlyTool(GetSystemInfoAsync,
             "get_system_info",
@@ -297,7 +335,7 @@ public class DiagnosticTools
             ? command
             : WrapCommandWithTargetVerification(command, executor, isAlternate ? sessionName : null);
         executor.AddHistoryEntry($"[EXECUTED] {command}");
-        ConsoleUI.ShowCommandExecution(command, isAlternate ? sessionName! : _targetServer);
+        ConsoleUI.ShowCommandExecution(command, isAlternate ? sessionName! : _targetServer, CommandExecutionOrigin.MainAgentPowerShell);
         var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
 
         if (!result.Success)
@@ -307,7 +345,8 @@ public class DiagnosticTools
                 target,
                 command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                approvalState));
+                approvalState,
+                "Main Agent PowerShell"));
             var errorOutput = $"[ERROR] {result.Error ?? "Unknown error occurred"}";
             return isAlternate ? $"[{sessionName}] {errorOutput}" : errorOutput;
         }
@@ -321,7 +360,8 @@ public class DiagnosticTools
             target,
             command,
             output,
-            approvalState));
+            approvalState,
+            "Main Agent PowerShell"));
 
         return isAlternate ? $"[{sessionName}] {output}" : output;
     }
@@ -431,12 +471,12 @@ public class DiagnosticTools
             ? command
             : WrapCommandWithTargetVerification(command, executor, resolved.IsAlternate ? sessionName : null);
         executor.AddHistoryEntry($"[EXECUTED] {command}");
-        ConsoleUI.ShowCommandExecution(command, resolved.IsAlternate ? sessionName! : _targetServer);
+        ConsoleUI.ShowCommandExecution(command, resolved.IsAlternate ? sessionName! : _targetServer, CommandExecutionOrigin.SubagentPowerShell);
         var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
         var output = result.Success
             ? string.IsNullOrWhiteSpace(result.Output) ? "[OK] Command completed with no output." : result.Output
             : $"[ERROR] {result.Error ?? "Unknown error occurred"}";
-        LogCommandAction(resolved.Target!, command, output, approvalState);
+        LogCommandAction(resolved.Target!, command, output, approvalState, "Subagent PowerShell", codeKind: "Command");
         return resolved.IsAlternate ? $"[{sessionName}] {output}" : output;
     }
 
@@ -565,10 +605,10 @@ public class DiagnosticTools
             return approval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Get system information", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
+        LogCommandAction(target, command, output, approval.ApprovalState, description: "Get system information", codeKind: "Script");
         return output;
     }
 
@@ -647,11 +687,11 @@ public class DiagnosticTools
             return primaryApproval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(primaryCommand, _targetServer, CurrentCommandOrigin(), $"Read {normalizedLogName} event log", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
+            LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read {normalizedLogName} event log", codeKind: "Script");
             return result.Output;
         }
 
@@ -669,7 +709,7 @@ public class DiagnosticTools
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Event log data unavailable.";
-        LogCommandAction(target, fallbackDisplayCommand, fallbackOutput, fallbackApproval.ApprovalState);
+        LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read {normalizedLogName} event log fallback", codeKind: "Script");
         return fallbackOutput;
     }
 
@@ -737,10 +777,10 @@ public class DiagnosticTools
             return approval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read service status", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
+        LogCommandAction(target, command, output, approval.ApprovalState, description: "Read service status", codeKind: "Script");
         return output;
     }
 
@@ -785,10 +825,10 @@ public class DiagnosticTools
             return approval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read process list", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
+        LogCommandAction(target, command, output, approval.ApprovalState, description: "Read process list", codeKind: "Script");
         return output;
     }
 
@@ -835,11 +875,11 @@ public class DiagnosticTools
             return primaryApproval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(primaryCommand, _targetServer, CurrentCommandOrigin(), "Read disk volume information", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
+            LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: "Read disk volume information", codeKind: "Script");
             return result.Output;
         }
 
@@ -854,7 +894,7 @@ public class DiagnosticTools
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
         if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
-            LogCommandAction(target, cmdletFallbackDisplayCommand, cmdletResult.Output, cmdletFallbackApproval.ApprovalState);
+            LogCommandAction(target, cmdletFallback, cmdletResult.Output, cmdletFallbackApproval.ApprovalState, description: "Read filesystem drive information", codeKind: "Script");
             return cmdletResult.Output;
         }
 
@@ -870,7 +910,7 @@ public class DiagnosticTools
         var cimOutput = cimResult.Success && string.IsNullOrWhiteSpace(cimResult.Error)
             ? cimResult.Output
             : $"[ERROR] {cimResult.Error}";
-        LogCommandAction(target, cimFallbackDisplayCommand, cimOutput, cimFallbackApproval.ApprovalState);
+        LogCommandAction(target, cimFallback, cimOutput, cimFallbackApproval.ApprovalState, description: "Read logical disk information", codeKind: "Script");
         return cimOutput;
     }
 
@@ -921,10 +961,10 @@ public class DiagnosticTools
             return approval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read network adapter information", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
-        LogCommandAction(target, displayCommand, output, approval.ApprovalState);
+        LogCommandAction(target, command, output, approval.ApprovalState, description: "Read network adapter information", codeKind: "Script");
         return output;
     }
 
@@ -964,11 +1004,11 @@ public class DiagnosticTools
             return primaryApproval.TerminalOutput!;
         }
 
-        ConsoleUI.ShowCommandExecution(displayCommand, _targetServer);
+        ConsoleUI.ShowCommandExecution(primaryCommand, _targetServer, CurrentCommandOrigin(), $"Read performance counters ({category})", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            LogCommandAction(target, displayCommand, result.Output, primaryApproval.ApprovalState);
+            LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read performance counters ({category})", codeKind: "Script");
             return result.Output;
         }
 
@@ -1028,7 +1068,7 @@ public class DiagnosticTools
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Performance counter data unavailable.";
-        LogCommandAction(target, fallbackDisplayCommand, fallbackOutput, fallbackApproval.ApprovalState);
+        LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read fallback performance data ({category})", codeKind: "Script");
         return fallbackOutput;
     }
 
@@ -1050,7 +1090,7 @@ public class DiagnosticTools
         var wrappedCommand = WrapCommandWithTargetVerification(command.Command, executor, serverName);
         executor.AddHistoryEntry($"[EXECUTED AFTER APPROVAL] {command.Command}");
         var displayTarget = serverName ?? _targetServer;
-        ConsoleUI.ShowCommandExecution(command.Command, displayTarget);
+        ConsoleUI.ShowCommandExecution(command.Command, displayTarget, CommandExecutionOrigin.MainAgentPowerShell);
         var result = await executor.ExecuteAsync(wrappedCommand, trackInHistory: false);
         _pendingCommands.Remove(command);
         var target = executor.ActualComputerName ?? displayTarget;
@@ -1063,7 +1103,8 @@ public class DiagnosticTools
                 target,
                 command.Command,
                 $"[ERROR] {result.Error ?? "Unknown error occurred"}",
-                CommandApprovalState.ApprovedByUser));
+                CommandApprovalState.ApprovedByUser,
+                "Main Agent PowerShell"));
             return $"{prefix}[ERROR] {result.Error ?? "Unknown error occurred"}";
         }
 
@@ -1076,7 +1117,8 @@ public class DiagnosticTools
             target,
             command.Command,
             output,
-            CommandApprovalState.ApprovedByUser));
+            CommandApprovalState.ApprovedByUser,
+            "Main Agent PowerShell"));
 
         return $"{prefix}{output}";
     }
@@ -1088,7 +1130,8 @@ public class DiagnosticTools
             _executor.ActualComputerName ?? _targetServer,
             command.Command,
             "User denied approval; command was not executed.",
-            CommandApprovalState.Denied));
+            CommandApprovalState.Denied,
+            "Main Agent PowerShell"));
     }
 }
 
@@ -1115,4 +1158,7 @@ public record CommandActionLog(
     string Command,
     string Output,
     CommandApprovalState ApprovalState,
-    string? Source = null);
+    string? Source = null,
+    string? CodeKind = null,
+    string? Description = null,
+    string? ScriptId = null);

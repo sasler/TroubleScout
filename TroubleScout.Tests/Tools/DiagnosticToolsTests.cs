@@ -42,9 +42,12 @@ public class DiagnosticToolsTests : IDisposable
         var toolNames = tools.Select(t => t.Name).ToArray();
         toolNames.Should().Contain("run_powershell");
         toolNames.Should().Contain("authorize_delegated_powershell");
+        toolNames.Should().Contain("stage_delegated_powershell_script");
+        toolNames.Should().Contain("authorize_delegated_powershell_script");
         toolNames.Should().Contain("authorize_delegated_mcp");
         toolNames.Should().Contain("authorize_delegated_url");
         toolNames.Should().Contain("run_delegated_powershell");
+        toolNames.Should().Contain("run_delegated_powershell_script");
         toolNames.Should().Contain("get_system_info");
         toolNames.Should().Contain("get_event_logs");
         toolNames.Should().Contain("get_services");
@@ -455,9 +458,221 @@ public class DiagnosticToolsTests : IDisposable
 
         // Assert
         logs.Should().ContainSingle();
-        logs[0].Command.Should().Be("Get-SystemInfo");
+        logs[0].Command.Should().Contain("Get-CimInstance Win32_OperatingSystem");
         logs[0].Output.Should().Be("system output");
         logs[0].ApprovalState.Should().Be(CommandApprovalState.StrictReadOnly);
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_ReadOnlyScript_ShouldStageRunCleanupAndLogScript()
+    {
+        var logs = new List<CommandActionLog>();
+        using var tempRoot = new TestTempDirectory();
+        var toolsWithLogger = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            logs.Add,
+            getExecutorCallback: name => name.Equals("srv1", StringComparison.OrdinalIgnoreCase) ? _mockExecutor.Object : null,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+        const string script = "Get-Process | Select-Object -First 1 ProcessName";
+
+        _mockExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.IsLocalExecution)
+            .Returns(true);
+        string? executedCommand = null;
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), false))
+            .Callback<string, bool>((command, _) => executedCommand = command)
+            .ReturnsAsync(new PowerShellResult(true, "process output"));
+
+        var stage = toolsWithLogger.GetTools().First(t => t.Name == "stage_delegated_powershell_script");
+        var staged = (await stage.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["script"] = script,
+            ["description"] = "List one process"
+        }))!.ToString();
+        staged.Should().MatchRegex(@"scriptId=[0-9a-f]{32}");
+        var scriptId = ExtractScriptId(staged!);
+
+        var run = toolsWithLogger.GetTools().First(t => t.Name == "run_delegated_powershell_script");
+        var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+        result.Should().Contain("process output");
+        Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+        Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+        executedCommand.Should().Contain("-ExecutionPolicy Bypass");
+        executedCommand.Should().Contain("-File");
+        logs.Should().ContainSingle();
+        logs[0].Command.Should().Be(script);
+        logs[0].Source.Should().Be("Subagent PowerShell");
+        logs[0].CodeKind.Should().Be("Script");
+        logs[0].ScriptId.Should().Be(scriptId);
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_RunCanRecoverScriptFromTempFileById()
+    {
+        var logs = new List<CommandActionLog>();
+        using var tempRoot = new TestTempDirectory();
+        const string script = "Get-Service | Select-Object -First 1 Name";
+        var staged = new DelegatedPowerShellScriptStore(tempRoot.Path).Stage(script, "List one service", "srv1");
+        var toolsWithSeparateStore = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            logs.Add,
+            getExecutorCallback: name => name.Equals("srv1", StringComparison.OrdinalIgnoreCase) ? _mockExecutor.Object : null,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+
+        _mockExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), false))
+            .ReturnsAsync(new PowerShellResult(true, "service output"));
+
+        var run = toolsWithSeparateStore.GetTools().First(t => t.Name == "run_delegated_powershell_script");
+        var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["scriptId"] = staged.ScriptId,
+            ["sessionName"] = "srv1"
+        }))!.ToString();
+
+        result.Should().Contain("service output");
+        Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+        Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+        logs.Should().ContainSingle();
+        logs[0].Description.Should().Be("List one service");
+        logs[0].Target.Should().Be(_targetServer);
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_WithStagedSession_ShouldRunWithoutRepeatingSessionName()
+    {
+        using var tempRoot = new TestTempDirectory();
+        const string script = "Get-Service | Select-Object -First 1 Name";
+        var alternateExecutor = new Mock<PowerShellExecutor>("srv1");
+        var toolsWithAlternateSession = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            getExecutorCallback: name => name.Equals("srv1", StringComparison.OrdinalIgnoreCase) ? alternateExecutor.Object : null,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+
+        alternateExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly));
+        alternateExecutor.Setup(x => x.ActualComputerName)
+            .Returns("SRV1");
+        string? executedCommand = null;
+        alternateExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), false))
+            .Callback<string, bool>((command, _) => executedCommand = command)
+            .ReturnsAsync(new PowerShellResult(true, "service output"));
+
+        var stage = toolsWithAlternateSession.GetTools().First(t => t.Name == "stage_delegated_powershell_script");
+        var staged = (await stage.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["script"] = script,
+            ["description"] = "List one service",
+            ["sessionName"] = "srv1"
+        }))!.ToString();
+        var scriptId = ExtractScriptId(staged!);
+
+        var run = toolsWithAlternateSession.GetTools().First(t => t.Name == "run_delegated_powershell_script");
+        var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+        result.Should().Contain("[srv1] service output");
+        executedCommand.Should().Contain("-ExecutionPolicy Bypass");
+        executedCommand.Should().Contain("-EncodedCommand");
+        executedCommand.Should().NotContain(tempRoot.Path);
+        Directory.EnumerateFiles(tempRoot.Path).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_ProtectedScriptWithoutAuthorization_ShouldRequirePreauthorizationAndCleanup()
+    {
+        using var tempRoot = new TestTempDirectory();
+        var toolsWithLogger = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+        const string script = "Stop-Service -Name spooler";
+
+        _mockExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(true, true, "Requires approval", CommandSafetyClassification.Mutating));
+
+        var stage = toolsWithLogger.GetTools().First(t => t.Name == "stage_delegated_powershell_script");
+        var staged = (await stage.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["script"] = script,
+            ["description"] = "Stop spooler"
+        }))!.ToString();
+        staged.Should().MatchRegex(@"scriptId=[0-9a-f]{32}");
+        var scriptId = ExtractScriptId(staged!);
+
+        var run = toolsWithLogger.GetTools().First(t => t.Name == "run_delegated_powershell_script");
+        var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+        result.Should().Contain("PREAUTHORIZATION REQUIRED");
+        Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+        Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_ForJeaSession_ShouldRejectAndCleanup()
+    {
+        using var tempRoot = new TestTempDirectory();
+        var jeaExecutor = new Mock<PowerShellExecutor>("testserver", "JEA-Role");
+        var toolsWithLogger = new DiagnosticTools(
+            jeaExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+        const string script = "Get-Service";
+
+        jeaExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly));
+
+        var stage = toolsWithLogger.GetTools().First(t => t.Name == "stage_delegated_powershell_script");
+        var staged = (await stage.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["script"] = script,
+            ["description"] = "List services"
+        }))!.ToString();
+        staged.Should().MatchRegex(@"scriptId=[0-9a-f]{32}");
+        var scriptId = ExtractScriptId(staged!);
+
+        var run = toolsWithLogger.GetTools().First(t => t.Name == "run_delegated_powershell_script");
+        var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+        result.Should().Contain("JEA");
+        result.Should().Contain("does not support delegated script execution");
+        Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadOnlyHelper_WhenCalledDuringSubagentRun_ShouldLogSubagentOrigin()
+    {
+        var logs = new List<CommandActionLog>();
+        var toolsWithSubagentActive = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            logs.Add,
+            isSubagentRunActive: () => true);
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "process output"));
+
+        var getProcessesTool = toolsWithSubagentActive.GetTools().First(t => t.Name == "get_processes");
+        var result = (await getProcessesTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments()))!.ToString();
+
+        result.Should().Contain("process output");
+        logs.Should().ContainSingle().Which.Source.Should().Be("Subagent PowerShell");
     }
 
     [Fact]
@@ -890,4 +1105,32 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     #endregion
+
+    private static string ExtractScriptId(string text)
+    {
+        var start = text.IndexOf("scriptId=", StringComparison.Ordinal) + "scriptId=".Length;
+        var end = text.IndexOf(' ', start);
+        return text[start..end];
+    }
+
+    private sealed class TestTempDirectory : IDisposable
+    {
+        internal string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "TroubleScout.Tests",
+            Guid.NewGuid().ToString("N"));
+
+        internal TestTempDirectory()
+        {
+            Directory.CreateDirectory(Path);
+        }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+        }
+    }
 }

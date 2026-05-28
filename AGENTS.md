@@ -32,6 +32,7 @@ Program.cs (CLI entry) -> TroubleshootingSession (Copilot integration)
 - Keep changes focused and minimal.
 - Follow existing patterns and naming.
 - Do not introduce unrelated refactors.
+- Keep file length within normal maintainability best practices; when a change would make a large file unwieldy, split focused helpers/services into smaller files instead of continuing to grow it.
 - Escape user-controlled text in Spectre markup with `Markup.Escape(...)`, or
   prefer `TroubleScout.UI.SafeMarkup.Interpolate($"[red]{value}[/]")` for new
   call sites — it auto-escapes every interpolated value while preserving

@@ -332,6 +332,83 @@ public class CopilotTurnRunnerTests
         displayed.Value.Success.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task RunAsync_SubagentCompletion_ShouldUseConfiguredModelOnlyWhenEventModelIsBlank()
+    {
+        string? displayedModel = null;
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData { AgentDisplayName = "Evidence", AgentName = "evidence", AgentDescription = "Collect evidence", Model = string.Empty, ToolCallId = "sub-1" }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData { AgentDisplayName = "Evidence", AgentName = "evidence", Model = string.Empty, ToolCallId = "sub-1" }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(
+            session,
+            defaultSubagentModel: "gpt-5.4-mini",
+            showSubagentResult: (_, model, _, _, _, _, _, _) => displayedModel = model));
+
+        displayedModel.Should().Be("gpt-5.4-mini");
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentCompletion_ShouldNotMaskNonEmptyEventModel()
+    {
+        string? displayedModel = null;
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData { AgentDisplayName = "Evidence", AgentName = "evidence", Model = "sdk-reported-model", ToolCallId = "sub-1" }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(
+            session,
+            defaultSubagentModel: "gpt-5.4-mini",
+            showSubagentResult: (_, model, _, _, _, _, _, _) => displayedModel = model));
+
+        displayedModel.Should().Be("sdk-reported-model");
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentCompletion_WhenStartAndCompletionModelsDiffer_ShouldShowBoth()
+    {
+        string? displayedModel = null;
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new SubagentStartedEvent
+            {
+                Data = new SubagentStartedData { AgentDisplayName = "Evidence", AgentName = "evidence", AgentDescription = "Collect evidence", Model = "gpt-5.4-mini", ToolCallId = "sub-1" }
+            });
+            session.Emit(new SubagentCompletedEvent
+            {
+                Data = new SubagentCompletedData { AgentDisplayName = "Evidence", AgentName = "evidence", Model = "gpt-5.3-codex", ToolCallId = "sub-1" }
+            });
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        await CreateRunner().RunAsync(CreateRequest(
+            session,
+            showSubagentResult: (_, model, _, _, _, _, _, _) => displayedModel = model));
+
+        displayedModel.Should().Be("gpt-5.4-mini (completion reported gpt-5.3-codex)");
+    }
+
+
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
         {
@@ -360,13 +437,15 @@ public class CopilotTurnRunnerTests
         Action<string>? showLiveStatusNotice = null,
         Action<string, string>? recordSubagentMessageDelta = null,
         Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
-        Func<ITurnThinkingIndicator>? createThinkingIndicator = null)
+        Func<ITurnThinkingIndicator>? createThinkingIndicator = null,
+        string? defaultSubagentModel = null)
         => new()
         {
             Session = session,
             Prompt = "prompt",
             CancellationToken = cancellationToken,
             ToolDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            DefaultSubagentModel = defaultSubagentModel,
             CreateThinkingIndicator = createThinkingIndicator ?? (() => new FakeThinkingIndicator()),
             Callbacks = new CopilotTurnCallbacks
             {

@@ -63,6 +63,7 @@ public class PowerShellExecutor : IDisposable
     /// The actual computer name where commands are executing (verified during connection)
     /// </summary>
     public virtual string? ActualComputerName => _actualComputerName;
+    public virtual bool IsLocalExecution => _useLocalExecution;
     public bool IsJeaSession => _configurationName != null;
     public string? ConfigurationName => _configurationName;
     public IReadOnlySet<string>? JeaAllowedCommands => _jeaAllowedCommands;

@@ -24,6 +24,9 @@ internal sealed record ReportPromptEntry(DateTimeOffset Timestamp, string Prompt
         public string? Arguments { get; init; }
         public bool? Success { get; init; }
         public string? ToolCallId { get; init; }
+        public string? CodeKind { get; init; }
+        public string? Description { get; init; }
+        public string? ScriptId { get; init; }
     }
 
 internal sealed record ReportSessionSummary(
@@ -532,6 +535,13 @@ internal static class ReportHtmlBuilder
                     else
                     {
                         sb.AppendLine($"                <span class=\"source-chip\">{HtmlEncode(action.Source)}</span>");
+                        if (!string.IsNullOrWhiteSpace(action.CodeKind))
+                        {
+                            var codeLabel = string.IsNullOrWhiteSpace(action.ScriptId)
+                                ? action.CodeKind!
+                                : $"{action.CodeKind} {action.ScriptId}";
+                            sb.AppendLine($"                <span class=\"source-chip\">{HtmlEncode(codeLabel)}</span>");
+                        }
                         if (!string.IsNullOrWhiteSpace(action.Target))
                         {
                             sb.AppendLine($"                <span class=\"action-target\">{HtmlEncode(action.Target)}</span>");
@@ -543,6 +553,11 @@ internal static class ReportHtmlBuilder
                         sb.AppendLine("                <span class=\"approval-chip approval-Failed\">Failed</span>");
                     }
                     sb.AppendLine("              </div>");
+
+                    if (!string.IsNullOrWhiteSpace(action.Description))
+                    {
+                        sb.AppendLine($"              <div class=\"muted\">{HtmlEncode(action.Description!)}</div>");
+                    }
 
                     if (isMcp || isDelegationAuthorization || isSubagentTool || isTool)
                     {
@@ -807,7 +822,10 @@ internal static class ReportHtmlBuilder
         {
             Arguments = SecretRedactor.Redact(action.Arguments),
             Success = action.Success,
-            ToolCallId = SecretRedactor.Redact(action.ToolCallId)
+            ToolCallId = SecretRedactor.Redact(action.ToolCallId),
+            CodeKind = SecretRedactor.Redact(action.CodeKind),
+            Description = SecretRedactor.Redact(action.Description),
+            ScriptId = SecretRedactor.Redact(action.ScriptId)
         };
     }
 
