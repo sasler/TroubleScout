@@ -91,9 +91,6 @@ public partial class DiagnosticTools
         });
     }
 
-    private string? RejectSubagentHelperWithoutExactCommand()
-        => null;
-
     private string CurrentPowerShellSource()
         => _isSubagentRunActive() ? "Subagent PowerShell" : "Main Agent PowerShell";
 
@@ -581,11 +578,6 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetSystemInfoAsync()
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         var command = @"
             $os = Get-CimInstance Win32_OperatingSystem
             $cs = Get-CimInstance Win32_ComputerSystem
@@ -628,11 +620,6 @@ public partial class DiagnosticTools
         [Description("Number of recent entries to retrieve (max 50)")] int count = 20,
         [Description("Filter by entry type: Error, Warning, Information, or All")] string entryType = "All")
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         count = Math.Min(Math.Max(count, 1), 50);
 
         var normalizedLogName = logName.Trim();
@@ -733,11 +720,6 @@ public partial class DiagnosticTools
         [Description("Filter by service status: Running, Stopped, or All")] string status = "All",
         [Description("Search filter for service name (supports wildcards)")] string? nameFilter = null)
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         var stateFilter = status.ToLowerInvariant() switch
         {
             "running" => "Running",
@@ -810,11 +792,6 @@ public partial class DiagnosticTools
         [Description("Sort by: CPU, Memory, or Name")] string sortBy = "Memory",
         [Description("Number of top processes to show")] int top = 20)
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         top = Math.Min(Math.Max(top, 1), 100);
         
         var nameClause = !string.IsNullOrEmpty(nameFilter) 
@@ -860,11 +837,6 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetDiskSpaceAsync()
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         var primaryCommand = @"
             Get-Volume -ErrorAction Stop 2>$null | Where-Object { $_.DriveLetter } |
                 Select-Object DriveLetter, FileSystemLabel, FileSystem,
@@ -947,11 +919,6 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetNetworkInfoAsync()
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         var command = @"
             try {
                 if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) {
@@ -1007,11 +974,6 @@ public partial class DiagnosticTools
     private async Task<string> GetPerformanceCountersAsync(
         [Description("Category: CPU, Memory, Disk, Network, or All")] string category = "All")
     {
-        if (RejectSubagentHelperWithoutExactCommand() is { } rejected)
-        {
-            return rejected;
-        }
-
         var counters = category.ToLowerInvariant() switch
         {
             "cpu" => @"'\Processor(_Total)\% Processor Time'",

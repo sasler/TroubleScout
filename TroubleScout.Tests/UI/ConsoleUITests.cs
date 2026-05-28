@@ -392,6 +392,23 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void ShowFullCommandScript_ShouldRenderOnlyFullCode()
+    {
+        var method = typeof(ConsoleUI).GetMethod("ShowFullCommandScript",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        method.Should().NotBeNull("View full command/script should use a dedicated renderer");
+
+        AnsiConsole.Record();
+        method!.Invoke(null, new object?[] { "Get-Process | Select-Object -First 1" });
+        var output = AnsiConsole.ExportText();
+
+        output.Should().Contain("Full command/script");
+        output.Should().Contain("Get-Process");
+        output.Should().NotContain("Safety rule");
+        output.Should().NotContain("Impact");
+    }
+
+    [Fact]
     public void ShowCommandExecution_WithSubagentOriginAndLongScript_ShouldRenderDistinctSummary()
     {
         const string script = """

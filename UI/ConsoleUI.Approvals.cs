@@ -57,8 +57,16 @@ public static partial class ConsoleUI
                         "❓ Explain what this does"
                     }));
 
-            if (choice.Contains("View full", StringComparison.OrdinalIgnoreCase)
-                || choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
+            if (choice.Contains("View full", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowFullCommandScript(command);
+
+                return AnsiConsole.Confirm("[yellow]Do you want to execute this command?[/]", false)
+                    ? ApprovalResult.Approved
+                    : ApprovalResult.Denied;
+            }
+
+            if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
             {
                 ShowCommandExplanation(command, reason, agentIntent, impact);
 
@@ -302,6 +310,22 @@ public static partial class ConsoleUI
             .BorderColor(Color.Cyan1);
 
         AnsiConsole.Write(explanationPanel);
+        AnsiConsole.WriteLine();
+    }
+
+    private static void ShowFullCommandScript(string command)
+    {
+        AnsiConsole.WriteLine();
+
+        var panel = new Panel(new Rows(
+                new Markup("[cyan]Full command/script:[/]"),
+                new Text(""),
+                new Markup(PowerShellSyntaxHighlighter.HighlightPowerShellMarkup(command))))
+            .Header("[bold cyan] Command / Script [/]")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Cyan1);
+
+        AnsiConsole.Write(panel);
         AnsiConsole.WriteLine();
     }
 
