@@ -1048,6 +1048,39 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         html.Should().Contain("tok-op");
     }
 
+    [Fact]
+    public void BuildReportHtml_ForScriptAction_ShouldRenderFullScriptAndOrigin()
+    {
+        const string script = """
+            Get-Process |
+                Sort-Object CPU -Descending |
+                Select-Object -First 10 ProcessName, CPU
+            """;
+
+        var entry = new ReportActionEntry(
+            DateTimeOffset.Now,
+            "localhost",
+            script,
+            "ok",
+            "StrictReadOnly",
+            "Subagent PowerShell")
+        {
+            CodeKind = "Script",
+            Description = "Collect top CPU processes",
+            ScriptId = "abc123"
+        };
+        var promptEntry = new ReportPromptEntry(DateTimeOffset.Now, "prompt", [entry], "reply");
+
+        var html = ReportHtmlBuilder.BuildReportHtml([promptEntry]);
+
+        html.Should().Contain("Subagent PowerShell");
+        html.Should().Contain("Collect top CPU processes");
+        html.Should().Contain("Script abc123");
+        html.Should().Contain("Sort-Object");
+        html.Should().Contain("Select-Object");
+        html.Should().NotContain("Get-Process -Top");
+    }
+
     private static string BuildReportHtmlViaReflection(
         string prompt,
         string reply,

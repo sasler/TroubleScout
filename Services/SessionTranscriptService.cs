@@ -213,7 +213,10 @@ internal static class SessionTranscriptService
         {
             Arguments = SecretRedactor.Redact(action.Arguments),
             Success = action.Success,
-            ToolCallId = SecretRedactor.Redact(action.ToolCallId)
+            ToolCallId = SecretRedactor.Redact(action.ToolCallId),
+            CodeKind = SecretRedactor.Redact(action.CodeKind),
+            Description = SecretRedactor.Redact(action.Description),
+            ScriptId = SecretRedactor.Redact(action.ScriptId)
         };
     }
 

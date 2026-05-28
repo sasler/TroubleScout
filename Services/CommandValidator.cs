@@ -23,7 +23,8 @@ internal class CommandValidator
 
     private static readonly HashSet<string> ReadOnlyFormatCommands =
     [
-        "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide"
+        "Format-Custom", "Format-Hex", "Format-List", "Format-Table", "Format-Wide",
+        "New-TimeSpan", "Start-Sleep", "Write-Host", "Write-Output", "Write-Progress"
     ];
 
     private static readonly HashSet<string> MutatingMembers =

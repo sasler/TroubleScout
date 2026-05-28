@@ -53,10 +53,12 @@ public static partial class ConsoleUI
                     {
                         "❌ No, skip",
                         "✅ Yes, execute",
+                        "📄 View full command/script",
                         "❓ Explain what this does"
                     }));
 
-            if (choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
+            if (choice.Contains("View full", StringComparison.OrdinalIgnoreCase)
+                || choice.Contains("Explain", StringComparison.OrdinalIgnoreCase))
             {
                 ShowCommandExplanation(command, reason, agentIntent, impact);
 

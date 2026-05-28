@@ -1885,6 +1885,7 @@ public class SlashCommandDispatcherTests
         var historyClears = 0;
         var recreateCalls = 0;
         (string Role, string? Model)? saved = null;
+        var runtimeModels = new List<string?>();
         var prompts = new Queue<ModelSelectionEntry>([primary, delegated]);
         var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
         {
@@ -1899,8 +1900,10 @@ public class SlashCommandDispatcherTests
             RecreateCurrentCopilotSession = () =>
             {
                 recreateCalls++;
+                runtimeModels.Should().Contain("gpt-5-mini");
                 return Task.FromResult((true, (string?)null));
             },
+            ApplyRuntimeAgentModelOverride = (_, model) => runtimeModels.Add(model),
             SaveAgentModelOverride = (role, model) => saved = (role, model),
             ClearRecordedHistory = () => historyClears++,
             ShowModelSelectionSummary = () => { }
@@ -1912,6 +1915,35 @@ public class SlashCommandDispatcherTests
         recreateCalls.Should().Be(1);
         historyClears.Should().Be(1);
         saved.Should().Be(("subagent", "gpt-5-mini"));
+        runtimeModels.Should().Contain("gpt-5-mini");
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WithFailedSubagentOnlySwitch_ShouldRestoreRuntimeOverrideAndNotPersist()
+    {
+        var primary = CreateModelEntry("gpt-4.1", "GPT 4.1 (GitHub Copilot)", isCurrent: true);
+        var delegated = CreateModelEntry("gpt-5-mini", "GPT 5 mini (GitHub Copilot)", isCurrent: false);
+        var prompts = new Queue<ModelSelectionEntry>([primary, delegated]);
+        var runtimeModels = new List<string?>();
+        var saves = 0;
+        var dispatcher = new SlashCommandDispatcher(new SlashCommandHandlers
+        {
+            GetAvailableModelCount = () => 2,
+            GetSelectedModelName = () => "gpt-4.1",
+            GetModelSelectionEntries = () => [primary, delegated],
+            GetAgentModelOverrides = () => new Dictionary<string, string> { ["subagent"] = "gpt-4.1" },
+            PromptModelSelection = (_, _) => prompts.Dequeue(),
+            IsCurrentModelAndSource = entry => entry.ModelId == "gpt-4.1",
+            RunWithSpinnerAsync = async (_, action) => await action(_ => { }),
+            RecreateCurrentCopilotSession = () => Task.FromResult((false, (string?)"failed")),
+            ApplyRuntimeAgentModelOverride = (_, model) => runtimeModels.Add(model),
+            SaveAgentModelOverride = (_, _) => saves++
+        });
+
+        await dispatcher.DispatchAsync("/model");
+
+        saves.Should().Be(0);
+        runtimeModels.Should().Equal("gpt-5-mini", "gpt-4.1");
     }
 
     [Fact]

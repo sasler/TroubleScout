@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.1] - 2026-05-28
+
+### Changed
+
+- 🧭 **Tighten delegated evidence collection** - selected subagent models now apply before session recreation, delegated PowerShell must use exact parent-authored commands or staged scripts, and subagent runs show a configured model fallback when SDK events omit model details.
+- 🧾 **Improve PowerShell audit readability** - terminal and report surfaces now distinguish main-agent vs subagent execution, preserve full substantive PowerShell scripts/commands, and support temp staged read-only scripts with cleanup.
+
 ## [v1.18.0] - 2026-05-27
 
 ### Changed

@@ -49,6 +49,7 @@ internal sealed class SlashCommandHandlers
     internal Func<bool> UseByokOpenAi { get; init; } = static () => false;
     internal Func<IReadOnlyDictionary<string, string>> GetAgentModelOverrides { get; init; } =
         static () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    internal Action<string, string?> ApplyRuntimeAgentModelOverride { get; init; } = static (_, _) => { };
     internal Action<string, string?> SaveAgentModelOverride { get; init; } = static (_, _) => { };
     internal Func<string, IReadOnlyList<ModelSelectionEntry>, ModelSelectionEntry?> PromptModelSelection { get; init; } = static (_, _) => null;
     internal Func<ModelSelectionEntry, bool> IsCurrentModelAndSource { get; init; } = static _ => false;
@@ -749,6 +750,14 @@ internal sealed class SlashCommandDispatcher
         }
 
         var displayName = selectedEntry.DisplayName;
+        var priorRuntimeSubagent = configuredAgentModels.TryGetValue(AppSettingsStore.SubagentModelRole, out var priorSubagent)
+            ? priorSubagent
+            : null;
+        if (subagentChanged)
+        {
+            _handlers.ApplyRuntimeAgentModelOverride(AppSettingsStore.SubagentModelRole, selectedSubagentEntry.ModelId);
+        }
+
         var success = await _handlers.RunWithSpinnerAsync($"Switching to {displayName} with delegated model {selectedSubagentEntry.DisplayName}...", async updateStatus =>
         {
             if (primaryChanged)
@@ -767,6 +776,11 @@ internal sealed class SlashCommandDispatcher
 
         if (!success)
         {
+            if (subagentChanged)
+            {
+                _handlers.ApplyRuntimeAgentModelOverride(AppSettingsStore.SubagentModelRole, priorRuntimeSubagent);
+            }
+
             return;
         }
 

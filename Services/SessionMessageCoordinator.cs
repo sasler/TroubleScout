@@ -13,6 +13,7 @@ internal sealed class SessionMessageRequest
     internal required Func<int> GetToolInvocationCount { get; init; }
     internal required Action IncrementToolInvocation { get; init; }
     internal required Func<StatusBarInfo> BuildStatusBarInfo { get; init; }
+    internal required Func<string?> GetConfiguredSubagentModel { get; init; }
     internal required Func<CancellationToken, Task<bool>> ProcessPendingApprovals { get; init; }
     internal required Func<string, int> RecordPrompt { get; init; }
     internal required Action<int, string> SetPromptReply { get; init; }
@@ -42,12 +43,15 @@ internal static class SessionMessageCoordinator
         try
         {
             var runner = new CopilotTurnRunner();
+            var configuredSubagentModel = request.GetConfiguredSubagentModel();
+            request.HistoryTracker.SubagentModelFallback = configuredSubagentModel;
             var result = await runner.RunAsync(new CopilotTurnRequest
             {
                 Session = new CopilotTurnSessionAdapter(request.CopilotSession),
                 Prompt = SessionPromptFlow.BuildPromptForExecutionSafety(userMessage),
                 CancellationToken = cancellationToken,
                 ToolDescriptions = request.ToolDescriptions,
+                DefaultSubagentModel = configuredSubagentModel,
                 CreateThinkingIndicator = () => new ConsoleTurnThinkingIndicator(ConsoleUI.CreateLiveThinkingIndicator()),
                 Callbacks = new CopilotTurnCallbacks
                 {

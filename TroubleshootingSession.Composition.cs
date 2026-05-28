@@ -17,7 +17,8 @@ public partial class TroubleshootingSession
             _autoCommandApprovalEvaluator,
             RecordAutoAuthorization,
             _permissionHandler.AuthorizeDelegatedMcpAsync,
-            _permissionHandler.AuthorizeDelegatedUrlAsync);
+            _permissionHandler.AuthorizeDelegatedUrlAsync,
+            isSubagentRunActive: _permissionHandler.IsSubagentRunActive);
 
     private SystemMessageConfig CreateSystemMessage(string targetServer, IReadOnlyCollection<string>? additionalServerNames = null)
         => SessionSystemPromptFactory.Create(new SessionSystemPromptRequest(
@@ -103,6 +104,8 @@ public partial class TroubleshootingSession
             GetToolInvocationCount = () => System.Threading.Volatile.Read(ref _toolInvocationCount),
             IncrementToolInvocation = () => _toolInvocationCount++,
             BuildStatusBarInfo = BuildStatusBarInfo,
+            GetConfiguredSubagentModel = () =>
+                GetConfiguredAgentModels().TryGetValue(AppSettingsStore.SubagentModelRole, out var model) ? model : null,
             ProcessPendingApprovals = ProcessPendingApprovalsAsync,
             RecordPrompt = RecordPrompt,
             SetPromptReply = SetPromptReply,
@@ -456,6 +459,10 @@ public partial class TroubleshootingSession
             GetModelSelectionEntries = GetModelSelectionEntries,
             UseByokOpenAi = () => _useByokOpenAi,
             GetAgentModelOverrides = GetConfiguredAgentModels,
+            ApplyRuntimeAgentModelOverride = (_, model) =>
+            {
+                _subagentModelOverride = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+            },
             SaveAgentModelOverride = (_, model) =>
             {
                 _subagentModelOverride = string.IsNullOrWhiteSpace(model) ? null : model.Trim();

@@ -376,6 +376,28 @@ Get-Process
         result.RequiresApproval.Should().BeFalse();
     }
 
+    [Fact]
+    public void ValidateCommand_ReadOnlyHealthScriptWithNewTimeSpan_ShouldAutoApprove()
+    {
+        var script = """
+            $now = Get-Date
+            Start-Sleep -Milliseconds 1
+            $os = Get-CimInstance Win32_OperatingSystem
+            $uptime = New-TimeSpan -Start $os.LastBootUpTime -End $now
+            Write-Output $env:COMPUTERNAME | Out-Null
+            [pscustomobject]@{
+                Server = $env:COMPUTERNAME
+                UptimeHours = [math]::Round($uptime.TotalHours, 1)
+            } | ConvertTo-Json
+            """;
+
+        var result = _executor.ValidateCommand(script);
+
+        result.IsAllowed.Should().BeTrue();
+        result.RequiresApproval.Should().BeFalse();
+        result.Classification.Should().Be(CommandSafetyClassification.ReadOnly);
+    }
+
     #endregion
 
     #region Edge Cases and Security Tests

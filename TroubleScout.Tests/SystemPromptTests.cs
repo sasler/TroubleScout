@@ -74,7 +74,8 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("primary agent must not invoke native shell or PowerShell tools for evidence collection");
-        content.Should().Contain("delegate the exact read to the troubleshooting subagent");
+        content.Should().Contain("write the exact PowerShell read and delegate it to the troubleshooting subagent");
+        content.Should().Contain("subagents must run exact parent-authored PowerShell");
     }
 
     [Fact]

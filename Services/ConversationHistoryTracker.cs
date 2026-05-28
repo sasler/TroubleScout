@@ -31,6 +31,8 @@ internal sealed class ConversationHistoryTracker
 
     private readonly record struct McpActionLocation(int PromptIndex, int ActionIndex);
 
+    internal string? SubagentModelFallback { get; set; }
+
     internal int RecordPrompt(string prompt)
     {
         lock (_reportLock)
@@ -87,7 +89,12 @@ internal sealed class ConversationHistoryTracker
             actionLog.Command,
             actionLog.Output,
             actionLog.ApprovalState.ToString(),
-            actionLog.Source ?? "PowerShell");
+            actionLog.Source ?? "PowerShell")
+        {
+            CodeKind = actionLog.CodeKind,
+            Description = actionLog.Description,
+            ScriptId = actionLog.ScriptId
+        };
 
         AppendActionToCurrentPrompt(entry);
     }
@@ -196,7 +203,8 @@ internal sealed class ConversationHistoryTracker
 
         var name = data.AgentDisplayName ?? data.AgentName ?? "subagent";
         var toolCallId = data.ToolCallId;
-        var model = string.IsNullOrWhiteSpace(data.Model) ? string.Empty : $"Model: {data.Model}";
+        var displayModel = string.IsNullOrWhiteSpace(data.Model) ? SubagentModelFallback : data.Model;
+        var model = string.IsNullOrWhiteSpace(displayModel) ? string.Empty : $"Model: {displayModel}";
         AppendActionToCurrentPrompt(new ReportActionEntry(
             DateTimeOffset.Now,
             name,

@@ -771,14 +771,53 @@ public static partial class ConsoleUI
     /// <summary>
     /// Display PowerShell command execution info
     /// </summary>
-    public static void ShowCommandExecution(string command, string targetServer)
+    public static void ShowCommandExecution(
+        string command,
+        string targetServer,
+        CommandExecutionOrigin origin = CommandExecutionOrigin.MainAgentPowerShell,
+        string? description = null,
+        string? scriptId = null,
+        string? codeKind = null)
     {
         EnsureLineBreak();
         var serverDisplay = targetServer.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             ? "[green]localhost[/]"
             : $"[yellow]{Markup.Escape(targetServer)}[/]";
-        
-        AnsiConsole.MarkupLine($"[grey]>[/] [dim]Running on {serverDisplay}:[/] [cyan]{Markup.Escape(command)}[/]");
+
+        var (label, color, icon) = origin switch
+        {
+            CommandExecutionOrigin.SubagentPowerShell => ("Subagent", "deepskyblue1", ">>"),
+            CommandExecutionOrigin.ApprovalSubagent => ("Approval subagent", "yellow", "??"),
+            CommandExecutionOrigin.Mcp => ("MCP", "mediumpurple1", "::"),
+            CommandExecutionOrigin.Tool => ("Tool", "cyan", "**"),
+            _ => ("Main agent", "green", ">")
+        };
+
+        var lineCount = CountLines(command);
+        var isLong = lineCount > 1 || command.Length > 160;
+        if (isLong)
+        {
+            var kind = string.IsNullOrWhiteSpace(codeKind) ? "command" : codeKind!.ToLowerInvariant();
+            var idText = string.IsNullOrWhiteSpace(scriptId) ? string.Empty : $" [grey]({Markup.Escape(scriptId!)})[/]";
+            var descriptionText = string.IsNullOrWhiteSpace(description) ? kind : Markup.Escape(description!);
+            AnsiConsole.MarkupLine($"[{color}]{icon}[/] [dim]{label} running on {serverDisplay}:[/] [cyan]{descriptionText}[/]{idText} [grey]- {lineCount} lines; full {kind} is captured in /report[/]");
+            return;
+        }
+
+        var prefix = string.IsNullOrWhiteSpace(description)
+            ? string.Empty
+            : $"[grey]{Markup.Escape(description!)}:[/] ";
+        AnsiConsole.MarkupLine($"[{color}]{icon}[/] [dim]{label} running on {serverDisplay}:[/] {prefix}[cyan]{Markup.Escape(command)}[/]");
+    }
+
+    private static int CountLines(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        return text.Replace("\r\n", "\n").Count(ch => ch == '\n') + 1;
     }
 
     private static string GetExecutionModeMarkup(ExecutionMode mode)
