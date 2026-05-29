@@ -353,15 +353,6 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
-                        if (TryHandleRootToolUseEnvelopeDelta(
-                            delta.Data?.DeltaContent ?? string.Empty,
-                            pendingRootToolEnvelope,
-                            responseBuffer,
-                            AppendRootAssistantText))
-                        {
-                            break;
-                        }
-
                         var deltaMessageId = ReadStringProperty(delta.Data, "MessageId", "Id");
                         if (!string.IsNullOrWhiteSpace(deltaMessageId))
                         {
@@ -373,6 +364,15 @@ internal sealed class CopilotTurnRunner
                             }
 
                             currentStreamMessageId = deltaMessageId;
+                        }
+
+                        if (TryHandleRootToolUseEnvelopeDelta(
+                            delta.Data?.DeltaContent ?? string.Empty,
+                            pendingRootToolEnvelope,
+                            responseBuffer,
+                            AppendRootAssistantText))
+                        {
+                            break;
                         }
 
                         AppendRootAssistantText(delta.Data?.DeltaContent ?? string.Empty);
@@ -701,6 +701,13 @@ internal sealed class CopilotTurnRunner
 
         pendingEnvelope.Append(deltaText);
         var candidate = pendingEnvelope.ToString();
+        if (TrySuppressRawToolUseEnvelopePrefix(candidate, out var remainingText))
+        {
+            pendingEnvelope.Clear();
+            appendRootAssistantText(remainingText);
+            return true;
+        }
+
         if (IsRawToolUseEnvelope(candidate))
         {
             pendingEnvelope.Clear();
@@ -734,8 +741,95 @@ internal sealed class CopilotTurnRunner
         var trimmed = TrimJsonFence(text).TrimStart();
         const string prefix = "{\"tool_uses\"";
         return trimmed.Length > 0
-            && prefix.StartsWith(trimmed, StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            && (prefix.StartsWith(trimmed, StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TrySuppressRawToolUseEnvelopePrefix(string text, out string remainingText)
+    {
+        remainingText = string.Empty;
+        if (!TrySplitLeadingJsonObject(text, out var jsonObject, out remainingText))
+        {
+            return false;
+        }
+
+        if (!IsRawToolUseEnvelope(jsonObject))
+        {
+            remainingText = string.Empty;
+            return false;
+        }
+
+        remainingText = remainingText.TrimStart();
+        return true;
+    }
+
+    private static bool TrySplitLeadingJsonObject(string text, out string jsonObject, out string remainingText)
+    {
+        jsonObject = string.Empty;
+        remainingText = string.Empty;
+
+        var start = 0;
+        while (start < text.Length && char.IsWhiteSpace(text[start]))
+        {
+            start++;
+        }
+
+        if (start >= text.Length || text[start] != '{')
+        {
+            return false;
+        }
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    escaped = true;
+                }
+                else if (ch == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch != '}')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                jsonObject = text[start..(i + 1)];
+                remainingText = text[(i + 1)..];
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsRawToolUseEnvelope(string? text)
