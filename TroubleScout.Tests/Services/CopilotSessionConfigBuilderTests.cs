@@ -20,10 +20,11 @@ public class CopilotSessionConfigBuilderTests
         config.OnPermissionRequest.Should().NotBeNull();
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
-        config.DefaultAgent.ExcludedTools.Should().Contain("run_powershell");
+        config.DefaultAgent.ExcludedTools.Should().NotContain("run_powershell");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell_script");
         config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
-        config.DefaultAgent.ExcludedTools.Should().Contain([
+        config.DefaultAgent.ExcludedTools.Should().NotContain([
             "get_system_info", "get_event_logs", "get_services", "get_processes",
             "get_disk_space", "get_network_info", "get_performance_counters"
         ]);

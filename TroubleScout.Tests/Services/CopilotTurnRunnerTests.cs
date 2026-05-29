@@ -158,6 +158,51 @@ public class CopilotTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldSuppressRawRootToolUseJson()
+    {
+        var output = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta(
+                """
+                {"tool_uses":[{"recipient_name":"functions.get_system_info","parameters":{},"output":"{\"computerName\":\"server1\"}"}]}
+                """,
+                "tool-json"));
+            session.Emit(CreateDelta("Analyzing server1. It looks healthy.", "answer"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(session, writeAiResponse: text => output.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("Analyzing server1. It looks healthy.");
+        output.ToString().Should().Be("Analyzing server1. It looks healthy.");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldSuppressChunkedRawRootToolUseJson()
+    {
+        var output = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta("{\"tool_", "tool-json"));
+            session.Emit(CreateDelta("uses\":[{\"recipient_name\":\"functions.get_disk_space\",\"output\":\"[]\"}]}", "tool-json"));
+            session.Emit(CreateDelta("Disk space is low on C:.", "answer"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(session, writeAiResponse: text => output.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("Disk space is low on C:.");
+        output.ToString().Should().Be("Disk space is low on C:.");
+    }
+
+    [Fact]
     public async Task RunAsync_WhenSessionError_ShouldFailWithoutSuccessfulResponse()
     {
         var errors = new List<(string Title, string Message)>();

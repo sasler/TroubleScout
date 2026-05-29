@@ -34,10 +34,20 @@ public partial class DiagnosticTools
     private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedPowerShellGrants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedScriptGrants = new(StringComparer.Ordinal);
     private readonly object _delegatedGrantLock = new();
+    private readonly HashSet<string> _completedDirectReadsThisTurn = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _directReadLock = new();
 
     private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
 
     public IReadOnlyList<PendingCommand> PendingCommands => _pendingCommands.AsReadOnly();
+
+    internal void BeginDiagnosticTurn()
+    {
+        lock (_directReadLock)
+        {
+            _completedDirectReadsThisTurn.Clear();
+        }
+    }
 
     public DiagnosticTools(
         PowerShellExecutor executor,
@@ -128,6 +138,40 @@ public partial class DiagnosticTools
             codeKind,
             description,
             scriptId));
+    }
+
+    private bool TryGetDuplicateDirectRead(string key, out string message)
+    {
+        if (_isSubagentRunActive())
+        {
+            message = string.Empty;
+            return false;
+        }
+
+        lock (_directReadLock)
+        {
+            if (!_completedDirectReadsThisTurn.Contains(key))
+            {
+                message = string.Empty;
+                return false;
+            }
+        }
+
+        message = "[ALREADY COLLECTED] This diagnostic was already collected successfully in this turn. Do not call it again; use the earlier result in this conversation and answer the user now.";
+        return true;
+    }
+
+    private void MarkDirectReadCompleted(string key)
+    {
+        if (_isSubagentRunActive())
+        {
+            return;
+        }
+
+        lock (_directReadLock)
+        {
+            _completedDirectReadsThisTurn.Add(key);
+        }
     }
 
     private async Task<(bool ShouldExecute, string? TerminalOutput, CommandApprovalState ApprovalState)> EnsureCommandApprovedAsync(
@@ -263,6 +307,12 @@ public partial class DiagnosticTools
         [Description("Optional: briefly explain why you need to run this command (shown to user during approval)")] string? intent = null,
         [Description("Optional: the server name to run the command on. If omitted, runs on the primary target server. Must match a server name established with connect_server.")] string? sessionName = null)
     {
+        var directReadKey = $"run_powershell|{NormalizeSessionName(sessionName) ?? string.Empty}|{command.Trim()}";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         // Resolve the executor for the given session name
         var executor = _executor;
         var target = _executor.ActualComputerName ?? _targetServer;
@@ -355,6 +405,7 @@ public partial class DiagnosticTools
             ? "[OK] Command completed with no output."
             : result.Output;
 
+        MarkDirectReadCompleted(directReadKey);
         _actionLogger?.Invoke(new CommandActionLog(
             DateTimeOffset.Now,
             target,
@@ -578,6 +629,12 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetSystemInfoAsync()
     {
+        const string directReadKey = "get_system_info";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         var command = @"
             $os = Get-CimInstance Win32_OperatingSystem
             $cs = Get-CimInstance Win32_ComputerSystem
@@ -608,6 +665,10 @@ public partial class DiagnosticTools
         ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Get system information", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Get system information", codeKind: "Script");
         return output;
     }
@@ -621,6 +682,11 @@ public partial class DiagnosticTools
         [Description("Filter by entry type: Error, Warning, Information, or All")] string entryType = "All")
     {
         count = Math.Min(Math.Max(count, 1), 50);
+        var directReadKey = $"get_event_logs|{logName.Trim()}|{count}|{entryType.Trim()}";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
 
         var normalizedLogName = logName.Trim();
         var allowedLogs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -691,6 +757,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
+            MarkDirectReadCompleted(directReadKey);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read {normalizedLogName} event log", codeKind: "Script");
             return result.Output;
         }
@@ -709,6 +776,10 @@ public partial class DiagnosticTools
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Event log data unavailable.";
+        if (fallbackResult.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read {normalizedLogName} event log fallback", codeKind: "Script");
         return fallbackOutput;
     }
@@ -720,6 +791,12 @@ public partial class DiagnosticTools
         [Description("Filter by service status: Running, Stopped, or All")] string status = "All",
         [Description("Search filter for service name (supports wildcards)")] string? nameFilter = null)
     {
+        var directReadKey = $"get_services|{status.Trim()}|{nameFilter?.Trim() ?? string.Empty}";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         var stateFilter = status.ToLowerInvariant() switch
         {
             "running" => "Running",
@@ -780,6 +857,10 @@ public partial class DiagnosticTools
         ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read service status", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read service status", codeKind: "Script");
         return output;
     }
@@ -793,6 +874,11 @@ public partial class DiagnosticTools
         [Description("Number of top processes to show")] int top = 20)
     {
         top = Math.Min(Math.Max(top, 1), 100);
+        var directReadKey = $"get_processes|{nameFilter?.Trim() ?? string.Empty}|{sortBy.Trim()}|{top}";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
         
         var nameClause = !string.IsNullOrEmpty(nameFilter) 
             ? $" -Name '*{nameFilter}*'" 
@@ -828,6 +914,10 @@ public partial class DiagnosticTools
         ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read process list", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read process list", codeKind: "Script");
         return output;
     }
@@ -837,6 +927,12 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetDiskSpaceAsync()
     {
+        const string directReadKey = "get_disk_space";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         var primaryCommand = @"
             Get-Volume -ErrorAction Stop 2>$null | Where-Object { $_.DriveLetter } |
                 Select-Object DriveLetter, FileSystemLabel, FileSystem,
@@ -879,6 +975,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
+            MarkDirectReadCompleted(directReadKey);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: "Read disk volume information", codeKind: "Script");
             return result.Output;
         }
@@ -894,6 +991,7 @@ public partial class DiagnosticTools
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
         if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
+            MarkDirectReadCompleted(directReadKey);
             LogCommandAction(target, cmdletFallback, cmdletResult.Output, cmdletFallbackApproval.ApprovalState, description: "Read filesystem drive information", codeKind: "Script");
             return cmdletResult.Output;
         }
@@ -910,6 +1008,10 @@ public partial class DiagnosticTools
         var cimOutput = cimResult.Success && string.IsNullOrWhiteSpace(cimResult.Error)
             ? cimResult.Output
             : $"[ERROR] {cimResult.Error}";
+        if (cimResult.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, cimFallback, cimOutput, cimFallbackApproval.ApprovalState, description: "Read logical disk information", codeKind: "Script");
         return cimOutput;
     }
@@ -919,6 +1021,12 @@ public partial class DiagnosticTools
     /// </summary>
     private async Task<string> GetNetworkInfoAsync()
     {
+        const string directReadKey = "get_network_info";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         var command = @"
             try {
                 if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) {
@@ -964,6 +1072,10 @@ public partial class DiagnosticTools
         ConsoleUI.ShowCommandExecution(command, _targetServer, CurrentCommandOrigin(), "Read network adapter information", codeKind: "Script");
         var result = await _executor.ExecuteAsync(wrappedCommand);
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
+        if (result.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read network adapter information", codeKind: "Script");
         return output;
     }
@@ -974,6 +1086,12 @@ public partial class DiagnosticTools
     private async Task<string> GetPerformanceCountersAsync(
         [Description("Category: CPU, Memory, Disk, Network, or All")] string category = "All")
     {
+        var directReadKey = $"get_performance_counters|{category.Trim()}";
+        if (TryGetDuplicateDirectRead(directReadKey, out var duplicateMessage))
+        {
+            return duplicateMessage;
+        }
+
         var counters = category.ToLowerInvariant() switch
         {
             "cpu" => @"'\Processor(_Total)\% Processor Time'",
@@ -1008,6 +1126,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
+            MarkDirectReadCompleted(directReadKey);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read performance counters ({category})", codeKind: "Script");
             return result.Output;
         }
@@ -1068,6 +1187,10 @@ public partial class DiagnosticTools
         var fallbackOutput = fallbackResult.Success && string.IsNullOrWhiteSpace(fallbackResult.Error) && !string.IsNullOrWhiteSpace(fallbackResult.Output)
             ? fallbackResult.Output
             : "[WARN] Performance counter data unavailable.";
+        if (fallbackResult.Success)
+        {
+            MarkDirectReadCompleted(directReadKey);
+        }
         LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read fallback performance data ({category})", codeKind: "Script");
         return fallbackOutput;
     }

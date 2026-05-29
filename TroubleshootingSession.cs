@@ -464,11 +464,14 @@ public partial class TroubleshootingSession : IAsyncDisposable
         string userMessage,
         int? promptIndexOverride,
         CancellationToken cancellationToken = default)
-        => await SessionMessageCoordinator.SendMessageAsync(
+    {
+        _diagnosticTools.BeginDiagnosticTurn();
+        return await SessionMessageCoordinator.SendMessageAsync(
             userMessage,
             promptIndexOverride,
             cancellationToken,
             CreateMessageRequest());
+    }
 
     internal static async Task RunActivityWatchdogAsync(
         LiveThinkingIndicator indicator,

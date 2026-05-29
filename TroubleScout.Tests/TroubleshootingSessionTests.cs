@@ -2072,8 +2072,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         config.IncludeSubAgentStreamingEvents.Should().BeTrue();
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
-        config.DefaultAgent.ExcludedTools.Should().Contain("run_powershell");
+        config.DefaultAgent.ExcludedTools.Should().NotContain("run_powershell");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell_script");
         config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
         config.CustomAgents.Should().NotBeNull();
         config.CustomAgents.Should().ContainSingle(agent => agent.Name == "troubleshooting-subagent"
@@ -3940,7 +3941,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
         content.Should().NotBeNullOrWhiteSpace();
         content.Should().Contain("## Primary JEA Endpoint: server1 (Configuration: JEA-Admins)");
         content.Should().Contain("assume they mean the current JEA target: server1");
-        content.Should().Contain("run_delegated_powershell with sessionName: \"server1\"");
+        content.Should().Contain("run_powershell` with sessionName: \"server1\"");
+        content.Should().Contain("Delegate high-volume JEA evidence with run_delegated_powershell and sessionName: \"server1\"");
         content.Should().Contain("Bootstrap/default session: localhost");
         content.Should().NotContain("Primary (default): localhost");
         session.DefaultSessionTarget.Should().Be("localhost");
