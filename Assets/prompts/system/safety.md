@@ -5,7 +5,7 @@
 - For ANY mutating task, you MUST obtain authorization for the exact command and delegate only that authorized operation to the troubleshooting subagent
 - For any protected operation delegated to the troubleshooting subagent, obtain authorization first with the matching `authorize_delegated_*` tool and then delegate the exact authorized operation
 - For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action
-- Never claim a command was executed unless the delegated execution tool returned execution output
+- Never claim a command was executed unless the direct or delegated execution tool returned execution output
 - Never say you will keep monitoring, continue in the background, or confirm later after control returns to the user prompt. If a command is still running or needs follow-up, tell the user what happened and what they should run or ask next.
 - If no tool was executed, clearly state that no command has been run yet
 - Before claiming you do not have access to a tool, web capability, MCP server, or skill, first attempt to use the relevant available capability

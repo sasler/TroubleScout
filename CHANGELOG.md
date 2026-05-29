@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.2] - 2026-05-29
+
+### Changed
+
+- 💸 **Make subagent delegation cost-aware** - the primary agent now runs small bounded diagnostics directly and delegates only high-volume evidence collection, research, MCP lookups, or multi-server sweeps to the configured subagent.
+- 🧾 **Keep terminal output readable** - raw tool-result JSON is suppressed from the TUI, main-agent command notices remain concise, and duplicate direct diagnostics are blocked within a turn while full output stays available in `/report`.
+
 ## [v1.18.1] - 2026-05-28
 
 ### Changed

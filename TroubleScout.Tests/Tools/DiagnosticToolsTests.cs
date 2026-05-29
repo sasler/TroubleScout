@@ -171,6 +171,46 @@ public class DiagnosticToolsTests : IDisposable
         capturedCommand.Should().Contain(_targetServer);
     }
 
+    [Fact]
+    public async Task DirectRead_WhenRepeatedInSameTurn_ShouldReturnAlreadyCollectedWithoutExecutingAgain()
+    {
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
+
+        var getSystemInfoTool = _diagnosticTools.GetTools().First(t => t.Name == "get_system_info");
+
+        var first = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+        var second = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        first?.ToString().Should().Contain("System Info Output");
+        second?.ToString().Should().Contain("ALREADY COLLECTED");
+        second?.ToString().Should().Contain("answer the user now");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task DirectRead_AfterBeginDiagnosticTurn_ShouldAllowFreshExecution()
+    {
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
+
+        var getSystemInfoTool = _diagnosticTools.GetTools().First(t => t.Name == "get_system_info");
+
+        await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+        _diagnosticTools.BeginDiagnosticTurn();
+        await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Exactly(2));
+    }
+
     #endregion
 
     #region Command Approval Tests

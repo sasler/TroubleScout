@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using GitHub.Copilot;
 using Spectre.Console;
 using TroubleScout.UI;
@@ -104,6 +105,7 @@ internal sealed class CopilotTurnRunner
         var currentStreamMessageId = string.Empty;
         var processedDeltaIds = new HashSet<string>();
         var responseBuffer = new StringBuilder();
+        var pendingRootToolEnvelope = new StringBuilder();
         var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
         var subagentModels = new Dictionary<string, string>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
@@ -364,28 +366,16 @@ internal sealed class CopilotTurnRunner
                             currentStreamMessageId = deltaMessageId;
                         }
 
-                        if (!hasStartedStreaming)
+                        if (TryHandleRootToolUseEnvelopeDelta(
+                            delta.Data?.DeltaContent ?? string.Empty,
+                            pendingRootToolEnvelope,
+                            responseBuffer,
+                            AppendRootAssistantText))
                         {
-                            hasStartedStreaming = true;
-                            if (hasStartedReasoning)
-                            {
-                                request.Callbacks.EndReasoningBlock();
-                            }
-
-                            thinkingIndicator.StopForResponse();
-                            request.Callbacks.StartAIResponse();
+                            break;
                         }
 
-                        var deltaText = delta.Data?.DeltaContent ?? string.Empty;
-                        if (pendingStreamLineBreak && responseBuffer.Length > 0)
-                        {
-                            request.Callbacks.WriteAIResponse(Environment.NewLine);
-                            responseBuffer.AppendLine();
-                            pendingStreamLineBreak = false;
-                        }
-
-                        responseBuffer.Append(deltaText);
-                        request.Callbacks.WriteAIResponse(deltaText);
+                        AppendRootAssistantText(delta.Data?.DeltaContent ?? string.Empty);
                         break;
 
                     case AssistantMessageEvent msg:
@@ -405,18 +395,14 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
+                        if (IsRawToolUseEnvelope(msg.Data?.Content))
+                        {
+                            break;
+                        }
+
                         if (!hasStartedStreaming && !string.IsNullOrEmpty(msg.Data?.Content))
                         {
-                            if (hasStartedReasoning)
-                            {
-                                request.Callbacks.EndReasoningBlock();
-                            }
-
-                            thinkingIndicator.StopForResponse();
-                            request.Callbacks.StartAIResponse();
-                            request.Callbacks.WriteAIResponse(msg.Data.Content);
-                            responseBuffer.Append(msg.Data.Content);
-                            hasStartedStreaming = true;
+                            AppendRootAssistantText(msg.Data.Content);
                         }
                         break;
 
@@ -436,6 +422,7 @@ internal sealed class CopilotTurnRunner
 
             await request.Session.SendAsync(new MessageOptions { Prompt = request.Prompt }, request.CancellationToken);
             await done.Task;
+            FlushPendingRootToolEnvelopeIfNeeded();
             await AwaitAbortIfNeededAsync();
             await StopWatchdogAsync();
 
@@ -519,6 +506,51 @@ internal sealed class CopilotTurnRunner
             if (pendingAbort != null)
             {
                 await pendingAbort;
+            }
+        }
+
+        void AppendRootAssistantText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            if (!hasStartedStreaming)
+            {
+                hasStartedStreaming = true;
+                if (hasStartedReasoning)
+                {
+                    request.Callbacks.EndReasoningBlock();
+                }
+
+                thinkingIndicator.StopForResponse();
+                request.Callbacks.StartAIResponse();
+            }
+
+            if (pendingStreamLineBreak && responseBuffer.Length > 0)
+            {
+                request.Callbacks.WriteAIResponse(Environment.NewLine);
+                responseBuffer.AppendLine();
+                pendingStreamLineBreak = false;
+            }
+
+            responseBuffer.Append(text);
+            request.Callbacks.WriteAIResponse(text);
+        }
+
+        void FlushPendingRootToolEnvelopeIfNeeded()
+        {
+            if (pendingRootToolEnvelope.Length == 0)
+            {
+                return;
+            }
+
+            var buffered = pendingRootToolEnvelope.ToString();
+            pendingRootToolEnvelope.Clear();
+            if (!IsRawToolUseEnvelope(buffered))
+            {
+                AppendRootAssistantText(buffered);
             }
         }
     }
@@ -647,5 +679,214 @@ internal sealed class CopilotTurnRunner
         }
 
         return null;
+    }
+
+    private static bool TryHandleRootToolUseEnvelopeDelta(
+        string deltaText,
+        StringBuilder pendingEnvelope,
+        StringBuilder responseBuffer,
+        Action<string> appendRootAssistantText)
+    {
+        if (pendingEnvelope.Length == 0
+            && responseBuffer.Length > 0
+            && !LooksLikeToolUseEnvelopeStart(deltaText))
+        {
+            return false;
+        }
+
+        if (pendingEnvelope.Length == 0 && !LooksLikeToolUseEnvelopeStart(deltaText))
+        {
+            return false;
+        }
+
+        pendingEnvelope.Append(deltaText);
+        var candidate = pendingEnvelope.ToString();
+        if (TrySuppressRawToolUseEnvelopePrefix(candidate, out var remainingText))
+        {
+            pendingEnvelope.Clear();
+            appendRootAssistantText(remainingText);
+            return true;
+        }
+
+        if (IsRawToolUseEnvelope(candidate))
+        {
+            pendingEnvelope.Clear();
+            return true;
+        }
+
+        if (IsPotentialToolUseEnvelopePrefix(candidate))
+        {
+            return true;
+        }
+
+        pendingEnvelope.Clear();
+        appendRootAssistantText(candidate);
+        return true;
+    }
+
+    private static bool LooksLikeToolUseEnvelopeStart(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.TrimStart();
+        return trimmed.StartsWith("{", StringComparison.Ordinal)
+            || trimmed.StartsWith("```json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPotentialToolUseEnvelopePrefix(string text)
+    {
+        var trimmed = TrimJsonFence(text).TrimStart();
+        const string prefix = "{\"tool_uses\"";
+        return trimmed.Length > 0
+            && (prefix.StartsWith(trimmed, StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TrySuppressRawToolUseEnvelopePrefix(string text, out string remainingText)
+    {
+        remainingText = string.Empty;
+        if (!TrySplitLeadingJsonObject(text, out var jsonObject, out remainingText))
+        {
+            return false;
+        }
+
+        if (!IsRawToolUseEnvelope(jsonObject))
+        {
+            remainingText = string.Empty;
+            return false;
+        }
+
+        remainingText = remainingText.TrimStart();
+        return true;
+    }
+
+    private static bool TrySplitLeadingJsonObject(string text, out string jsonObject, out string remainingText)
+    {
+        jsonObject = string.Empty;
+        remainingText = string.Empty;
+
+        var start = 0;
+        while (start < text.Length && char.IsWhiteSpace(text[start]))
+        {
+            start++;
+        }
+
+        if (start >= text.Length || text[start] != '{')
+        {
+            return false;
+        }
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    escaped = true;
+                }
+                else if (ch == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch != '}')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                jsonObject = text[start..(i + 1)];
+                remainingText = text[(i + 1)..];
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsRawToolUseEnvelope(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = TrimJsonFence(text).Trim();
+        if (!trimmed.StartsWith("{", StringComparison.Ordinal)
+            || !trimmed.Contains("\"tool_uses\"", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("tool_uses", out var toolUses)
+                || toolUses.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            return toolUses.EnumerateArray().Any(item =>
+                item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("recipient_name", out var recipient)
+                && recipient.ValueKind == JsonValueKind.String
+                && (recipient.GetString()?.StartsWith("functions.", StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string TrimJsonFence(string text)
+    {
+        var trimmed = text.Trim();
+        if (!trimmed.StartsWith("```json", StringComparison.OrdinalIgnoreCase)
+            && !trimmed.StartsWith("```", StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var firstLineBreak = trimmed.IndexOf('\n');
+        if (firstLineBreak < 0)
+        {
+            return text;
+        }
+
+        var withoutOpeningFence = trimmed[(firstLineBreak + 1)..].Trim();
+        return withoutOpeningFence.EndsWith("```", StringComparison.Ordinal)
+            ? withoutOpeningFence[..^3]
+            : withoutOpeningFence;
     }
 }

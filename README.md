@@ -37,6 +37,7 @@ If you just want to get started, jump to [Installation](#installation).
 - **Opt-in transcripts**: Save and load redacted session transcript JSON files with `/transcript` when you want replayable context.
 - **Interactive terminal UI**: Streamed responses, session status, prompt history, and cancellation are built into the console experience.
 - **Model and provider flexibility**: Use GitHub Copilot by default or switch to OpenAI-compatible BYOK mode if needed.
+- **Cost-aware subagent delegation**: Use a lower-cost subagent for high-volume evidence collection while keeping small diagnostics in the main session.
 - **Reasoning visibility**: Supported reasoning models can show their thinking output and let you adjust reasoning effort.
 - **MCP and skills support**: Load MCP servers and Copilot skills to extend what TroubleScout can access and automate.
 
@@ -140,6 +141,14 @@ Useful related options:
 - `/model` selects the primary model and then a same-provider sub-agent model; a faster or lower-cost delegated model is usually appropriate.
 - `/reasoning` sets the reasoning effort for supported models.
 - `/byok` configures or switches BYOK mode from inside the app.
+
+### Subagent delegation
+
+TroubleScout can use a dedicated troubleshooting subagent for evidence collection that is likely to return a lot of data. This is mainly a cost and context-control feature: the primary agent writes the exact PowerShell command or staged script, then delegates high-volume work such as broad event-log review, large inventories, multi-server sweeps, MCP lookups, or web research to the subagent so it can summarize only the findings that matter.
+
+Small, bounded reads stay in the primary session. For example, quick health checks such as system info, disk space, top processes, or a small recent event sample run directly and are shown in the terminal as concise command notices. Full command output is kept in `/report`, not dumped into the chat. If the primary agent accidentally asks for the same direct diagnostic again in a turn, TroubleScout reuses the earlier result instead of collecting the same data repeatedly.
+
+Choose the subagent model with `/model`, `/agent-model`, or `--subagent-model`. A faster or lower-cost model is usually enough because the subagent is expected to collect and summarize evidence, not own the final diagnosis.
 
 ## Remote Troubleshooting
 
