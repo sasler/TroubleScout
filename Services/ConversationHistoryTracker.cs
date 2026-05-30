@@ -431,6 +431,7 @@ internal sealed class ConversationHistoryTracker
             }
 
             var sb = new StringBuilder();
+            var evidenceNumber = 0;
             for (var i = 0; i < actions.Count; i++)
             {
                 var action = actions[i];
@@ -447,7 +448,7 @@ internal sealed class ConversationHistoryTracker
                 }
 
                 var label = SecretRedactor.Redact(action.Description ?? action.Command);
-                sb.AppendLine($"### Evidence {i + 1}: {TruncateForRecovery(label, 160)}");
+                sb.AppendLine($"### Evidence {++evidenceNumber}: {TruncateForRecovery(label, 160)}");
                 sb.AppendLine($"Target: {TruncateForRecovery(SecretRedactor.Redact(action.Target), 120)}");
                 sb.AppendLine($"Source: {TruncateForRecovery(SecretRedactor.Redact(action.Source), 120)}");
                 sb.AppendLine($"Approval: {TruncateForRecovery(SecretRedactor.Redact(action.SafetyApproval), 120)}");
