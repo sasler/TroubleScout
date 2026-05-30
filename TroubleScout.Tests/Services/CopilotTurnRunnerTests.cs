@@ -498,6 +498,251 @@ public class CopilotTurnRunnerTests
         displayedModel.Should().Be("gpt-5.4-mini (completion reported gpt-5.3-codex)");
     }
 
+    [Fact]
+    public async Task RunAsync_RepeatedStatusAfterDirectDiagnostic_ShouldGuardAndAbortWithoutIdle()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "get_system_info"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-2"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-3"));
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.RepeatedStatusAfterDiagnostics);
+        result.HasDirectDiagnosticEvidence.Should().BeTrue();
+        result.ShouldAttemptRecovery.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenSendFaultsAfterGuardTrips_ShouldPreserveGuardRecoveryState()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "get_system_info"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-2"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-3"));
+            return Task.FromException<string>(new InvalidOperationException("send fault after abort"));
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.HasError.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.RepeatedStatusAfterDiagnostics);
+        result.HasDirectDiagnosticEvidence.Should().BeTrue();
+        result.ShouldAttemptRecovery.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_RepeatedStatusWithoutNewlineAfterDirectDiagnostic_ShouldGuard()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "Read System event log"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateDelta("Collecting the core localhost health signals directly instead.", "message-1"));
+            session.Emit(CreateDelta("Collecting the core localhost health signals directly instead.", "message-2"));
+            session.Emit(CreateDelta("Collecting the core localhost health signals directly instead.", "message-3"));
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.RepeatedStatusAfterDiagnostics);
+        result.HasDirectDiagnosticEvidence.Should().BeTrue();
+        result.ShouldAttemptRecovery.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_StatusFragmentThenNewline_ShouldNotDoubleCountStatusLine()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "get_system_info"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.", "message-1"));
+            session.Emit(CreateDelta("\n", "message-2"));
+            session.Emit(CreateDelta("Checking the current health signals now.", "message-3"));
+            session.Emit(CreateDelta("\n", "message-4"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeTrue();
+        result.WasGuarded.Should().BeFalse();
+        session.AbortCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunAsync_RepeatedRootDiagnosticToolAfterDirectDiagnostic_ShouldGuard()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "Read System event log"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateToolStart("tool-2", "Read System event log"));
+            session.Emit(CreateToolComplete("tool-2"));
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.RepeatedToolAfterDiagnostics);
+        result.HasDirectDiagnosticEvidence.Should().BeTrue();
+        result.ShouldAttemptRecovery.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_PostDiagnosticStall_ShouldGuardAndCompleteWithoutIdle()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "run_powershell"));
+            session.Emit(CreateToolComplete("tool-1"));
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.PostDiagnosticStall);
+        result.HasDirectDiagnosticEvidence.Should().BeTrue();
+        result.ShouldAttemptRecovery.Should().BeTrue();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_SilentPreToolStall_ShouldGuardWithoutRecoveryEvidence()
+    {
+        var session = new FakeTurnSession
+        {
+            SendAsyncHandler = (_, _) => Task.FromResult("message-id")
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.SilentPreToolStall);
+        result.HasDirectDiagnosticEvidence.Should().BeFalse();
+        result.ShouldAttemptRecovery.Should().BeFalse();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_SilentPreToolStallWhileSendIsPending_ShouldGuardAndReturnControl()
+    {
+        var session = new FakeTurnSession
+        {
+            SendAsyncHandler = async (_, _) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return "message-id";
+            }
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeFalse();
+        result.WasGuarded.Should().BeTrue();
+        result.GuardReason.Should().Be(CopilotTurnGuardReason.SilentPreToolStall);
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_RepeatedMarkdownAfterDiagnostic_ShouldNotTripGuard()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "get_disk_space"));
+            session.Emit(CreateToolComplete("tool-1"));
+            session.Emit(CreateDelta("| Component | Status |\n", "message-1"));
+            session.Emit(CreateDelta("| --- | --- |\n", "message-2"));
+            session.Emit(CreateDelta("| Disk | OK |\n", "message-3"));
+            session.Emit(CreateDelta("| Disk | OK |\n", "message-4"));
+            session.Emit(CreateDelta("- OK\n- OK\n- OK\n", "message-5"));
+            session.Emit(CreateDelta("The system health summary is ready.", "message-6"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeTrue();
+        result.WasGuarded.Should().BeFalse();
+        session.AbortCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunAsync_SubagentDiagnosticEvents_ShouldNotEnableRootLoopGuard()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateToolStart("tool-1", "get_system_info", parentToolCallId: "sub-1"));
+            session.Emit(CreateToolComplete("tool-1", parentToolCallId: "sub-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-1"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-2"));
+            session.Emit(CreateDelta("Checking the current health signals now.\n", "message-3"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner()
+            .RunAsync(CreateRequest(session, guardOptions: CreateFastGuardOptions()))
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        result.Success.Should().BeTrue();
+        result.WasGuarded.Should().BeFalse();
+        session.AbortCallCount.Should().Be(0);
+    }
+
 
     private static AssistantMessageDeltaEvent CreateDelta(string content, string messageId)
         => new()
@@ -510,6 +755,34 @@ public class CopilotTurnRunnerTests
             }
         };
 
+    private static ToolExecutionStartEvent CreateToolStart(
+        string toolCallId,
+        string toolName,
+        string? parentToolCallId = null)
+        => new()
+        {
+            Data = new ToolExecutionStartData
+            {
+                ToolCallId = toolCallId,
+                ToolName = toolName,
+                ParentToolCallId = parentToolCallId
+            }
+        };
+
+    private static ToolExecutionCompleteEvent CreateToolComplete(
+        string toolCallId,
+        string? parentToolCallId = null)
+        => new()
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ToolCallId = toolCallId,
+                ParentToolCallId = parentToolCallId,
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "diagnostic output" }
+            }
+        };
+
     private static SessionIdleEvent CreateIdle()
         => new()
         {
@@ -517,6 +790,14 @@ public class CopilotTurnRunnerTests
         };
 
     private static CopilotTurnRunner CreateRunner() => new();
+
+    private static CopilotTurnGuardOptions CreateFastGuardOptions()
+        => new()
+        {
+            PostDiagnosticStallTimeout = TimeSpan.FromMilliseconds(40),
+            SilentPreToolStallTimeout = TimeSpan.FromMilliseconds(40),
+            CheckInterval = TimeSpan.FromMilliseconds(10)
+        };
 
     private static CopilotTurnRequest CreateRequest(
         FakeTurnSession session,
@@ -528,7 +809,8 @@ public class CopilotTurnRunnerTests
         Action<string, string>? recordSubagentMessageDelta = null,
         Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null,
-        string? defaultSubagentModel = null)
+        string? defaultSubagentModel = null,
+        CopilotTurnGuardOptions? guardOptions = null)
         => new()
         {
             Session = session,
@@ -536,6 +818,7 @@ public class CopilotTurnRunnerTests
             CancellationToken = cancellationToken,
             ToolDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             DefaultSubagentModel = defaultSubagentModel,
+            GuardOptions = guardOptions,
             CreateThinkingIndicator = createThinkingIndicator ?? (() => new FakeThinkingIndicator()),
             Callbacks = new CopilotTurnCallbacks
             {

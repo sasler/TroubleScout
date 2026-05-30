@@ -36,6 +36,7 @@ public partial class DiagnosticTools
     private readonly object _delegatedGrantLock = new();
     private readonly HashSet<string> _completedDirectReadsThisTurn = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _directReadLock = new();
+    private int _synthesisOnlyRecoveryDepth;
 
     private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
 
@@ -45,8 +46,21 @@ public partial class DiagnosticTools
     {
         lock (_directReadLock)
         {
-            _completedDirectReadsThisTurn.Clear();
+            if (_synthesisOnlyRecoveryDepth == 0)
+            {
+                _completedDirectReadsThisTurn.Clear();
+            }
         }
+    }
+
+    internal IDisposable BeginSynthesisOnlyRecoveryTurn()
+    {
+        lock (_directReadLock)
+        {
+            _synthesisOnlyRecoveryDepth++;
+        }
+
+        return new RecoveryScope(this);
     }
 
     public DiagnosticTools(
@@ -150,6 +164,12 @@ public partial class DiagnosticTools
 
         lock (_directReadLock)
         {
+            if (_synthesisOnlyRecoveryDepth > 0)
+            {
+                message = "[ALREADY COLLECTED] TroubleScout is recovering from a stuck diagnostic turn. Do not call diagnostics again; answer from the diagnostics already collected in this conversation.";
+                return true;
+            }
+
             if (!_completedDirectReadsThisTurn.Contains(key))
             {
                 message = string.Empty;
@@ -171,6 +191,24 @@ public partial class DiagnosticTools
         lock (_directReadLock)
         {
             _completedDirectReadsThisTurn.Add(key);
+        }
+    }
+
+    private sealed class RecoveryScope(DiagnosticTools owner) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (owner._directReadLock)
+            {
+                owner._synthesisOnlyRecoveryDepth = Math.Max(0, owner._synthesisOnlyRecoveryDepth - 1);
+            }
         }
     }
 

@@ -76,6 +76,7 @@ internal sealed class CopilotTurnRequest
     public required Func<ITurnThinkingIndicator> CreateThinkingIndicator { get; init; }
     public required IReadOnlyDictionary<string, string> ToolDescriptions { get; init; }
     public string? DefaultSubagentModel { get; init; }
+    public CopilotTurnGuardOptions? GuardOptions { get; init; }
     public CopilotTurnCallbacks Callbacks { get; init; } = new();
     public CancellationToken CancellationToken { get; init; }
 }
@@ -85,7 +86,13 @@ internal sealed record CopilotTurnResult(
     bool HasError,
     bool WasCancelled,
     bool HasStartedStreaming,
-    string ResponseText);
+    string ResponseText,
+    CopilotTurnGuardReason GuardReason = CopilotTurnGuardReason.None,
+    bool HasDirectDiagnosticEvidence = false)
+{
+    public bool WasGuarded => GuardReason != CopilotTurnGuardReason.None;
+    public bool ShouldAttemptRecovery => WasGuarded && HasDirectDiagnosticEvidence;
+}
 
 internal sealed class CopilotTurnRunner
 {
@@ -95,6 +102,8 @@ internal sealed class CopilotTurnRunner
         ITurnThinkingIndicator? thinkingIndicator = null;
         CancellationTokenSource? watchdogCts = null;
         Task? watchdogTask = null;
+        CancellationTokenSource? guardCts = null;
+        Task? guardTask = null;
 
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var hasError = false;
@@ -110,6 +119,10 @@ internal sealed class CopilotTurnRunner
         var subagentModels = new Dictionary<string, string>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
         Task? abortTask = null;
+        var guard = new CopilotTurnGuard(request.GuardOptions ?? CopilotTurnGuardOptions.Default, DateTime.UtcNow);
+        var guardReason = CopilotTurnGuardReason.None;
+        var hasDirectDiagnosticEvidence = false;
+        var guardTripped = 0;
 
         try
         {
@@ -130,10 +143,18 @@ internal sealed class CopilotTurnRunner
                 () => hasStartedStreaming,
                 request.Callbacks.ShowLiveStatusNotice,
                 watchdogCts.Token);
+            guardCts = CancellationTokenSource.CreateLinkedTokenSource(request.CancellationToken);
+            guardTask = RunTurnGuardAsync(
+                guard,
+                TryTripGuard,
+                request.GuardOptions ?? CopilotTurnGuardOptions.Default,
+                guardCts.Token);
 
             subscription = request.Session.On(evt =>
             {
-                Interlocked.Exchange(ref lastEventTimeTicks, DateTime.UtcNow.Ticks);
+                var eventTimeUtc = DateTime.UtcNow;
+                Interlocked.Exchange(ref lastEventTimeTicks, eventTimeUtc.Ticks);
+                guard.RecordEvent(eventTimeUtc);
 
                 switch (evt)
                 {
@@ -186,6 +207,7 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case ToolExecutionStartEvent toolStart:
+                        guard.RecordToolStart(toolStart);
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
@@ -205,6 +227,7 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case ToolExecutionCompleteEvent toolComplete:
+                        TryTripGuard(guard.RecordToolComplete(toolComplete));
                         var completeParentToolCallId = ReadStringProperty(toolComplete.Data, "ParentToolCallId");
                         if (!string.IsNullOrWhiteSpace(completeParentToolCallId))
                         {
@@ -420,10 +443,11 @@ internal sealed class CopilotTurnRunner
                 }
             });
 
-            await request.Session.SendAsync(new MessageOptions { Prompt = request.Prompt }, request.CancellationToken);
-            await done.Task;
+            var sendTask = request.Session.SendAsync(new MessageOptions { Prompt = request.Prompt }, request.CancellationToken);
+            await AwaitSendAndTurnCompletionAsync(sendTask);
             FlushPendingRootToolEnvelopeIfNeeded();
             await AwaitAbortIfNeededAsync();
+            await StopGuardAsync();
             await StopWatchdogAsync();
 
             subscription.Dispose();
@@ -441,18 +465,21 @@ internal sealed class CopilotTurnRunner
                 request.Callbacks.ShowCancelled();
             }
 
-            var success = !hasError && !wasCancelled;
+            var success = !hasError && !wasCancelled && guardReason == CopilotTurnGuardReason.None;
             return new CopilotTurnResult(
                 success,
                 hasError,
                 wasCancelled,
                 hasStartedStreaming,
-                responseBuffer.ToString());
+                responseBuffer.ToString(),
+                guardReason,
+                hasDirectDiagnosticEvidence);
         }
         catch (OperationCanceledException)
         {
             wasCancelled = true;
             await AwaitAbortIfNeededAsync();
+            await StopGuardAsync();
             await StopWatchdogAsync();
             subscription?.Dispose();
             subscription = null;
@@ -468,6 +495,8 @@ internal sealed class CopilotTurnRunner
         }
         finally
         {
+            guardCts?.Cancel();
+            guardCts?.Dispose();
             watchdogCts?.Cancel();
             watchdogCts?.Dispose();
             subscription?.Dispose();
@@ -488,6 +517,30 @@ internal sealed class CopilotTurnRunner
             watchdogTask = null;
         }
 
+        async Task StopGuardAsync()
+        {
+            guardCts?.Cancel();
+            if (guardTask != null)
+            {
+                try
+                {
+                    await guardTask.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected during turn completion and cancellation.
+                }
+                catch (TimeoutException)
+                {
+                    // Do not let guard shutdown delay returning control to the user.
+                }
+            }
+
+            guardCts?.Dispose();
+            guardCts = null;
+            guardTask = null;
+        }
+
         async Task AbortActiveTurnAsync()
         {
             try
@@ -506,6 +559,51 @@ internal sealed class CopilotTurnRunner
             if (pendingAbort != null)
             {
                 await pendingAbort;
+            }
+        }
+
+        async Task AwaitSendAndTurnCompletionAsync(Task<string> sendTask)
+        {
+            var completed = await Task.WhenAny(sendTask, done.Task);
+            if (completed == sendTask)
+            {
+                try
+                {
+                    await sendTask;
+                }
+                catch (OperationCanceledException) when (wasCancelled || guardReason != CopilotTurnGuardReason.None)
+                {
+                    // Expected when cancellation or guard-triggered abort interrupts SendAsync.
+                }
+                catch (Exception) when (guardReason != CopilotTurnGuardReason.None)
+                {
+                    // The SDK may fault the in-flight send after a guard-triggered abort.
+                }
+
+                await done.Task;
+                return;
+            }
+
+            await AwaitAbortIfNeededAsync();
+            try
+            {
+                await sendTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (OperationCanceledException) when (wasCancelled || guardReason != CopilotTurnGuardReason.None)
+            {
+                // Expected when cancellation or guard-triggered abort interrupts SendAsync.
+            }
+            catch (TimeoutException) when (wasCancelled || guardReason != CopilotTurnGuardReason.None)
+            {
+                _ = sendTask.ContinueWith(
+                    static task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            catch (Exception) when (guardReason != CopilotTurnGuardReason.None)
+            {
+                // The SDK may fault the in-flight send after a guard-triggered abort.
             }
         }
 
@@ -537,6 +635,7 @@ internal sealed class CopilotTurnRunner
 
             responseBuffer.Append(text);
             request.Callbacks.WriteAIResponse(text);
+            TryTripGuard(guard.RecordRootAssistantText(text));
         }
 
         void FlushPendingRootToolEnvelopeIfNeeded()
@@ -552,6 +651,26 @@ internal sealed class CopilotTurnRunner
             {
                 AppendRootAssistantText(buffered);
             }
+        }
+
+        void TryTripGuard(CopilotTurnGuardReason reason)
+        {
+            if (reason == CopilotTurnGuardReason.None)
+            {
+                return;
+            }
+
+            if (Interlocked.Exchange(ref guardTripped, 1) != 0)
+            {
+                return;
+            }
+
+            guardReason = reason;
+            hasDirectDiagnosticEvidence = guard.HasDirectDiagnosticEvidence;
+            watchdogCts?.Cancel();
+            guardCts?.Cancel();
+            abortTask = AbortActiveTurnAsync();
+            done.TrySetResult(false);
         }
     }
 
@@ -617,6 +736,42 @@ internal sealed class CopilotTurnRunner
         }
 
         return null;
+    }
+
+    internal static async Task RunTurnGuardAsync(
+        CopilotTurnGuard guard,
+        Action<CopilotTurnGuardReason> onGuardTripped,
+        CopilotTurnGuardOptions options,
+        CancellationToken cancellationToken)
+    {
+        var checkInterval = options.CheckInterval > TimeSpan.Zero
+            ? options.CheckInterval
+            : CopilotTurnGuardOptions.Default.CheckInterval;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(checkInterval, cancellationToken);
+                var reason = guard.EvaluateTimeout(DateTime.UtcNow);
+                if (reason == CopilotTurnGuardReason.None)
+                {
+                    continue;
+                }
+
+                if (reason == CopilotTurnGuardReason.SilentPreToolStall && guard.HasSeenEvent)
+                {
+                    continue;
+                }
+
+                onGuardTripped(reason);
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during normal turn completion and cancellation.
+        }
     }
 
     private static string BuildToolDisplay(

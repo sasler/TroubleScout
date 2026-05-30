@@ -410,6 +410,61 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
+    internal string BuildRecoveryEvidence(int promptIndex)
+    {
+        const int maxActionOutputChars = 5000;
+        const int maxTotalChars = 24000;
+
+        lock (_reportLock)
+        {
+            if (promptIndex < 0 || promptIndex >= _reportPrompts.Count)
+            {
+                return string.Empty;
+            }
+
+            var actions = _reportPrompts[promptIndex].Actions
+                .Where(action => !string.IsNullOrWhiteSpace(action.Output))
+                .ToList();
+            if (actions.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder();
+            for (var i = 0; i < actions.Count; i++)
+            {
+                var action = actions[i];
+                var output = SecretRedactor.Redact(action.Output).Trim();
+                if (string.IsNullOrWhiteSpace(output)
+                    || output.StartsWith("[ALREADY COLLECTED]", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (sb.Length >= maxTotalChars)
+                {
+                    break;
+                }
+
+                var label = SecretRedactor.Redact(action.Description ?? action.Command);
+                sb.AppendLine($"### Evidence {i + 1}: {TruncateForRecovery(label, 160)}");
+                sb.AppendLine($"Target: {TruncateForRecovery(SecretRedactor.Redact(action.Target), 120)}");
+                sb.AppendLine($"Source: {TruncateForRecovery(SecretRedactor.Redact(action.Source), 120)}");
+                sb.AppendLine($"Approval: {TruncateForRecovery(SecretRedactor.Redact(action.SafetyApproval), 120)}");
+                if (!string.IsNullOrWhiteSpace(action.Command))
+                {
+                    sb.AppendLine($"Command: {TruncateForRecovery(SecretRedactor.Redact(action.Command), 500)}");
+                }
+
+                sb.AppendLine("Output:");
+                sb.AppendLine(TruncateForRecovery(output, maxActionOutputChars));
+                sb.AppendLine();
+            }
+
+            return TruncateForRecovery(sb.ToString().Trim(), maxTotalChars);
+        }
+    }
+
     private void AppendActionToCurrentPrompt(ReportActionEntry actionEntry)
     {
         lock (_reportLock)
@@ -421,6 +476,19 @@ internal sealed class ConversationHistoryTracker
 
             _reportPrompts[_lastPromptIndex].Actions.Add(actionEntry);
         }
+    }
+
+    private static string TruncateForRecovery(string? value, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxChars
+            ? trimmed
+            : $"{trimmed[..maxChars]}...[truncated]";
     }
 
     private void CompleteSubagentAction(string? toolCallId, TimeSpan? duration, long? tokens, long? tools, bool success, string? error)
