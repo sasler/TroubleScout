@@ -211,6 +211,64 @@ public class DiagnosticToolsTests : IDisposable
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Exactly(2));
     }
 
+    [Fact]
+    public async Task DirectRead_DuringSynthesisOnlyRecovery_ShouldReturnAlreadyCollectedWithoutExecuting()
+    {
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+
+        using var recovery = _diagnosticTools.BeginSynthesisOnlyRecoveryTurn();
+        var getSystemInfoTool = _diagnosticTools.GetTools().First(t => t.Name == "get_system_info");
+
+        var result = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        result!.ToString().Should().Contain("ALREADY COLLECTED");
+        result.ToString().Should().Contain("answer from the diagnostics already collected");
+        _mockExecutor.Verify(x => x.ValidateCommand(It.IsAny<string>()), Times.Never);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunPowerShellCommand_DuringSynthesisOnlyRecovery_ShouldNotValidateOrExecute()
+    {
+        const string command = "Get-Service";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, false));
+
+        using var recovery = _diagnosticTools.BeginSynthesisOnlyRecoveryTurn();
+        var runPowerShellTool = _diagnosticTools.GetTools().First(t => t.Name == "run_powershell");
+
+        var result = await runPowerShellTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        result!.ToString().Should().Contain("ALREADY COLLECTED");
+        result.ToString().Should().Contain("answer from the diagnostics already collected");
+        _mockExecutor.Verify(x => x.ValidateCommand(It.IsAny<string>()), Times.Never);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task BeginDiagnosticTurn_DuringSynthesisOnlyRecovery_ShouldNotClearCompletedReads()
+    {
+        _mockExecutor.Setup(x => x.ValidateCommand(It.IsAny<string>()))
+            .Returns(new CommandValidation(true, false));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()))
+            .ReturnsAsync(new PowerShellResult(true, "System Info Output"));
+
+        var getSystemInfoTool = _diagnosticTools.GetTools().First(t => t.Name == "get_system_info");
+
+        await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+        using (var recovery = _diagnosticTools.BeginSynthesisOnlyRecoveryTurn())
+        {
+            _diagnosticTools.BeginDiagnosticTurn();
+        }
+        var afterRecovery = await getSystemInfoTool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments());
+
+        afterRecovery!.ToString().Should().Contain("ALREADY COLLECTED");
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
+    }
+
     #endregion
 
     #region Command Approval Tests

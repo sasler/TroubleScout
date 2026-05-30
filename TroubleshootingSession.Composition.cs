@@ -110,7 +110,9 @@ public partial class TroubleshootingSession
             RecordPrompt = RecordPrompt,
             SetPromptReply = SetPromptReply,
             SetLastAssistantMessage = value => _lastAssistantMessage = value,
-            RecordMcpToolAction = RecordMcpToolAction
+            RecordMcpToolAction = RecordMcpToolAction,
+            BeginSynthesisOnlyRecoveryTurn = _diagnosticTools.BeginSynthesisOnlyRecoveryTurn,
+            ShowWarning = ConsoleUI.ShowWarning
         };
 
     private CopilotSessionLifecycleRequest CreateSessionLifecycleRequest()

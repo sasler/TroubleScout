@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.3] - 2026-05-30
+
+### Changed
+
+- 🐛 **Recover stuck main-agent health checks** - direct bounded diagnostics now stay on the main agent while TroubleScout detects repeated post-diagnostic status loops and stalls, then makes one synthesis-only recovery attempt from already-collected evidence without rerunning diagnostics.
+- 🔐 **Preserve delegated approval safety** - protected subagent work still requires primary-agent preauthorization, and routine health checks no longer need to be routed through the troubleshooting subagent to avoid loops.
+
 ## [v1.18.2] - 2026-05-29
 
 ### Changed

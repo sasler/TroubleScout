@@ -48,6 +48,8 @@ public class CopilotSessionConfigBuilderTests
             && agent.Infer == true
             && string.Equals(agent.DisplayName, "Troubleshooting Subagent", StringComparison.Ordinal));
         var subagent = config.CustomAgents!.Single();
+        subagent.Description.Should().Contain("High-volume evidence collector");
+        subagent.Description.Should().Contain("Do not use for routine health checks");
         subagent.Tools.Should().Contain(["run_delegated_powershell", "run_delegated_powershell_script", "web_search"]);
         subagent.Tools.Should().NotContain(["get_system_info", "get_event_logs", "get_services", "get_processes"]);
         subagent.Tools.Should().NotContain("run_powershell");

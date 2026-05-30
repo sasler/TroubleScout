@@ -76,6 +76,8 @@ public class SystemPromptTests : IDisposable
         content.Should().Contain("Before each command or script, estimate whether the result is likely to exceed about 50 lines");
         content.Should().Contain("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads");
         content.Should().Contain("Handing this to the subagent to summarize the data.");
+        content.Should().Contain("Never delegate just to summarize a routine server/PC health check");
+        content.Should().Contain("Do not delegate routine server/PC health checks");
         content.Should().Contain("Do not repeat the same successful direct read in a turn");
         content.Should().Contain("If a direct diagnostic tool returns output, treat that output as available to you immediately");
         content.Should().NotContain("primary agent must not invoke native shell or PowerShell tools for evidence collection");

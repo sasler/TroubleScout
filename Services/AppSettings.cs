@@ -61,6 +61,23 @@ public static class AppSettingsStore
         - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
         - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
         - Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings
+        - Never delegate just to summarize a routine server/PC health check, choose small diagnostics, or avoid writing the final answer yourself
+        - After a successful small diagnostic pass, answer from the collected data instead of calling the troubleshooting subagent for summarization
+        - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
+        - Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.
+        - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
+        - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+        - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
+        - Return a complete answer for the current request and then stop; the user can send another query for additional work
+        - If one relevant diagnostic approach yields no results, try the next most likely source before concluding
+        - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
+        """;
+
+    private const string PreviousCostAwareInvestigationApproach = """
+        ## Investigation Approach
+        - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
+        - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
+        - Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings
         - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
         - Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.
         - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
@@ -331,7 +348,7 @@ public static class AppSettingsStore
 
                 var key = entry.Key.Trim();
                 if (key.Equals("investigation_approach", StringComparison.OrdinalIgnoreCase)
-                    && IsLegacyDefaultInvestigationApproach(entry.Value))
+                    && IsRetiredDefaultInvestigationApproach(entry.Value))
                 {
                     normalizedOverrides[key] = DefaultInvestigationApproach;
                     changed = true;
@@ -447,8 +464,9 @@ public static class AppSettingsStore
         return SupportedThemes.Contains(normalized) ? normalized : "dark";
     }
 
-    private static bool IsLegacyDefaultInvestigationApproach(string value) =>
-        string.Equals(value.Trim(), LegacyDefaultInvestigationApproach.Trim(), StringComparison.Ordinal)
+    private static bool IsRetiredDefaultInvestigationApproach(string value) =>
+        string.Equals(value.Trim(), PreviousCostAwareInvestigationApproach.Trim(), StringComparison.Ordinal)
+        || string.Equals(value.Trim(), LegacyDefaultInvestigationApproach.Trim(), StringComparison.Ordinal)
         || (value.Contains("exhaust ALL available diagnostic tools", StringComparison.Ordinal)
             && value.Contains("Gather data from ALL relevant sources", StringComparison.Ordinal));
 

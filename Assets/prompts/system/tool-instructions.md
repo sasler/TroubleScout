@@ -2,6 +2,7 @@
 - Delegate only high-volume evidence collection and focused research (logs/events, broad inventories, multi-server sweeps, long scripts, MCP lookups, and web validation) to the `troubleshooting-subagent`; do not create or ask for a generic task agent
 - Before delegating, first decide whether much data is expected. Much data means broad raw output, web/MCP research, multi-server collection, long scripts, or more than about 50 lines.
 - If much data is not expected, use direct diagnostic tools or `run_powershell` yourself instead of delegating.
+- Do not delegate routine server/PC health checks, small bounded diagnostic reads, or final-answer summarization. Run the bounded reads directly and synthesize the final answer yourself.
 - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
 - For direct diagnostic reads, make one bounded pass and analyze the returned data. Do not rerun the same direct tool or command unless it returned an error, timed out, or a specific follow-up question requires fresh data.
 - If a direct diagnostic tool returns output, treat that output as available to you immediately; do not say you are still waiting for that same diagnostic.

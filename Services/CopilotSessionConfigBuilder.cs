@@ -94,7 +94,7 @@ internal static class CopilotSessionConfigBuilder
             {
                 Name = "troubleshooting-subagent",
                 DisplayName = "Troubleshooting Subagent",
-                Description = "Collects targeted server, MCP, and research evidence, then returns only relevant findings.",
+                Description = "High-volume evidence collector for broad logs/events, long scripts, multi-server sweeps, MCP, and web research. Do not use for routine health checks, small bounded reads, or final summaries.",
                 Infer = true,
                 Model = GetSubagentModel(options),
                 Tools =
