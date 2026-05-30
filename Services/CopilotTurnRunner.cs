@@ -85,10 +85,28 @@ internal sealed record CopilotTurnResult(
     bool HasError,
     bool WasCancelled,
     bool HasStartedStreaming,
-    string ResponseText);
+    string ResponseText,
+    bool WasLoopGuardAborted = false);
 
 internal sealed class CopilotTurnRunner
 {
+    private static readonly TimeSpan DefaultStalledTurnAbortAfter = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan DefaultWatchdogCheckInterval = TimeSpan.FromSeconds(2);
+
+    private readonly TimeSpan _stalledTurnAbortAfter;
+    private readonly TimeSpan _watchdogCheckInterval;
+
+    public CopilotTurnRunner()
+        : this(null, null)
+    {
+    }
+
+    internal CopilotTurnRunner(TimeSpan? stalledTurnAbortAfter, TimeSpan? watchdogCheckInterval)
+    {
+        _stalledTurnAbortAfter = stalledTurnAbortAfter ?? DefaultStalledTurnAbortAfter;
+        _watchdogCheckInterval = watchdogCheckInterval ?? DefaultWatchdogCheckInterval;
+    }
+
     public async Task<CopilotTurnResult> RunAsync(CopilotTurnRequest request)
     {
         IDisposable? subscription = null;
@@ -109,6 +127,11 @@ internal sealed class CopilotTurnRunner
         var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
         var subagentModels = new Dictionary<string, string>(StringComparer.Ordinal);
         var lastEventTimeTicks = DateTime.UtcNow.Ticks;
+        var responseLoopGuard = new AssistantResponseLoopGuard();
+        var wasLoopGuardAborted = false;
+        var activeToolExecutions = 0;
+        var hasCompletedToolExecution = 0;
+        var abortTaskLock = new object();
         Task? abortTask = null;
 
         try
@@ -117,7 +140,7 @@ internal sealed class CopilotTurnRunner
             {
                 wasCancelled = true;
                 watchdogCts?.Cancel();
-                abortTask = AbortActiveTurnAsync();
+                TriggerAbort();
                 done.TrySetResult(false);
             });
 
@@ -129,7 +152,15 @@ internal sealed class CopilotTurnRunner
                 () => new DateTime(Interlocked.Read(ref lastEventTimeTicks), DateTimeKind.Utc),
                 () => hasStartedStreaming,
                 request.Callbacks.ShowLiveStatusNotice,
-                watchdogCts.Token);
+                watchdogCts.Token,
+                _watchdogCheckInterval,
+                () => Volatile.Read(ref hasCompletedToolExecution) == 1
+                    && Volatile.Read(ref activeToolExecutions) <= 0
+                    && !hasError
+                    && !wasCancelled
+                    && !wasLoopGuardAborted,
+                TriggerLoopGuardAbort,
+                _stalledTurnAbortAfter);
 
             subscription = request.Session.On(evt =>
             {
@@ -186,6 +217,7 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case ToolExecutionStartEvent toolStart:
+                        Interlocked.Increment(ref activeToolExecutions);
                         if (hasStartedStreaming)
                         {
                             pendingStreamLineBreak = true;
@@ -205,6 +237,11 @@ internal sealed class CopilotTurnRunner
                         break;
 
                     case ToolExecutionCompleteEvent toolComplete:
+                        if (Volatile.Read(ref activeToolExecutions) > 0)
+                        {
+                            Interlocked.Decrement(ref activeToolExecutions);
+                        }
+                        Volatile.Write(ref hasCompletedToolExecution, 1);
                         var completeParentToolCallId = ReadStringProperty(toolComplete.Data, "ParentToolCallId");
                         if (!string.IsNullOrWhiteSpace(completeParentToolCallId))
                         {
@@ -441,13 +478,33 @@ internal sealed class CopilotTurnRunner
                 request.Callbacks.ShowCancelled();
             }
 
-            var success = !hasError && !wasCancelled;
+            var success = !hasError && !wasCancelled && !wasLoopGuardAborted;
             return new CopilotTurnResult(
                 success,
                 hasError,
                 wasCancelled,
                 hasStartedStreaming,
-                responseBuffer.ToString());
+                responseBuffer.ToString(),
+                wasLoopGuardAborted);
+        }
+        catch (OperationCanceledException) when (wasLoopGuardAborted && !wasCancelled)
+        {
+            await AwaitAbortIfNeededAsync();
+            await StopWatchdogAsync();
+            subscription?.Dispose();
+            subscription = null;
+            if (hasStartedStreaming)
+            {
+                request.Callbacks.EndAIResponse();
+            }
+
+            return new CopilotTurnResult(
+                false,
+                hasError,
+                false,
+                hasStartedStreaming,
+                responseBuffer.ToString(),
+                WasLoopGuardAborted: true);
         }
         catch (OperationCanceledException)
         {
@@ -500,6 +557,27 @@ internal sealed class CopilotTurnRunner
             }
         }
 
+        void TriggerAbort()
+        {
+            lock (abortTaskLock)
+            {
+                abortTask ??= AbortActiveTurnAsync();
+            }
+        }
+
+        void TriggerLoopGuardAbort()
+        {
+            if (wasLoopGuardAborted || wasCancelled)
+            {
+                return;
+            }
+
+            wasLoopGuardAborted = true;
+            watchdogCts?.Cancel();
+            TriggerAbort();
+            done.TrySetResult(false);
+        }
+
         async Task AwaitAbortIfNeededAsync()
         {
             var pendingAbort = abortTask;
@@ -511,7 +589,7 @@ internal sealed class CopilotTurnRunner
 
         void AppendRootAssistantText(string text)
         {
-            if (string.IsNullOrEmpty(text))
+            if (wasLoopGuardAborted || string.IsNullOrEmpty(text))
             {
                 return;
             }
@@ -533,10 +611,19 @@ internal sealed class CopilotTurnRunner
                 request.Callbacks.WriteAIResponse(Environment.NewLine);
                 responseBuffer.AppendLine();
                 pendingStreamLineBreak = false;
+                if (responseLoopGuard.Observe(Environment.NewLine))
+                {
+                    TriggerLoopGuardAbort();
+                    return;
+                }
             }
 
             responseBuffer.Append(text);
             request.Callbacks.WriteAIResponse(text);
+            if (responseLoopGuard.Observe(text))
+            {
+                TriggerLoopGuardAbort();
+            }
         }
 
         void FlushPendingRootToolEnvelopeIfNeeded()
@@ -563,16 +650,20 @@ internal sealed class CopilotTurnRunner
         Func<DateTime> getLastEventTime,
         Func<bool> hasStartedStreaming,
         Action<string> showLiveStatusNotice,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? checkInterval = null,
+        Func<bool>? shouldAbortStalledTurn = null,
+        Action? abortStalledTurn = null,
+        TimeSpan? stalledTurnAbortAfter = null)
     {
-        const int checkIntervalMs = 2000;
+        var effectiveCheckInterval = checkInterval ?? DefaultWatchdogCheckInterval;
         string? lastWatchdogStatus = null;
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(checkIntervalMs, cancellationToken);
+                await Task.Delay(effectiveCheckInterval, cancellationToken);
 
                 var idleSeconds = (DateTime.UtcNow - getLastEventTime()).TotalSeconds;
                 var nextWatchdogStatus = GetActivityWatchdogStatus(idleSeconds);
@@ -592,6 +683,14 @@ internal sealed class CopilotTurnRunner
                     }
 
                     lastWatchdogStatus = nextWatchdogStatus;
+                }
+
+                if (stalledTurnAbortAfter.HasValue
+                    && idleSeconds >= stalledTurnAbortAfter.Value.TotalSeconds
+                    && shouldAbortStalledTurn?.Invoke() == true)
+                {
+                    abortStalledTurn?.Invoke();
+                    return;
                 }
             }
         }

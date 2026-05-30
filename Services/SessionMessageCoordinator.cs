@@ -79,7 +79,7 @@ internal static class SessionMessageCoordinator
                 }
             });
 
-            if (result.HasStartedStreaming && !result.HasError && !result.WasCancelled)
+            if (result.HasStartedStreaming && !result.HasError && !result.WasCancelled && !result.WasLoopGuardAborted)
             {
                 await request.Telemetry.RefreshSessionUsageMetricsAsync(request.CopilotSession, cancellationToken);
                 var statusBarInfo = request.BuildStatusBarInfo();
@@ -95,6 +95,13 @@ internal static class SessionMessageCoordinator
 
             request.SetPromptReply(promptIndex, result.ResponseText);
             request.SetLastAssistantMessage(result.ResponseText);
+
+            if (result.WasLoopGuardAborted)
+            {
+                ConsoleUI.ShowWarning("Response stopped because the assistant got stuck after diagnostics. TroubleScout returned control; review /report for the partial response and tool results.");
+                turnOutcome = TurnOutcome.Success;
+                return true;
+            }
 
             if (!result.HasError)
             {

@@ -61,6 +61,104 @@ public class CopilotTurnRunnerTests
         session.AbortCallCount.Should().Be(1);
     }
 
+    [Fact]
+    public async Task RunAsync_WhenRootAssistantRepeatsSameLine_ShouldAbortRunawayResponse()
+    {
+        var output = new StringBuilder();
+        var abortObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        const string repeatedLine = "Checking nlapplab301 now with a bounded health pass: identity, uptime, disks, performance, and recent system/application errors.";
+        var session = new FakeTurnSession();
+        session.AbortAsyncHandler = _ =>
+        {
+            abortObserved.TrySetResult();
+            return Task.CompletedTask;
+        };
+        session.SendAsyncHandler = async (_, _) =>
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                session.Emit(CreateDelta(repeatedLine + Environment.NewLine, "message-id"));
+            }
+
+            await abortObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            return "message-id";
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeAiResponse: text => output.Append(text)));
+
+        result.WasLoopGuardAborted.Should().BeTrue();
+        result.WasCancelled.Should().BeFalse();
+        result.Success.Should().BeFalse();
+        session.AbortCallCount.Should().Be(1);
+        output.ToString().Should().Contain(repeatedLine);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenTurnStallsAfterToolCompletion_ShouldAbortRunawayResponse()
+    {
+        var abortObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new FakeTurnSession();
+        session.AbortAsyncHandler = _ =>
+        {
+            abortObserved.TrySetResult();
+            return Task.CompletedTask;
+        };
+        session.SendAsyncHandler = async (_, _) =>
+        {
+            session.Emit(new ToolExecutionCompleteEvent
+            {
+                Data = new ToolExecutionCompleteData
+                {
+                    ToolCallId = "tool-1",
+                    Success = true,
+                    Result = new ToolExecutionCompleteResult { Content = "diagnostic output" }
+                }
+            });
+
+            await abortObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            return "message-id";
+        };
+
+        var result = await CreateRunner(
+            stalledTurnAbortAfter: TimeSpan.FromMilliseconds(50),
+            watchdogCheckInterval: TimeSpan.FromMilliseconds(10))
+            .RunAsync(CreateRequest(session));
+
+        result.WasLoopGuardAborted.Should().BeTrue();
+        result.WasCancelled.Should().BeFalse();
+        result.Success.Should().BeFalse();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenResponseRepeatsShortOrBoundedMarkdownLines_ShouldNotAbort()
+    {
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta(
+                """
+                OK
+                OK
+                OK
+                | Metric name | Current value | Status |
+                | Metric name | Current value | Status |
+                Complete.
+                """,
+                "message-id"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(session));
+
+        result.WasLoopGuardAborted.Should().BeFalse();
+        result.Success.Should().BeTrue();
+        session.AbortCallCount.Should().Be(0);
+    }
+
 
     [Fact]
     public async Task RunAsync_WhenSendThrowsCancellation_ShouldUnsubscribeBeforeDisposingIndicator()
@@ -516,7 +614,10 @@ public class CopilotTurnRunnerTests
             Data = new SessionIdleData()
         };
 
-    private static CopilotTurnRunner CreateRunner() => new();
+    private static CopilotTurnRunner CreateRunner(
+        TimeSpan? stalledTurnAbortAfter = null,
+        TimeSpan? watchdogCheckInterval = null)
+        => new(stalledTurnAbortAfter, watchdogCheckInterval);
 
     private static CopilotTurnRequest CreateRequest(
         FakeTurnSession session,
@@ -557,6 +658,9 @@ public class CopilotTurnRunnerTests
         public Func<MessageOptions, CancellationToken, Task<string>> SendAsyncHandler { get; set; }
             = (_, _) => Task.FromResult("message-id");
 
+        public Func<CancellationToken, Task> AbortAsyncHandler { get; set; }
+            = _ => Task.CompletedTask;
+
         public int AbortCallCount { get; private set; }
 
         public IDisposable On(Action<SessionEvent> handler)
@@ -571,7 +675,7 @@ public class CopilotTurnRunnerTests
         public Task AbortAsync(CancellationToken cancellationToken)
         {
             AbortCallCount++;
-            return Task.CompletedTask;
+            return AbortAsyncHandler(cancellationToken);
         }
 
         public void Emit(SessionEvent evt) => _handler?.Invoke(evt);

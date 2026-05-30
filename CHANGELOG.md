@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.3] - 2026-05-30
+
+### Fixed
+
+- 🛑 **Stop runaway response loops** - repeated or stalled assistant health-check turns are now detected, the active Copilot turn is aborted safely, and duplicate diagnostic guidance returns cached results instead of restarting collection.
+
 ## [v1.18.2] - 2026-05-29
 
 ### Changed

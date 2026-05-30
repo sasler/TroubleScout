@@ -188,6 +188,8 @@ public class DiagnosticToolsTests : IDisposable
 
         first?.ToString().Should().Contain("System Info Output");
         second?.ToString().Should().Contain("ALREADY COLLECTED");
+        second?.ToString().Should().Contain("USING CACHED RESULT");
+        second?.ToString().Should().Contain("System Info Output");
         second?.ToString().Should().Contain("answer the user now");
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
     }

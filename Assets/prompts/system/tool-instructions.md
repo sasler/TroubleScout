@@ -5,6 +5,7 @@
 - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
 - For direct diagnostic reads, make one bounded pass and analyze the returned data. Do not rerun the same direct tool or command unless it returned an error, timed out, or a specific follow-up question requires fresh data.
 - If a direct diagnostic tool returns output, treat that output as available to you immediately; do not say you are still waiting for that same diagnostic.
+- If a tool result starts with `[ALREADY COLLECTED`, stop collecting that diagnostic, do not announce a rerun, use the earlier result already in context, and answer the user now.
 - For delegated work, provide the exact command, staged scriptId, tool, URL, target, bounds, and required return shape; authorize protected operations before delegating them
 - The primary agent is responsible for writing all PowerShell commands and scripts. Never ask the subagent to translate an intent into PowerShell.
 - For longer evidence collection, stage the exact script with `stage_delegated_powershell_script`, then delegate the returned scriptId to the troubleshooting subagent.

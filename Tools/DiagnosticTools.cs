@@ -34,7 +34,7 @@ public partial class DiagnosticTools
     private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedPowerShellGrants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DelegatedPowerShellGrant> _delegatedScriptGrants = new(StringComparer.Ordinal);
     private readonly object _delegatedGrantLock = new();
-    private readonly HashSet<string> _completedDirectReadsThisTurn = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _completedDirectReadsThisTurn = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _directReadLock = new();
 
     private sealed record DelegatedPowerShellGrant(string Command, string? SessionName, CommandApprovalState ApprovalState);
@@ -150,18 +150,21 @@ public partial class DiagnosticTools
 
         lock (_directReadLock)
         {
-            if (!_completedDirectReadsThisTurn.Contains(key))
+            if (!_completedDirectReadsThisTurn.TryGetValue(key, out var cachedOutput))
             {
                 message = string.Empty;
                 return false;
             }
-        }
 
-        message = "[ALREADY COLLECTED] This diagnostic was already collected successfully in this turn. Do not call it again; use the earlier result in this conversation and answer the user now.";
-        return true;
+            message = "[ALREADY COLLECTED - USING CACHED RESULT] This direct diagnostic already succeeded in this turn. Do not rerun it or start another health pass; use this cached result and answer the user now."
+                + Environment.NewLine
+                + Environment.NewLine
+                + cachedOutput;
+            return true;
+        }
     }
 
-    private void MarkDirectReadCompleted(string key)
+    private void MarkDirectReadCompleted(string key, string output)
     {
         if (_isSubagentRunActive())
         {
@@ -170,7 +173,7 @@ public partial class DiagnosticTools
 
         lock (_directReadLock)
         {
-            _completedDirectReadsThisTurn.Add(key);
+            _completedDirectReadsThisTurn[key] = output;
         }
     }
 
@@ -405,7 +408,7 @@ public partial class DiagnosticTools
             ? "[OK] Command completed with no output."
             : result.Output;
 
-        MarkDirectReadCompleted(directReadKey);
+        MarkDirectReadCompleted(directReadKey, output);
         _actionLogger?.Invoke(new CommandActionLog(
             DateTimeOffset.Now,
             target,
@@ -667,7 +670,7 @@ public partial class DiagnosticTools
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
         if (result.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
         }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Get system information", codeKind: "Script");
         return output;
@@ -757,7 +760,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read {normalizedLogName} event log", codeKind: "Script");
             return result.Output;
         }
@@ -778,7 +781,7 @@ public partial class DiagnosticTools
             : "[WARN] Event log data unavailable.";
         if (fallbackResult.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, fallbackOutput);
         }
         LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read {normalizedLogName} event log fallback", codeKind: "Script");
         return fallbackOutput;
@@ -859,7 +862,7 @@ public partial class DiagnosticTools
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
         if (result.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, output);
         }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read service status", codeKind: "Script");
         return output;
@@ -916,7 +919,7 @@ public partial class DiagnosticTools
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
         if (result.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
         }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read process list", codeKind: "Script");
         return output;
@@ -975,7 +978,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: "Read disk volume information", codeKind: "Script");
             return result.Output;
         }
@@ -991,7 +994,7 @@ public partial class DiagnosticTools
         var cmdletResult = await _executor.ExecuteAsync(wrappedCmdletFallback);
         if (cmdletResult.Success && string.IsNullOrWhiteSpace(cmdletResult.Error) && !string.IsNullOrWhiteSpace(cmdletResult.Output))
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, cmdletResult.Output);
             LogCommandAction(target, cmdletFallback, cmdletResult.Output, cmdletFallbackApproval.ApprovalState, description: "Read filesystem drive information", codeKind: "Script");
             return cmdletResult.Output;
         }
@@ -1010,7 +1013,7 @@ public partial class DiagnosticTools
             : $"[ERROR] {cimResult.Error}";
         if (cimResult.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, cimOutput);
         }
         LogCommandAction(target, cimFallback, cimOutput, cimFallbackApproval.ApprovalState, description: "Read logical disk information", codeKind: "Script");
         return cimOutput;
@@ -1074,7 +1077,7 @@ public partial class DiagnosticTools
         var output = result.Success ? result.Output : $"[ERROR] {result.Error}";
         if (result.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
         }
         LogCommandAction(target, command, output, approval.ApprovalState, description: "Read network adapter information", codeKind: "Script");
         return output;
@@ -1126,7 +1129,7 @@ public partial class DiagnosticTools
         var result = await _executor.ExecuteAsync(wrappedCommand);
         if (result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(result.Output) && !IsWarnOutput(result.Output))
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, result.Output);
             LogCommandAction(target, primaryCommand, result.Output, primaryApproval.ApprovalState, description: $"Read performance counters ({category})", codeKind: "Script");
             return result.Output;
         }
@@ -1189,7 +1192,7 @@ public partial class DiagnosticTools
             : "[WARN] Performance counter data unavailable.";
         if (fallbackResult.Success)
         {
-            MarkDirectReadCompleted(directReadKey);
+            MarkDirectReadCompleted(directReadKey, fallbackOutput);
         }
         LogCommandAction(target, fallbackCommand, fallbackOutput, fallbackApproval.ApprovalState, description: $"Read fallback performance data ({category})", codeKind: "Script");
         return fallbackOutput;
