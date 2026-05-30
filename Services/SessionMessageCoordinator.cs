@@ -96,16 +96,16 @@ internal static class SessionMessageCoordinator
             request.SetPromptReply(promptIndex, result.ResponseText);
             request.SetLastAssistantMessage(result.ResponseText);
 
+            if (!result.HasError)
+            {
+                await request.ProcessPendingApprovals(cancellationToken);
+            }
+
             if (result.WasLoopGuardAborted)
             {
                 ConsoleUI.ShowWarning("Response stopped because the assistant got stuck after diagnostics. TroubleScout returned control; review /report for the partial response and tool results.");
                 turnOutcome = TurnOutcome.Success;
                 return true;
-            }
-
-            if (!result.HasError)
-            {
-                await request.ProcessPendingApprovals(cancellationToken);
             }
 
             turnOutcome = result.WasCancelled ? TurnOutcome.Cancelled

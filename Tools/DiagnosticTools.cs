@@ -407,8 +407,9 @@ public partial class DiagnosticTools
         var output = string.IsNullOrWhiteSpace(result.Output)
             ? "[OK] Command completed with no output."
             : result.Output;
+        var displayedOutput = isAlternate ? $"[{sessionName}] {output}" : output;
 
-        MarkDirectReadCompleted(directReadKey, output);
+        MarkDirectReadCompleted(directReadKey, displayedOutput);
         _actionLogger?.Invoke(new CommandActionLog(
             DateTimeOffset.Now,
             target,
@@ -417,7 +418,7 @@ public partial class DiagnosticTools
             approvalState,
             "Main Agent PowerShell"));
 
-        return isAlternate ? $"[{sessionName}] {output}" : output;
+        return displayedOutput;
     }
 
     private async Task<string> AuthorizeDelegatedPowerShellAsync(
