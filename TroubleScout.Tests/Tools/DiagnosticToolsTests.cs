@@ -287,18 +287,52 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task RunDelegatedPowerShell_ProtectedCommandWithoutGrant_ShouldNotQueueOrExecute()
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithoutGrant_ShouldQueuePrimaryApproval()
     {
-        var command = "Stop-Service -Name wuauserv";
-        _mockExecutor.Setup(x => x.ValidateCommand(command))
-            .Returns(new CommandValidation(true, true, "Requires approval"));
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            var command = "Stop-Service -Name wuauserv";
+            _mockExecutor.Setup(x => x.ValidateCommand(command))
+                .Returns(new CommandValidation(true, true, "Requires approval"));
 
-        var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
-        var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+            var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
+            var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
 
-        result!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
-        _diagnosticTools.PendingCommands.Should().BeEmpty();
-        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+            result!.ToString().Should().Contain("PENDING APPROVAL");
+            _diagnosticTools.PendingCommands.Should().ContainSingle()
+                .Which.Command.Should().Be(command);
+            _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task RunDelegatedPowerShell_ProtectedCommandWithoutGrantInHeadlessMode_ShouldDenyWithoutQueue()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => true;
+        try
+        {
+            var command = "Stop-Service -Name wuauserv";
+            _mockExecutor.Setup(x => x.ValidateCommand(command))
+                .Returns(new CommandValidation(true, true, "Requires approval"));
+
+            var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
+            var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+            result!.ToString().Should().Contain("DENIED");
+            _diagnosticTools.PendingCommands.Should().BeEmpty();
+            _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
     }
 
     [Fact]
@@ -328,7 +362,9 @@ public class DiagnosticToolsTests : IDisposable
             new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command, ["authorizationId"] = grantId });
 
         first!.ToString().Should().Contain("Service stopped");
-        second!.ToString().Should().Contain("PREAUTHORIZATION REQUIRED");
+        second!.ToString().Should().Contain("PENDING APPROVAL");
+        _diagnosticTools.PendingCommands.Should().ContainSingle()
+            .Which.Command.Should().Be(command);
         _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Once);
         }
         finally
@@ -633,8 +669,12 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task DelegatedPowerShellScript_ProtectedScriptWithoutAuthorization_ShouldRequirePreauthorizationAndCleanup()
+    public async Task DelegatedPowerShellScript_ProtectedScriptWithoutAuthorization_ShouldQueuePrimaryApprovalAndCleanup()
     {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
         using var tempRoot = new TestTempDirectory();
         var toolsWithLogger = new DiagnosticTools(
             _mockExecutor.Object,
@@ -658,9 +698,16 @@ public class DiagnosticToolsTests : IDisposable
         var run = toolsWithLogger.GetTools().First(t => t.Name == "run_delegated_powershell_script");
         var result = (await run.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
 
-        result.Should().Contain("PREAUTHORIZATION REQUIRED");
+        result.Should().Contain("PENDING APPROVAL");
+        toolsWithLogger.PendingCommands.Should().ContainSingle()
+            .Which.Command.Should().Be(script);
         Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
         Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
     }
 
     [Fact]

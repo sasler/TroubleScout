@@ -82,6 +82,62 @@ public class AppSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Load_WhenCostAwarePromptDefaultsPersisted_ShouldMigrateToDelegatedDefaults()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "SystemPromptOverrides": {
+            "investigation_approach": "## Investigation Approach\n- Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it\n- Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data\n- Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings\n- Before delegating high-volume evidence, tell the user: \"Handing this to the subagent to summarize the data.\"\n- Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.\n- Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics\n- Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have\n- Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own\n- Return a complete answer for the current request and then stop; the user can send another query for additional work\n- If one relevant diagnostic approach yields no results, try the next most likely source before concluding\n- Constrain log/event time ranges and result counts; do not collect broad raw dumps by default",
+            "safety": "## Safety\n- Only read-only Get-* commands execute automatically\n- Proven read-only diagnostic tools execute automatically in all modes\n- In Strict mode, mutations and unknown commands require user confirmation\n- In Auto mode, only parseable commands not classified deterministically may be reviewed by the configured subagent model; mutations still require user confirmation\n- For ANY mutating task, you MUST obtain authorization for the exact command and delegate only that authorized operation to the troubleshooting subagent\n- For mutating PowerShell cmdlets that support confirmation prompts, include `-Confirm:$false` when appropriate after the user has approved the action\n- Never claim a command was executed unless the direct or delegated execution tool returned execution output"
+          }
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+
+        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("Delegate routine server evidence");
+        settings.SystemPromptOverrides["investigation_approach"].Should().NotContain("Use direct diagnostic tools");
+        settings.SystemPromptOverrides["safety"].Should().Contain("unless the delegated execution tool returned execution output");
+    }
+
+    [Fact]
+    public void Load_WhenLegacyEvidenceCollectorPromptPersisted_ShouldMigrateToCurrentDelegatedDefault()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "SystemPromptOverrides": {
+            "investigation_approach": "## Investigation Approach\n- Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it\n- Delegate high-volume server evidence collection to the evidence-collection sub-agent and use its concise findings\n- Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics"
+          }
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+
+        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("simple read-only commands");
+        settings.SystemPromptOverrides["investigation_approach"].Should().NotContain("evidence-collection sub-agent");
+    }
+
+    [Fact]
+    public void Load_WhenCustomSafetyPromptContainsIntermediateSentence_ShouldPreserveCustomization()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, """
+        {
+          "SystemPromptOverrides": {
+            "safety": "## Safety\n- Custom local safety rule.\n- Never claim a command was executed unless the direct or delegated execution tool returned execution output"
+          }
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+
+        settings.SystemPromptOverrides!["safety"].Should().Contain("Custom local safety rule");
+        settings.SystemPromptOverrides["safety"].Should().Contain("direct or delegated execution tool");
+    }
+
+    [Fact]
     public void Load_WhenSafeCommandsMissing_ShouldReturnDefaults()
     {
         // Arrange

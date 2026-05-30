@@ -133,6 +133,89 @@ public class CopilotTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_WhenTurnStallsBeforeAnyEvent_ShouldAbortRunawayResponse()
+    {
+        var abortObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new FakeTurnSession();
+        session.AbortAsyncHandler = _ =>
+        {
+            abortObserved.TrySetResult();
+            return Task.CompletedTask;
+        };
+        session.SendAsyncHandler = async (_, _) =>
+        {
+            await abortObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            return "message-id";
+        };
+
+        var result = await CreateRunner(
+            stalledTurnAbortAfter: TimeSpan.FromMilliseconds(50),
+            watchdogCheckInterval: TimeSpan.FromMilliseconds(10))
+            .RunAsync(CreateRequest(session));
+
+        result.WasLoopGuardAborted.Should().BeTrue();
+        result.WasCancelled.Should().BeFalse();
+        result.Success.Should().BeFalse();
+        result.ResponseText.Should().BeEmpty();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenPreToolStatusRepeatsTwiceAfterToolCompletion_ShouldNotAbort()
+    {
+        const string statusLine = "Checking localhost health with a quick bounded pass across system, performance, storage, network, and recent errors.";
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta(statusLine + Environment.NewLine, "message-id"));
+            session.Emit(CreateToolComplete());
+            session.Emit(CreateDelta(statusLine + Environment.NewLine, "message-id"));
+            session.Emit(CreateDelta(statusLine + Environment.NewLine, "message-id"));
+            session.Emit(CreateDelta("Final health answer.", "message-id"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(session));
+
+        result.WasLoopGuardAborted.Should().BeFalse();
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Contain("Final health answer.");
+        session.AbortCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenPostToolStatusRepeatsThreeTimes_ShouldAbortRunawayResponse()
+    {
+        const string statusLine = "Checking localhost health with a quick bounded pass across system, performance, storage, network, and recent errors.";
+        var abortObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new FakeTurnSession();
+        session.AbortAsyncHandler = _ =>
+        {
+            abortObserved.TrySetResult();
+            return Task.CompletedTask;
+        };
+        session.SendAsyncHandler = async (_, _) =>
+        {
+            session.Emit(CreateDelta(statusLine + Environment.NewLine, "message-id"));
+            session.Emit(CreateToolComplete());
+            for (var i = 0; i < 3; i++)
+            {
+                session.Emit(CreateDelta(statusLine + Environment.NewLine, "message-id"));
+            }
+
+            await abortObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            return "message-id";
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(session));
+
+        result.WasLoopGuardAborted.Should().BeTrue();
+        result.WasCancelled.Should().BeFalse();
+        session.AbortCallCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task RunAsync_WhenResponseRepeatsShortOrBoundedMarkdownLines_ShouldNotAbort()
     {
         var session = new FakeTurnSession();
@@ -612,6 +695,17 @@ public class CopilotTurnRunnerTests
         => new()
         {
             Data = new SessionIdleData()
+        };
+
+    private static ToolExecutionCompleteEvent CreateToolComplete()
+        => new()
+        {
+            Data = new ToolExecutionCompleteData
+            {
+                ToolCallId = Guid.NewGuid().ToString("N"),
+                Success = true,
+                Result = new ToolExecutionCompleteResult { Content = "diagnostic output" }
+            }
         };
 
     private static CopilotTurnRunner CreateRunner(

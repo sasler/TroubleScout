@@ -11,6 +11,12 @@ internal sealed class AssistantResponseLoopGuard
     private readonly Queue<string> _recentLines = new();
     private readonly StringBuilder _currentLine = new();
 
+    public void Reset()
+    {
+        _recentLines.Clear();
+        _currentLine.Clear();
+    }
+
     public bool Observe(string text)
     {
         if (string.IsNullOrEmpty(text))

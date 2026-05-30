@@ -46,8 +46,16 @@ internal static class CopilotSessionConfigBuilder
                     "shell.exec",
                     "bash",
                     "powershell",
+                    "run_powershell",
                     "run_delegated_powershell",
-                    "run_delegated_powershell_script"
+                    "run_delegated_powershell_script",
+                    "get_system_info",
+                    "get_event_logs",
+                    "get_services",
+                    "get_processes",
+                    "get_disk_space",
+                    "get_network_info",
+                    "get_performance_counters"
                 ]
             },
             CustomAgents = BuildCustomAgentConfigs(options),

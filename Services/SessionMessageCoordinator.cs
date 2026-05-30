@@ -103,7 +103,19 @@ internal static class SessionMessageCoordinator
 
             if (result.WasLoopGuardAborted)
             {
-                ConsoleUI.ShowWarning("Response stopped because the assistant got stuck after diagnostics. TroubleScout returned control; review /report for the partial response and tool results.");
+                var completedToolDelta = request.GetToolInvocationCount() - toolCountAtEntry;
+                if (completedToolDelta > 0)
+                {
+                    ConsoleUI.ShowWarning("Response stopped because the assistant got stuck after diagnostics. TroubleScout returned control; review /report for the partial response and tool results.");
+                }
+                else if (string.IsNullOrWhiteSpace(result.ResponseText))
+                {
+                    ConsoleUI.ShowWarning("Response stopped because the assistant did not produce any events before the timeout. TroubleScout returned control; try again or switch models with /model.");
+                }
+                else
+                {
+                    ConsoleUI.ShowWarning("Response stopped because the assistant got stuck while responding. TroubleScout returned control; try again or switch models with /model.");
+                }
                 turnOutcome = TurnOutcome.Success;
                 return true;
             }

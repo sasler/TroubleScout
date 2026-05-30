@@ -130,7 +130,7 @@ internal sealed class CopilotTurnRunner
         var responseLoopGuard = new AssistantResponseLoopGuard();
         var wasLoopGuardAborted = false;
         var activeToolExecutions = 0;
-        var hasCompletedToolExecution = 0;
+        var hasResetLoopGuardAfterToolCompletion = false;
         var abortTaskLock = new object();
         Task? abortTask = null;
 
@@ -154,8 +154,7 @@ internal sealed class CopilotTurnRunner
                 request.Callbacks.ShowLiveStatusNotice,
                 watchdogCts.Token,
                 _watchdogCheckInterval,
-                () => Volatile.Read(ref hasCompletedToolExecution) == 1
-                    && Volatile.Read(ref activeToolExecutions) <= 0
+                () => Volatile.Read(ref activeToolExecutions) <= 0
                     && !hasError
                     && !wasCancelled
                     && !wasLoopGuardAborted,
@@ -241,7 +240,11 @@ internal sealed class CopilotTurnRunner
                         {
                             Interlocked.Decrement(ref activeToolExecutions);
                         }
-                        Volatile.Write(ref hasCompletedToolExecution, 1);
+                        if (Volatile.Read(ref activeToolExecutions) <= 0 && !hasResetLoopGuardAfterToolCompletion)
+                        {
+                            responseLoopGuard.Reset();
+                            hasResetLoopGuardAfterToolCompletion = true;
+                        }
                         var completeParentToolCallId = ReadStringProperty(toolComplete.Data, "ParentToolCallId");
                         if (!string.IsNullOrWhiteSpace(completeParentToolCallId))
                         {

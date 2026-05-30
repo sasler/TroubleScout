@@ -215,18 +215,18 @@ public partial class DiagnosticTools
                 if (grant == null)
                 {
                     var reason = string.IsNullOrWhiteSpace(validation.Reason)
-                        ? string.Empty
-                        : $" Reason: {validation.Reason}";
-                    LogCommandAction(
+                        ? "Protected delegated script requires approval"
+                        : validation.Reason;
+                    return QueueProtectedDelegatedApproval(
+                        executor,
                         resolved.Target!,
                         staged.Script,
-                        $"[PREAUTHORIZATION REQUIRED] The primary agent must authorize this exact protected script before delegation.{reason}",
-                        CommandApprovalState.ApprovalRequested,
-                        "Subagent PowerShell",
+                        reason,
+                        resolved.IsAlternate ? staged.SessionName ?? sessionName : null,
+                        $"Approve protected delegated script '{staged.Description}'.",
                         staged.Description,
                         "Script",
                         staged.ScriptId);
-                    return $"[PREAUTHORIZATION REQUIRED] The primary agent must authorize this exact protected script before delegation.{reason}";
                 }
 
                 approvalState = grant.ApprovalState;

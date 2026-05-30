@@ -50,7 +50,7 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(config);
 
         config.Mode.Should().Be(SystemMessageMode.Customize);
-        content.Should().Contain("delegate high-volume evidence and supporting research");
+        content.Should().Contain("Delegate routine server evidence and supporting research");
         content.Should().Contain("Constrain log/event time ranges");
     }
 
@@ -67,18 +67,19 @@ public class SystemPromptTests : IDisposable
     }
 
     [Fact]
-    public async Task DefaultSystemPrompt_RequiresCostAwareSubagentDelegation()
+    public async Task DefaultSystemPrompt_RequiresDelegatedDiagnosticCollection()
     {
         await using var session = new TroubleshootingSession("localhost");
 
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
-        content.Should().Contain("Before each command or script, estimate whether the result is likely to exceed about 50 lines");
-        content.Should().Contain("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads");
-        content.Should().Contain("Handing this to the subagent to summarize the data.");
-        content.Should().Contain("Do not repeat the same successful direct read in a turn");
-        content.Should().Contain("If a direct diagnostic tool returns output, treat that output as available to you immediately");
-        content.Should().NotContain("primary agent must not invoke native shell or PowerShell tools for evidence collection");
+        content.Should().Contain("For health/status requests such as \"how is this server doing\", delegate one bounded evidence pass");
+        content.Should().Contain("delegate separate simple read-only commands instead of a compound script");
+        content.Should().Contain("If delegated PowerShell returns `[PENDING APPROVAL]`");
+        content.Should().Contain("The primary agent must not invoke native shell, PowerShell, or built-in diagnostic helper tools for evidence collection");
+        content.Should().Contain("Delegate PowerShell execution through the troubleshooting subagent");
+        content.Should().NotContain("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads");
+        content.Should().NotContain("Handing this to the subagent to summarize the data.");
         content.Should().Contain("subagents must run exact parent-authored PowerShell");
     }
 
@@ -139,7 +140,7 @@ public class SystemPromptTests : IDisposable
 
         content.Should().Contain("Monitoring MCP server: zabbix");
         content.Should().Contain("Ticketing MCP server: redmine");
-        content.Should().Contain("Delegate high-volume diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
+        content.Should().Contain("Delegate targeted diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
     }
 
     [Fact]
@@ -155,7 +156,7 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
         content.Should().Contain("Ticketing MCP server: redmine");
-        content.Should().Contain("Delegate high-volume diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
+        content.Should().Contain("Delegate targeted diagnostic, monitoring, ticketing, and research lookups to the troubleshooting subagent.");
         content.Should().NotContain("Monitoring MCP server:");
     }
 
@@ -178,7 +179,7 @@ public class SystemPromptTests : IDisposable
         content.Should().Contain("Primary (default): srv01");
         content.Should().Contain("srv02");
         content.Should().Contain("srv03");
-        content.Should().Contain("Use `run_powershell(sessionName: ...)` directly for small, bounded reads");
+        content.Should().Contain("Delegate run_delegated_powershell with sessionName to target each");
         content.Should().Contain("Do NOT call connect_server for these");
     }
 
@@ -208,7 +209,7 @@ public class SystemPromptTests : IDisposable
         content.Should().Contain("ONLY the following commands are available");
         content.Should().Contain("Get-Service");
         content.Should().Contain("Get-EventLog");
-        content.Should().Contain("Use `run_powershell(sessionName: \"srv-jea\")` directly for small, bounded JEA reads");
+        content.Should().Contain("Delegate run_delegated_powershell with sessionName: \"srv-jea\" to target this JEA session.");
         content.Should().Contain("Do NOT use the built-in diagnostic helper tools for srv-jea");
     }
 

@@ -177,6 +177,43 @@ public partial class DiagnosticTools
         }
     }
 
+    private string QueueProtectedDelegatedApproval(
+        PowerShellExecutor executor,
+        string target,
+        string command,
+        string reason,
+        string? sessionName,
+        string? intent,
+        string? description = null,
+        string codeKind = "Command",
+        string? scriptId = null)
+    {
+        if (ConsoleUI.IsInputRedirectedResolver())
+        {
+            const string denied = "[DENIED] Protected delegated execution requires primary-agent approval, which is unavailable in headless mode. Do not retry this operation without authorization.";
+            LogCommandAction(target, command, denied, CommandApprovalState.Denied, "Subagent PowerShell", description, codeKind, scriptId);
+            return denied;
+        }
+
+        var normalizedSession = NormalizeSessionName(sessionName);
+        if (_pendingCommands.Any(pending =>
+                pending.Command.Equals(command, StringComparison.Ordinal)
+                && string.Equals(NormalizeSessionName(pending.ServerName), normalizedSession, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "[PENDING APPROVAL] This protected delegated operation is already queued for primary-agent approval. Do not retry it; stop and let TroubleScout prompt the user.";
+        }
+
+        executor.AddHistoryEntry($"[PENDING APPROVAL] {command}");
+        var pendingIntent = string.IsNullOrWhiteSpace(intent)
+            ? "Protected delegated PowerShell requested by the troubleshooting subagent."
+            : intent;
+        _pendingCommands.Add(new PendingCommand(command, reason, executor == _executor ? null : executor, normalizedSession, pendingIntent));
+
+        const string queued = "[PENDING APPROVAL] Protected delegated operation queued for primary-agent approval. Do not retry it; stop and let TroubleScout prompt the user.";
+        LogCommandAction(target, command, queued, CommandApprovalState.ApprovalRequested, "Subagent PowerShell", description, codeKind, scriptId);
+        return queued;
+    }
+
     private async Task<(bool ShouldExecute, string? TerminalOutput, CommandApprovalState ApprovalState)> EnsureCommandApprovedAsync(
         PowerShellExecutor executor,
         string target,
@@ -516,7 +553,13 @@ public partial class DiagnosticTools
 
             if (grant == null)
             {
-                return "[PREAUTHORIZATION REQUIRED] The primary agent must authorize this exact protected command before delegation.";
+                return QueueProtectedDelegatedApproval(
+                    executor,
+                    resolved.Target!,
+                    command,
+                    validation.Reason ?? "Protected delegated command requires approval",
+                    resolved.IsAlternate ? sessionName : null,
+                    "Approve protected delegated command requested by the troubleshooting subagent.");
             }
 
             approvalState = grant.ApprovalState;
