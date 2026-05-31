@@ -21,6 +21,9 @@ public class CopilotSessionConfigBuilderTests
         config.DefaultAgent.Should().NotBeNull();
         config.DefaultAgent!.ExcludedTools.Should().Contain("web_search");
         config.DefaultAgent.ExcludedTools.Should().NotContain("run_powershell");
+        config.DefaultAgent.ExcludedTools.Should().NotContain("authorize_delegated_powershell");
+        config.DefaultAgent.ExcludedTools.Should().NotContain("authorize_delegated_powershell_script");
+        config.DefaultAgent.ExcludedTools.Should().NotContain("stage_delegated_powershell_script");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell");
         config.DefaultAgent.ExcludedTools.Should().Contain("run_delegated_powershell_script");
         config.DefaultAgent.ExcludedTools.Should().Contain(["shell", "shell.exec", "bash", "powershell"]);
@@ -51,6 +54,7 @@ public class CopilotSessionConfigBuilderTests
         subagent.Description.Should().Contain("High-volume evidence collector");
         subagent.Description.Should().Contain("Do not use for routine health checks");
         subagent.Tools.Should().Contain(["run_delegated_powershell", "run_delegated_powershell_script", "web_search"]);
+        subagent.Tools.Should().NotContain(["authorize_delegated_powershell", "authorize_delegated_powershell_script", "stage_delegated_powershell_script"]);
         subagent.Tools.Should().NotContain(["get_system_info", "get_event_logs", "get_services", "get_processes"]);
         subagent.Tools.Should().NotContain("run_powershell");
     }

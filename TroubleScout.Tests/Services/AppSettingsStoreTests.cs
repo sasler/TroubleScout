@@ -112,9 +112,87 @@ public class AppSettingsStoreTests : IDisposable
         var json = File.ReadAllText(AppSettingsStore.SettingsPath);
 
         settings.SystemPromptOverrides.Should().NotBeNull();
-        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("Never delegate just to summarize a routine server/PC health check");
+        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("Follow the PowerShell Data Collection Flow");
+        settings.SystemPromptOverrides["investigation_approach"].Should().Contain("Use MCP servers, skills, and web research when relevant");
         settings.SystemPromptOverrides["investigation_approach"].Should().Contain("After a successful small diagnostic pass");
-        json.Should().Contain("Never delegate just to summarize a routine server/PC health check");
+        json.Should().Contain("Follow the PowerShell Data Collection Flow");
+    }
+
+    [Fact]
+    public void Load_WhenImmediatePreviousInvestigationDefaultStored_ShouldRefreshDelegationGuidance()
+    {
+        const string previousInvestigationDefault = """
+            ## Investigation Approach
+            - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
+            - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
+            - Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings
+            - Never delegate just to summarize a routine server/PC health check, choose small diagnostics, or avoid writing the final answer yourself
+            - After a successful small diagnostic pass, answer from the collected data instead of calling the troubleshooting subagent for summarization
+            - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
+            - Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.
+            - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
+            - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+            - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
+            - Return a complete answer for the current request and then stop; the user can send another query for additional work
+            - If one relevant diagnostic approach yields no results, try the next most likely source before concluding
+            - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
+            """;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, $$"""
+        {
+          "SystemPromptOverrides": {
+            "investigation_approach": {{System.Text.Json.JsonSerializer.Serialize(previousInvestigationDefault)}}
+          }
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+        var json = File.ReadAllText(AppSettingsStore.SettingsPath);
+
+        settings.SystemPromptOverrides.Should().NotBeNull();
+        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("Follow the PowerShell Data Collection Flow");
+        settings.SystemPromptOverrides["investigation_approach"].Should().NotContain("Before each command or script");
+        settings.SystemPromptOverrides["investigation_approach"].Should().NotContain("Never delegate just to summarize");
+        json.Should().Contain("Follow the PowerShell Data Collection Flow");
+    }
+
+    [Fact]
+    public void Load_WhenInvestigationOverrideExtendsPreviousDefault_ShouldPreserveCustomization()
+    {
+        const string customizedInvestigationDefault = """
+            ## Investigation Approach
+            - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
+            - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
+            - Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings
+            - Never delegate just to summarize a routine server/PC health check, choose small diagnostics, or avoid writing the final answer yourself
+            - After a successful small diagnostic pass, answer from the collected data instead of calling the troubleshooting subagent for summarization
+            - Before delegating high-volume evidence, tell the user: "Handing this to the subagent to summarize the data."
+            - Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.
+            - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
+            - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+            - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
+            - Return a complete answer for the current request and then stop; the user can send another query for additional work
+            - If one relevant diagnostic approach yields no results, try the next most likely source before concluding
+            - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
+            - Custom local instruction: always mention maintenance window constraints.
+            """;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsStore.SettingsPath)!);
+        File.WriteAllText(AppSettingsStore.SettingsPath, $$"""
+        {
+          "SystemPromptOverrides": {
+            "investigation_approach": {{System.Text.Json.JsonSerializer.Serialize(customizedInvestigationDefault)}}
+          }
+        }
+        """);
+
+        var settings = AppSettingsStore.Load();
+
+        settings.SystemPromptOverrides.Should().NotBeNull();
+        settings.SystemPromptOverrides!["investigation_approach"].Should().Contain("Before each command or script");
+        settings.SystemPromptOverrides["investigation_approach"].Should().Contain("Custom local instruction: always mention maintenance window constraints.");
+        settings.SystemPromptOverrides["investigation_approach"].Should().NotContain("Follow the PowerShell Data Collection Flow");
     }
 
     [Fact]

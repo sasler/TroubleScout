@@ -50,7 +50,7 @@ public class SystemPromptTests : IDisposable
         var content = GetCombinedPromptContent(config);
 
         config.Mode.Should().Be(SystemMessageMode.Customize);
-        content.Should().Contain("delegate high-volume evidence and supporting research");
+        content.Should().Contain("## PowerShell Data Collection Flow");
         content.Should().Contain("Constrain log/event time ranges");
     }
 
@@ -73,8 +73,15 @@ public class SystemPromptTests : IDisposable
 
         var content = GetCombinedPromptContent(InvokeCreateSystemMessage(session, "localhost"));
 
-        content.Should().Contain("Before each command or script, estimate whether the result is likely to exceed about 50 lines");
-        content.Should().Contain("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads");
+        content.Split("## PowerShell Data Collection Flow", StringSplitOptions.None).Should().HaveCount(2);
+        content.Should().Contain("If the user prompt can be answered without PowerShell evidence, answer directly.");
+        content.Should().Contain("If PowerShell evidence is needed, the primary agent writes the exact command or script.");
+        content.Should().Contain("Validate whether approval is required before execution or delegation.");
+        content.Should().Contain("If approval is denied, skip the command or script and answer with what was skipped.");
+        content.Should().Contain("Before execution, estimate whether the result is likely to be small or large.");
+        content.Should().Contain("Small PowerShell datasets run directly with `run_powershell`.");
+        content.Should().Contain("Large PowerShell datasets are handed to the `troubleshooting-subagent` to run and summarize.");
+        content.Should().Contain("Large means broad raw output, multi-server collection, unconstrained logs/events, long scripts, or roughly more than 50 lines.");
         content.Should().Contain("Handing this to the subagent to summarize the data.");
         content.Should().Contain("Never delegate just to summarize a routine server/PC health check");
         content.Should().Contain("Do not delegate routine server/PC health checks");

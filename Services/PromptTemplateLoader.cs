@@ -8,6 +8,7 @@ internal static class PromptTemplateIds
     internal const string SystemIdentity = "system.identity";
     internal const string SystemTargetContextDefault = "system.target-context.default";
     internal const string SystemTargetContextJea = "system.target-context.jea";
+    internal const string SystemPowerShellDataCollectionFlow = "system.powershell-data-collection-flow";
     internal const string SystemInvestigationApproach = "system.investigation-approach";
     internal const string SystemResponseFormat = "system.response-format";
     internal const string SystemTroubleshootingApproach = "system.troubleshooting-approach";
@@ -29,6 +30,7 @@ internal static class PromptTemplateIds
         SystemIdentity,
         SystemTargetContextDefault,
         SystemTargetContextJea,
+        SystemPowerShellDataCollectionFlow,
         SystemInvestigationApproach,
         SystemResponseFormat,
         SystemTroubleshootingApproach,
@@ -55,6 +57,7 @@ internal static class PromptTemplateLoader
         [PromptTemplateIds.SystemIdentity] = "TroubleScout.Assets.prompts.system.identity.md",
         [PromptTemplateIds.SystemTargetContextDefault] = "TroubleScout.Assets.prompts.system.target-context-default.md",
         [PromptTemplateIds.SystemTargetContextJea] = "TroubleScout.Assets.prompts.system.target-context-jea.md",
+        [PromptTemplateIds.SystemPowerShellDataCollectionFlow] = "TroubleScout.Assets.prompts.system.powershell-data-collection-flow.md",
         [PromptTemplateIds.SystemInvestigationApproach] = "TroubleScout.Assets.prompts.system.investigation-approach.md",
         [PromptTemplateIds.SystemResponseFormat] = "TroubleScout.Assets.prompts.system.response-format.md",
         [PromptTemplateIds.SystemTroubleshootingApproach] = "TroubleScout.Assets.prompts.system.troubleshooting-approach.md",
