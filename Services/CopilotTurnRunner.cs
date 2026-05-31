@@ -371,7 +371,11 @@ internal sealed class CopilotTurnRunner
                             if (messagePhases.TryGetValue(deltaMessageId, out var phase)
                                 && IsReasoningPhase(phase))
                             {
-                                RenderReasoningText(delta.Data?.DeltaContent);
+                                if (!hasStartedStreaming)
+                                {
+                                    RenderReasoningText(delta.Data?.DeltaContent);
+                                }
+
                                 break;
                             }
 
@@ -419,7 +423,11 @@ internal sealed class CopilotTurnRunner
                             && messagePhases.TryGetValue(messageId.Trim(), out var messagePhase)
                             && IsReasoningPhase(messagePhase))
                         {
-                            RenderReasoningText(msg.Data?.Content);
+                            if (!hasStartedStreaming)
+                            {
+                                RenderFinalReasoningText(msg.Data?.Content);
+                            }
+
                             break;
                         }
 

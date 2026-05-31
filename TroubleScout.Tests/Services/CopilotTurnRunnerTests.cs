@@ -227,6 +227,29 @@ public class CopilotTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldIgnorePhasedReasoningDeltaAfterStreamingStarts()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta("answer", "answer-1"));
+            session.Emit(CreateMessageStart("thinking-1", "thinking"));
+            session.Emit(CreateDelta("late phased reasoning", "thinking-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("answer");
+        reasoning.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldRenderPhasedThinkingFinalMessageAsReasoning()
     {
         var reasoning = new StringBuilder();
@@ -250,6 +273,53 @@ public class CopilotTurnRunnerTests
         result.ResponseText.Should().Be("system is healthy");
         output.ToString().Should().Be("system is healthy");
         reasoning.ToString().Should().Be("checking final signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldIgnorePhasedReasoningFinalMessageAfterStreamingStarts()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateDelta("answer", "answer-1"));
+            session.Emit(CreateMessageStart("thinking-1", "reasoning"));
+            session.Emit(CreateMessage("late final reasoning", "thinking-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("answer");
+        reasoning.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNotDuplicatePhasedReasoningFinalMessageAfterDelta()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessageStart("thinking-1", "thinking"));
+            session.Emit(CreateDelta("checking ", "thinking-1"));
+            session.Emit(CreateMessage("checking signals", "thinking-1"));
+            session.Emit(CreateDelta("answer", "answer-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("answer");
+        reasoning.ToString().Should().Be("checking signals");
     }
 
     [Fact]
