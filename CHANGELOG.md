@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - 🧭 **Align PowerShell subagent flow** - the system prompt now exposes one canonical PowerShell data-collection flow that keeps small reads on the main agent, delegates only large datasets for summarization, and migrates older default prompt overrides to avoid duplicate delegation guidance.
+- 🔐 **Update MessagePack dependency pin** - bump `Nerdbank.MessagePack` to `1.2.4` to clear current NuGet vulnerability warnings while the Copilot SDK dependency chain catches up.
 
 ## [v1.18.3] - 2026-05-30
 

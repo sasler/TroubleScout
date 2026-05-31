@@ -40,9 +40,9 @@
     <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.0-beta.6" />
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.5.4" />
     <!-- GitHub.Copilot.SDK transitively pulls in Nerdbank.MessagePack 1.0.2,
-         which has GHSA-2cwq-pwfr-wcw3. Pin a patched version until the
+         which has known advisories. Pin a patched version until the
          upstream dependency chain refreshes. -->
-    <PackageReference Include="Nerdbank.MessagePack" Version="1.1.62" />
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.4" />
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
     <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
