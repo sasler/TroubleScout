@@ -480,15 +480,24 @@ public static class AppSettingsStore
     }
 
     private static bool IsRetiredDefaultInvestigationApproach(string value) =>
-        string.Equals(value.Trim(), PreviousCostAwareInvestigationApproach.Trim(), StringComparison.Ordinal)
-        || string.Equals(value.Trim(), OlderCostAwareInvestigationApproach.Trim(), StringComparison.Ordinal)
-        || string.Equals(value.Trim(), LegacyDefaultInvestigationApproach.Trim(), StringComparison.Ordinal)
-        || (value.Contains("Before each command or script, estimate whether the result is likely to exceed about 50 lines", StringComparison.Ordinal)
-            && value.Contains("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads", StringComparison.Ordinal)
-            && value.Contains("Handing this to the subagent to summarize the data.", StringComparison.Ordinal)
-            && value.Contains("Constrain log/event time ranges and result counts", StringComparison.Ordinal))
-        || (value.Contains("exhaust ALL available diagnostic tools", StringComparison.Ordinal)
-            && value.Contains("Gather data from ALL relevant sources", StringComparison.Ordinal));
+        IsSameDefaultPrompt(value, PreviousCostAwareInvestigationApproach)
+        || IsSameDefaultPrompt(value, OlderCostAwareInvestigationApproach)
+        || IsSameDefaultPrompt(value, LegacyDefaultInvestigationApproach);
+
+    private static bool IsSameDefaultPrompt(string value, string knownDefault) =>
+        string.Equals(
+            NormalizeDefaultPromptForComparison(value),
+            NormalizeDefaultPromptForComparison(knownDefault),
+            StringComparison.Ordinal);
+
+    private static string NormalizeDefaultPromptForComparison(string value)
+    {
+        var lines = value
+            .ReplaceLineEndings("\n")
+            .Split('\n')
+            .Select(line => line.TrimEnd());
+        return string.Join('\n', lines).Trim();
+    }
 
     private static bool IsLegacyDefaultSafetyGuidance(string value) =>
         string.Equals(value.Trim(), LegacyDefaultSafetyGuidance.Trim(), StringComparison.Ordinal)
