@@ -10,7 +10,7 @@ public static partial class ConsoleUI
         if (string.IsNullOrEmpty(text)) return;
         WithLiveOutputLock(() =>
         {
-            if (Console.IsOutputRedirected)
+            if (IsOutputRedirectedResolver())
             {
                 Console.Write(text);
             }
@@ -30,7 +30,7 @@ public static partial class ConsoleUI
         WithLiveOutputLock(() =>
         {
             EnsureLineBreak();
-            if (!Console.IsOutputRedirected)
+            if (!IsOutputRedirectedResolver())
                 Console.Write("\x1b[38;5;238m\U0001f4ad \x1b[0m");  // dark grey thinking emoji prefix
         });
     }
