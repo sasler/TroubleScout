@@ -59,6 +59,21 @@ public static class AppSettingsStore
     private const string DefaultInvestigationApproach = """
         ## Investigation Approach
         - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
+        - Follow the PowerShell Data Collection Flow for all PowerShell command and script decisions
+        - Use MCP servers, skills, and web research when relevant; delegate those sources only when they are expected to need focused summarization
+        - After a successful small diagnostic pass, answer from the collected data instead of calling the troubleshooting subagent for summarization
+        - Do not repeat the same successful direct read in a turn. Once the tool returns data, interpret it and move toward the answer.
+        - Work proactively within a single investigation pass until you have a clear diagnosis, recommendation, or exhausted relevant diagnostics
+        - Only ask clarifying questions when the initial problem description is genuinely ambiguous or when you need credentials/access that you do not have
+        - Present complete findings, analysis, and recommendations in one response, then hand control back to TroubleScout instead of continuing indefinitely on your own
+        - Return a complete answer for the current request and then stop; the user can send another query for additional work
+        - If one relevant diagnostic approach yields no results, try the next most likely source before concluding
+        - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
+        """;
+
+    private const string PreviousCostAwareInvestigationApproach = """
+        ## Investigation Approach
+        - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
         - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
         - Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads; delegate high-volume evidence and supporting research to the troubleshooting subagent, using exact parent-authored PowerShell commands or staged script IDs, and consume its concise findings
         - Never delegate just to summarize a routine server/PC health check, choose small diagnostics, or avoid writing the final answer yourself
@@ -73,7 +88,7 @@ public static class AppSettingsStore
         - Constrain log/event time ranges and result counts; do not collect broad raw dumps by default
         """;
 
-    private const string PreviousCostAwareInvestigationApproach = """
+    private const string OlderCostAwareInvestigationApproach = """
         ## Investigation Approach
         - Begin with the most relevant diagnostic evidence for the reported symptom and expand only when findings justify it
         - Before each command or script, estimate whether the result is likely to exceed about 50 lines or otherwise produce broad raw data
@@ -466,7 +481,12 @@ public static class AppSettingsStore
 
     private static bool IsRetiredDefaultInvestigationApproach(string value) =>
         string.Equals(value.Trim(), PreviousCostAwareInvestigationApproach.Trim(), StringComparison.Ordinal)
+        || string.Equals(value.Trim(), OlderCostAwareInvestigationApproach.Trim(), StringComparison.Ordinal)
         || string.Equals(value.Trim(), LegacyDefaultInvestigationApproach.Trim(), StringComparison.Ordinal)
+        || (value.Contains("Before each command or script, estimate whether the result is likely to exceed about 50 lines", StringComparison.Ordinal)
+            && value.Contains("Use direct diagnostic tools or `run_powershell` yourself for small, bounded reads", StringComparison.Ordinal)
+            && value.Contains("Handing this to the subagent to summarize the data.", StringComparison.Ordinal)
+            && value.Contains("Constrain log/event time ranges and result counts", StringComparison.Ordinal))
         || (value.Contains("exhaust ALL available diagnostic tools", StringComparison.Ordinal)
             && value.Contains("Gather data from ALL relevant sources", StringComparison.Ordinal));
 

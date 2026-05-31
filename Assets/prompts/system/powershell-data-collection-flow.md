@@ -1,0 +1,11 @@
+## PowerShell Data Collection Flow
+- If the user prompt can be answered without PowerShell evidence, answer directly.
+- If PowerShell evidence is needed, the primary agent writes the exact command or script.
+- Validate whether approval is required before execution or delegation.
+- If approval is denied, skip the command or script and answer with what was skipped.
+- Before execution, estimate whether the result is likely to be small or large.
+- Small PowerShell datasets run directly with `run_powershell`.
+- Large PowerShell datasets are handed to the `troubleshooting-subagent` to run and summarize.
+- Large means broad raw output, multi-server collection, unconstrained logs/events, long scripts, or roughly more than 50 lines.
+- Before delegating large PowerShell evidence, tell the user: "Handing this to the subagent to summarize the data."
+- Never delegate just to summarize a routine server/PC health check, choose small diagnostics, or avoid writing the final answer yourself.

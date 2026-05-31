@@ -358,6 +358,25 @@ public class DiagnosticToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task RunDelegatedPowerShell_ReadOnlyCommand_ShouldExecuteWithoutPreauthorization()
+    {
+        const string command = "Get-Service | Select-Object -First 5 Name,Status";
+        _mockExecutor.Setup(x => x.ValidateCommand(command))
+            .Returns(new CommandValidation(true, false, Classification: CommandSafetyClassification.ReadOnly));
+        _mockExecutor.Setup(x => x.ActualComputerName)
+            .Returns(_targetServer);
+        _mockExecutor.Setup(x => x.ExecuteAsync(It.IsAny<string>(), false))
+            .ReturnsAsync(new PowerShellResult(true, "service output"));
+
+        var tool = _diagnosticTools.GetTools().Single(item => item.Name == "run_delegated_powershell");
+        var result = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments { ["command"] = command });
+
+        result!.ToString().Should().Contain("service output");
+        _mockApprovalCallback.Verify(callback => callback(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), false), Times.Once);
+    }
+
+    [Fact]
     public async Task RunDelegatedPowerShell_ProtectedCommandWithExactGrant_ShouldExecuteOnce()
     {
         var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
@@ -717,6 +736,79 @@ public class DiagnosticToolsTests : IDisposable
         result.Should().Contain("PREAUTHORIZATION REQUIRED");
         Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
         Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_DeniedAuthorization_ShouldNotExecuteAndShouldCleanup()
+    {
+        var originalRedirected = ConsoleUI.IsInputRedirectedResolver;
+        ConsoleUI.IsInputRedirectedResolver = static () => false;
+        try
+        {
+            using var tempRoot = new TestTempDirectory();
+            var toolsWithLogger = new DiagnosticTools(
+                _mockExecutor.Object,
+                _mockApprovalCallback.Object,
+                _targetServer,
+                scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+            const string script = "Stop-Service -Name spooler";
+
+            _mockExecutor.Setup(x => x.ValidateCommand(script))
+                .Returns(new CommandValidation(true, true, "Requires approval", CommandSafetyClassification.Mutating));
+            _mockApprovalCallback.Setup(callback => callback(script, It.IsAny<string>()))
+                .ReturnsAsync(false);
+
+            var tools = toolsWithLogger.GetTools().ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+            var staged = (await tools["stage_delegated_powershell_script"].InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+            {
+                ["script"] = script,
+                ["description"] = "Stop spooler"
+            }))!.ToString();
+            var scriptId = ExtractScriptId(staged!);
+
+            var authorization = (await tools["authorize_delegated_powershell_script"].InvokeAsync(
+                new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+            authorization.Should().Contain("[DENIED]");
+            Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+            Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+            _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
+        }
+        finally
+        {
+            ConsoleUI.IsInputRedirectedResolver = originalRedirected;
+        }
+    }
+
+    [Fact]
+    public async Task DelegatedPowerShellScript_BlockedDuringAuthorization_ShouldNotExecuteAndShouldCleanup()
+    {
+        using var tempRoot = new TestTempDirectory();
+        var toolsWithLogger = new DiagnosticTools(
+            _mockExecutor.Object,
+            _mockApprovalCallback.Object,
+            _targetServer,
+            scriptStore: new DelegatedPowerShellScriptStore(tempRoot.Path));
+        const string script = "Get-Credential";
+
+        _mockExecutor.Setup(x => x.ValidateCommand(script))
+            .Returns(new CommandValidation(false, false, "Credential prompts are blocked", CommandSafetyClassification.Blocked));
+
+        var tools = toolsWithLogger.GetTools().ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+        var staged = (await tools["stage_delegated_powershell_script"].InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments
+        {
+            ["script"] = script,
+            ["description"] = "Blocked credential prompt"
+        }))!.ToString();
+        var scriptId = ExtractScriptId(staged!);
+
+        var authorization = (await tools["authorize_delegated_powershell_script"].InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments { ["scriptId"] = scriptId }))!.ToString();
+
+        authorization.Should().Contain("[BLOCKED]");
+        Directory.EnumerateFiles(tempRoot.Path, "*.ps1").Should().BeEmpty();
+        Directory.EnumerateFiles(tempRoot.Path, "*.json").Should().BeEmpty();
+        _mockExecutor.Verify(x => x.ExecuteAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never);
     }
 
     [Fact]

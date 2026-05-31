@@ -156,6 +156,7 @@ internal static class SystemPromptBuilder
             : $"For the primary JEA endpoint, confirm the source from the targeted session/server name ({SanitizeServerNameForPrompt(effectivePrimary)}) rather than using $env:COMPUTERNAME on the constrained endpoint";
 
         var investigationApproach = PromptTemplateLoader.Render(PromptTemplateIds.SystemInvestigationApproach);
+        var powerShellDataCollectionFlow = PromptTemplateLoader.Render(PromptTemplateIds.SystemPowerShellDataCollectionFlow);
 
         var responseFormat = PromptTemplateLoader.Render(
             PromptTemplateIds.SystemResponseFormat,
@@ -248,6 +249,8 @@ internal static class SystemPromptBuilder
 
         var guidelines = $"""
             {troubleshootingApproach}
+
+            {powerShellDataCollectionFlow}
 
             {investigationApproach}
 
