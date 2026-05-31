@@ -110,9 +110,12 @@ internal sealed class CopilotTurnRunner
         var wasCancelled = false;
         var hasStartedStreaming = false;
         var hasStartedReasoning = false;
+        var isReasoningBlockOpen = false;
         var pendingStreamLineBreak = false;
         var currentStreamMessageId = string.Empty;
         var processedDeltaIds = new HashSet<string>();
+        var messagePhases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var renderedReasoningText = new StringBuilder();
         var responseBuffer = new StringBuilder();
         var pendingRootToolEnvelope = new StringBuilder();
         var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
@@ -166,24 +169,21 @@ internal sealed class CopilotTurnRunner
                         thinkingIndicator.UpdateStatus("Analyzing");
                         break;
 
+                    case AssistantMessageStartEvent messageStart:
+                        var startedMessageId = messageStart.Data?.MessageId;
+                        if (!string.IsNullOrWhiteSpace(startedMessageId))
+                        {
+                            messagePhases[startedMessageId.Trim()] = messageStart.Data?.Phase ?? string.Empty;
+                        }
+                        break;
+
                     case AssistantReasoningDeltaEvent reasoningDelta:
                         if (hasStartedStreaming)
                         {
                             break;
                         }
 
-                        var reasoningDeltaText = reasoningDelta.Data?.DeltaContent ?? string.Empty;
-                        if (!string.IsNullOrEmpty(reasoningDeltaText))
-                        {
-                            if (!hasStartedReasoning)
-                            {
-                                hasStartedReasoning = true;
-                                thinkingIndicator.StopForResponse();
-                                request.Callbacks.StartReasoningBlock();
-                            }
-
-                            request.Callbacks.WriteReasoningText(reasoningDeltaText);
-                        }
+                        RenderReasoningText(reasoningDelta.Data?.DeltaContent);
                         break;
 
                     case AssistantReasoningEvent reasoning:
@@ -192,18 +192,7 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
-                        var reasoningText = reasoning.Data?.Content ?? string.Empty;
-                        if (!string.IsNullOrEmpty(reasoningText))
-                        {
-                            if (!hasStartedReasoning)
-                            {
-                                hasStartedReasoning = true;
-                                thinkingIndicator.StopForResponse();
-                                request.Callbacks.StartReasoningBlock();
-                            }
-
-                            request.Callbacks.WriteReasoningText(reasoningText);
-                        }
+                        RenderReasoningText(reasoning.Data?.Content);
                         break;
 
                     case ToolExecutionStartEvent toolStart:
@@ -379,6 +368,13 @@ internal sealed class CopilotTurnRunner
                         var deltaMessageId = ReadStringProperty(delta.Data, "MessageId", "Id");
                         if (!string.IsNullOrWhiteSpace(deltaMessageId))
                         {
+                            if (messagePhases.TryGetValue(deltaMessageId, out var phase)
+                                && IsReasoningPhase(phase))
+                            {
+                                RenderReasoningText(delta.Data?.DeltaContent);
+                                break;
+                            }
+
                             if (!string.IsNullOrWhiteSpace(currentStreamMessageId)
                                 && !currentStreamMessageId.Equals(deltaMessageId, StringComparison.Ordinal)
                                 && responseBuffer.Length > 0)
@@ -417,6 +413,17 @@ internal sealed class CopilotTurnRunner
                             request.Callbacks.RecordSubagentMessage(messageParentToolCallId, delegatedMessage);
                             break;
                         }
+
+                        var messageId = msg.Data?.MessageId;
+                        if (!string.IsNullOrWhiteSpace(messageId)
+                            && messagePhases.TryGetValue(messageId.Trim(), out var messagePhase)
+                            && IsReasoningPhase(messagePhase))
+                        {
+                            RenderReasoningText(msg.Data?.Content);
+                            break;
+                        }
+
+                        RenderFinalReasoningText(msg.Data?.ReasoningText);
 
                         if (IsRawToolUseEnvelope(msg.Data?.Content))
                         {
@@ -458,6 +465,11 @@ internal sealed class CopilotTurnRunner
                 request.Callbacks.EndAIResponse();
             }
 
+            if (isReasoningBlockOpen)
+            {
+                EndReasoningBlock();
+            }
+
             if (wasCancelled)
             {
                 thinkingIndicator.Dispose();
@@ -486,6 +498,11 @@ internal sealed class CopilotTurnRunner
             if (hasStartedStreaming)
             {
                 request.Callbacks.EndAIResponse();
+            }
+
+            if (isReasoningBlockOpen)
+            {
+                EndReasoningBlock();
             }
 
             thinkingIndicator?.Dispose();
@@ -617,9 +634,9 @@ internal sealed class CopilotTurnRunner
             if (!hasStartedStreaming)
             {
                 hasStartedStreaming = true;
-                if (hasStartedReasoning)
+                if (isReasoningBlockOpen)
                 {
-                    request.Callbacks.EndReasoningBlock();
+                    EndReasoningBlock();
                 }
 
                 thinkingIndicator.StopForResponse();
@@ -636,6 +653,70 @@ internal sealed class CopilotTurnRunner
             responseBuffer.Append(text);
             request.Callbacks.WriteAIResponse(text);
             TryTripGuard(guard.RecordRootAssistantText(text));
+        }
+
+        void RenderReasoningText(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            if (!isReasoningBlockOpen)
+            {
+                hasStartedReasoning = true;
+                isReasoningBlockOpen = true;
+                thinkingIndicator.StopForResponse();
+                request.Callbacks.StartReasoningBlock();
+            }
+
+            renderedReasoningText.Append(text);
+            request.Callbacks.WriteReasoningText(text);
+        }
+
+        void RenderFinalReasoningText(string? text)
+        {
+            var textToRender = GetUnrenderedReasoningText(text);
+            if (string.IsNullOrEmpty(textToRender))
+            {
+                return;
+            }
+
+            var closeBeforeAnswer = !hasStartedReasoning || hasStartedStreaming;
+            RenderReasoningText(textToRender);
+            if (closeBeforeAnswer)
+            {
+                EndReasoningBlock();
+            }
+        }
+
+        void EndReasoningBlock()
+        {
+            if (!isReasoningBlockOpen)
+            {
+                return;
+            }
+
+            isReasoningBlockOpen = false;
+            request.Callbacks.EndReasoningBlock();
+        }
+
+        string GetUnrenderedReasoningText(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            var rendered = renderedReasoningText.ToString();
+            if (rendered.Trim().Equals(text.Trim(), StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            return text.StartsWith(rendered, StringComparison.Ordinal)
+                ? text[rendered.Length..]
+                : text;
         }
 
         void FlushPendingRootToolEnvelopeIfNeeded()
@@ -676,6 +757,11 @@ internal sealed class CopilotTurnRunner
 
     private static string FormatToolCount(long count)
         => $"{count:N0} {(count == 1 ? "tool" : "tools")}";
+
+    private static bool IsReasoningPhase(string? phase)
+        => phase is not null
+            && (phase.Equals("thinking", StringComparison.OrdinalIgnoreCase)
+                || phase.Equals("reasoning", StringComparison.OrdinalIgnoreCase));
 
     internal static async Task RunActivityWatchdogAsync(
         ITurnThinkingIndicator indicator,

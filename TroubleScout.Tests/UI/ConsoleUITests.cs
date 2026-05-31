@@ -840,6 +840,29 @@ public class ConsoleUITests
     }
 
     [Fact]
+    public void WriteReasoningText_WhenOutputIsInteractive_ShouldUseMutedAnsi()
+    {
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+
+            ConsoleUI.WriteReasoningText("thinking...");
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            Console.SetOut(originalOut);
+        }
+
+        sw.ToString().Should().Contain("\x1b[38;5;238mthinking...\x1b[0m");
+    }
+
+    [Fact]
     public void WriteReasoningText_ShouldNotOutput_WhenTextIsEmpty()
     {
         // Arrange
@@ -868,6 +891,31 @@ public class ConsoleUITests
         // Act & Assert — should not throw regardless of terminal capability
         var act = () => ConsoleUI.StartReasoningBlock();
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void StartReasoningBlock_WhenOutputIsInteractive_ShouldWriteThinkingIcon()
+    {
+        var sw = new StringWriter();
+        var originalOut = Console.Out;
+        var originalOutputResolver = ConsoleUI.IsOutputRedirectedResolver;
+        Console.SetOut(sw);
+
+        try
+        {
+            ConsoleUI.IsOutputRedirectedResolver = static () => false;
+
+            ConsoleUI.StartReasoningBlock();
+        }
+        finally
+        {
+            ConsoleUI.IsOutputRedirectedResolver = originalOutputResolver;
+            Console.SetOut(originalOut);
+        }
+
+        var output = sw.ToString();
+        output.Should().Contain("\x1b[38;5;238m");
+        output.Should().Contain("\U0001f4ad");
     }
 
     [Fact]

@@ -158,6 +158,187 @@ public class CopilotTurnRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldRenderReasoningDeltaBeforeAnswer()
+    {
+        var events = new List<string>();
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking signals",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(CreateDelta("answer", "message-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            startReasoningBlock: () => events.Add("start-reasoning"),
+            writeReasoningText: text =>
+            {
+                events.Add($"reasoning:{text}");
+                reasoning.Append(text);
+            },
+            endReasoningBlock: () => events.Add("end-reasoning"),
+            writeAiResponse: text => events.Add($"answer:{text}")));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("answer");
+        reasoning.ToString().Should().Be("checking signals");
+        events.Should().Equal(
+            "start-reasoning",
+            "reasoning:checking signals",
+            "end-reasoning",
+            "answer:answer");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRenderPhasedThinkingDeltasAsReasoning()
+    {
+        var reasoning = new StringBuilder();
+        var output = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessageStart("thinking-1", "thinking"));
+            session.Emit(CreateDelta("checking signals", "thinking-1"));
+            session.Emit(CreateMessageStart("answer-1", "response"));
+            session.Emit(CreateDelta("system is healthy", "answer-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text),
+            writeAiResponse: text => output.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("system is healthy");
+        output.ToString().Should().Be("system is healthy");
+        reasoning.ToString().Should().Be("checking signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRenderPhasedThinkingFinalMessageAsReasoning()
+    {
+        var reasoning = new StringBuilder();
+        var output = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessageStart("thinking-1", "reasoning"));
+            session.Emit(CreateMessage("checking final signals", "thinking-1"));
+            session.Emit(CreateDelta("system is healthy", "answer-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text),
+            writeAiResponse: text => output.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("system is healthy");
+        output.ToString().Should().Be("system is healthy");
+        reasoning.ToString().Should().Be("checking final signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRenderFinalReasoningTextBeforeMessageContent()
+    {
+        var events = new List<string>();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessage("final answer", "message-1", reasoningText: "final thinking"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            startReasoningBlock: () => events.Add("start-reasoning"),
+            writeReasoningText: text => events.Add($"reasoning:{text}"),
+            endReasoningBlock: () => events.Add("end-reasoning"),
+            writeAiResponse: text => events.Add($"answer:{text}")));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("final answer");
+        events.Should().Equal(
+            "start-reasoning",
+            "reasoning:final thinking",
+            "end-reasoning",
+            "answer:final answer");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNotDuplicateFinalReasoningTextAfterStreamingReasoning()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "same thinking",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(CreateMessage("final answer", "message-1", reasoningText: "same thinking"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("final answer");
+        reasoning.ToString().Should().Be("same thinking");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAppendOnlyMissingFinalReasoningSuffixAfterStreamingPrefix()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking ",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(CreateMessage("final answer", "message-1", reasoningText: "checking signals"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("final answer");
+        reasoning.ToString().Should().Be("checking signals");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldSuppressRawRootToolUseJson()
     {
         var output = new StringBuilder();
@@ -755,6 +936,32 @@ public class CopilotTurnRunnerTests
             }
         };
 
+    private static AssistantMessageStartEvent CreateMessageStart(string messageId, string phase)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            Data = new AssistantMessageStartData
+            {
+                MessageId = messageId,
+                Phase = phase
+            }
+        };
+
+    private static AssistantMessageEvent CreateMessage(
+        string content,
+        string messageId,
+        string? reasoningText = null)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            Data = new AssistantMessageData
+            {
+                Content = content,
+                MessageId = messageId,
+                ReasoningText = reasoningText
+            }
+        };
+
     private static ToolExecutionStartEvent CreateToolStart(
         string toolCallId,
         string toolName,
@@ -803,7 +1010,9 @@ public class CopilotTurnRunnerTests
         FakeTurnSession session,
         CancellationToken cancellationToken = default,
         Action<string>? writeAiResponse = null,
+        Action? startReasoningBlock = null,
         Action<string>? writeReasoningText = null,
+        Action? endReasoningBlock = null,
         Action<string, string>? showError = null,
         Action<string>? showLiveStatusNotice = null,
         Action<string, string>? recordSubagentMessageDelta = null,
@@ -822,8 +1031,10 @@ public class CopilotTurnRunnerTests
             CreateThinkingIndicator = createThinkingIndicator ?? (() => new FakeThinkingIndicator()),
             Callbacks = new CopilotTurnCallbacks
             {
+                StartReasoningBlock = startReasoningBlock ?? (() => { }),
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
+                EndReasoningBlock = endReasoningBlock ?? (() => { }),
                 ShowError = showError ?? ((_, _) => { }),
                 ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
                 RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { }),

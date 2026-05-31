@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.5] - 2026-05-31
+
+### Changed
+
+- 💭 **Restore TUI thinking output** - readable Copilot reasoning now streams through the muted thinking block again, including phased thinking messages and final reasoning text, without leaking thinking into saved assistant responses.
+
 ## [v1.18.4] - 2026-05-31
 
 ### Changed
