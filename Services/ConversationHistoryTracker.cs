@@ -62,6 +62,28 @@ internal sealed class ConversationHistoryTracker
         }
     }
 
+    internal void RecordReasoningText(int promptIndex, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        lock (_reportLock)
+        {
+            if (promptIndex < 0 || promptIndex >= _reportPrompts.Count)
+            {
+                return;
+            }
+
+            var current = _reportPrompts[promptIndex];
+            _reportPrompts[promptIndex] = current with
+            {
+                Reasoning = (current.Reasoning ?? string.Empty) + text
+            };
+        }
+    }
+
     internal void SetPromptStatusBar(int promptIndex, StatusBarInfo? statusBar)
     {
         if (statusBar == null)

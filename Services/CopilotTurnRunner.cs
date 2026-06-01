@@ -48,6 +48,7 @@ internal sealed class CopilotTurnCallbacks
 {
     public Action StartReasoningBlock { get; init; } = static () => { };
     public Action<string> WriteReasoningText { get; init; } = static _ => { };
+    public Action<string> RecordReasoningText { get; init; } = static _ => { };
     public Action EndReasoningBlock { get; init; } = static () => { };
     public Action StartAIResponse { get; init; } = static () => { };
     public Action<string> WriteAIResponse { get; init; } = static _ => { };
@@ -680,6 +681,7 @@ internal sealed class CopilotTurnRunner
 
             renderedReasoningText.Append(text);
             request.Callbacks.WriteReasoningText(text);
+            request.Callbacks.RecordReasoningText(text);
         }
 
         void RenderFinalReasoningText(string? text)

@@ -162,6 +162,7 @@ public class CopilotTurnRunnerTests
     {
         var events = new List<string>();
         var reasoning = new StringBuilder();
+        var recordedReasoning = new StringBuilder();
         var session = new FakeTurnSession();
         session.SendAsyncHandler = (_, _) =>
         {
@@ -187,11 +188,13 @@ public class CopilotTurnRunnerTests
                 reasoning.Append(text);
             },
             endReasoningBlock: () => events.Add("end-reasoning"),
-            writeAiResponse: text => events.Add($"answer:{text}")));
+            writeAiResponse: text => events.Add($"answer:{text}"),
+            recordReasoningText: text => recordedReasoning.Append(text)));
 
         result.Success.Should().BeTrue();
         result.ResponseText.Should().Be("answer");
         reasoning.ToString().Should().Be("checking signals");
+        recordedReasoning.ToString().Should().Be("checking signals");
         events.Should().Equal(
             "start-reasoning",
             "reasoning:checking signals",
@@ -1085,6 +1088,7 @@ public class CopilotTurnRunnerTests
         Action? endReasoningBlock = null,
         Action<string, string>? showError = null,
         Action<string>? showLiveStatusNotice = null,
+        Action<string>? recordReasoningText = null,
         Action<string, string>? recordSubagentMessageDelta = null,
         Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null,
@@ -1105,6 +1109,7 @@ public class CopilotTurnRunnerTests
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
                 EndReasoningBlock = endReasoningBlock ?? (() => { }),
+                RecordReasoningText = recordReasoningText ?? (_ => { }),
                 ShowError = showError ?? ((_, _) => { }),
                 ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
                 RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { }),
