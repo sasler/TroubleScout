@@ -196,6 +196,7 @@ internal static class SessionTranscriptService
                     .ToList(),
                 SecretRedactor.Redact(prompt.AgentReply))
             {
+                Reasoning = SecretRedactor.Redact(prompt.Reasoning),
                 StatusBar = RedactStatusBar(prompt.StatusBar)
             })
             .ToList();

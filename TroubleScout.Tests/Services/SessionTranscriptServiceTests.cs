@@ -212,6 +212,7 @@ public sealed class SessionTranscriptServiceTests : IDisposable
         var summary = CreateSummary();
         var prompt = CreatePrompt("Check services") with
         {
+            Reasoning = "Checked service state before answering.",
             StatusBar = new StatusBarInfo("gpt-5", "GitHub Copilot", 10, 20, 30, 1, "session-1")
             {
                 ReasoningEffort = "high",
@@ -244,6 +245,7 @@ public sealed class SessionTranscriptServiceTests : IDisposable
         transcript.Prompts.Should().ContainSingle();
         transcript.Prompts[0].Prompt.Should().Be("Check services");
         transcript.Prompts[0].AgentReply.Should().Be("No obvious failures.");
+        transcript.Prompts[0].Reasoning.Should().Be("Checked service state before answering.");
         transcript.Prompts[0].Actions.Should().ContainSingle();
         transcript.Prompts[0].Actions[0].Command.Should().Be("Get-Service");
         transcript.Prompts[0].StatusBar!.Model.Should().Be("gpt-5");
@@ -269,6 +271,24 @@ public sealed class SessionTranscriptServiceTests : IDisposable
         root.GetProperty("createdAt").GetDateTimeOffset().Should().BeCloseTo(DateTimeOffset.Now, TimeSpan.FromSeconds(5));
         root.GetProperty("summary").GetProperty("currentModel").GetString().Should().Be("gpt-5");
         root.GetProperty("prompts").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public void Save_ShouldRedactReasoningBeforeWriting()
+    {
+        const string secret = "abcdef1234567890";
+        var path = Path.Combine(_tempDir, "session.json");
+        var prompt = CreatePrompt("hello") with
+        {
+            Reasoning = $"Inspected token={secret} before answering."
+        };
+
+        SessionTranscriptService.Save(path, [prompt], summary: null, allowOverwrite: false, out _)
+            .Should().Be(SessionTranscriptSaveResult.Success);
+
+        var json = File.ReadAllText(path);
+        json.Should().NotContain(secret);
+        json.Should().Contain(SecretRedactor.Mask);
     }
 
     private static ReportPromptEntry CreatePrompt(string prompt) =>

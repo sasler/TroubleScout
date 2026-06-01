@@ -162,6 +162,7 @@ public class CopilotTurnRunnerTests
     {
         var events = new List<string>();
         var reasoning = new StringBuilder();
+        var recordedReasoning = new StringBuilder();
         var session = new FakeTurnSession();
         session.SendAsyncHandler = (_, _) =>
         {
@@ -187,16 +188,101 @@ public class CopilotTurnRunnerTests
                 reasoning.Append(text);
             },
             endReasoningBlock: () => events.Add("end-reasoning"),
-            writeAiResponse: text => events.Add($"answer:{text}")));
+            writeAiResponse: text => events.Add($"answer:{text}"),
+            recordReasoningText: text => recordedReasoning.Append(text)));
 
         result.Success.Should().BeTrue();
         result.ResponseText.Should().Be("answer");
         reasoning.ToString().Should().Be("checking signals");
+        recordedReasoning.ToString().Should().Be("checking signals");
         events.Should().Equal(
             "start-reasoning",
             "reasoning:checking signals",
             "end-reasoning",
             "answer:answer");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNotDuplicateCumulativeReasoningDeltas()
+    {
+        var reasoning = new StringBuilder();
+        var recordedReasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking signals",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking signals",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(CreateDelta("answer", "message-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text),
+            recordReasoningText: text => recordedReasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        reasoning.ToString().Should().Be("checking signals");
+        recordedReasoning.ToString().Should().Be("checking signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldKeepSameReasoningTextFromSeparateReasoningStreams()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking",
+                    ReasoningId = "reasoning-1"
+                }
+            });
+            session.Emit(new AssistantReasoningDeltaEvent
+            {
+                Data = new AssistantReasoningDeltaData
+                {
+                    DeltaContent = "checking",
+                    ReasoningId = "reasoning-2"
+                }
+            });
+            session.Emit(CreateDelta("answer", "message-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        reasoning.ToString().Should().Be("checkingchecking");
     }
 
     [Fact]
@@ -224,6 +310,59 @@ public class CopilotTurnRunnerTests
         result.ResponseText.Should().Be("system is healthy");
         output.ToString().Should().Be("system is healthy");
         reasoning.ToString().Should().Be("checking signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNotDuplicateCumulativePhasedThinkingDeltas()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessageStart("thinking-1", "thinking"));
+            session.Emit(CreateDelta("opening thought. ", "thinking-1"));
+            session.Emit(CreateDelta("checking", "thinking-1"));
+            session.Emit(CreateDelta("checking signals", "thinking-1"));
+            session.Emit(CreateDelta("checking  signals\r\n", "thinking-1"));
+            session.Emit(CreateMessageStart("answer-1", "response"));
+            session.Emit(CreateDelta("system is healthy", "answer-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("system is healthy");
+        reasoning.ToString().Should().Be("opening thought. checking signals");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldKeepSameReasoningTextFromSeparatePhasedThinkingMessages()
+    {
+        var reasoning = new StringBuilder();
+        var session = new FakeTurnSession();
+        session.SendAsyncHandler = (_, _) =>
+        {
+            session.Emit(CreateMessageStart("thinking-1", "thinking"));
+            session.Emit(CreateDelta("checking", "thinking-1"));
+            session.Emit(CreateMessageStart("thinking-2", "thinking"));
+            session.Emit(CreateDelta("checking", "thinking-2"));
+            session.Emit(CreateMessageStart("answer-1", "response"));
+            session.Emit(CreateDelta("system is healthy", "answer-1"));
+            session.Emit(CreateIdle());
+            return Task.FromResult("message-id");
+        };
+
+        var result = await CreateRunner().RunAsync(CreateRequest(
+            session,
+            writeReasoningText: text => reasoning.Append(text)));
+
+        result.Success.Should().BeTrue();
+        result.ResponseText.Should().Be("system is healthy");
+        reasoning.ToString().Should().Be("checkingchecking");
     }
 
     [Fact]
@@ -1085,6 +1224,7 @@ public class CopilotTurnRunnerTests
         Action? endReasoningBlock = null,
         Action<string, string>? showError = null,
         Action<string>? showLiveStatusNotice = null,
+        Action<string>? recordReasoningText = null,
         Action<string, string>? recordSubagentMessageDelta = null,
         Action<string, string?, string, TimeSpan?, long?, long?, bool, string?>? showSubagentResult = null,
         Func<ITurnThinkingIndicator>? createThinkingIndicator = null,
@@ -1105,6 +1245,7 @@ public class CopilotTurnRunnerTests
                 WriteAIResponse = writeAiResponse ?? (_ => { }),
                 WriteReasoningText = writeReasoningText ?? (_ => { }),
                 EndReasoningBlock = endReasoningBlock ?? (() => { }),
+                RecordReasoningText = recordReasoningText ?? (_ => { }),
                 ShowError = showError ?? ((_, _) => { }),
                 ShowLiveStatusNotice = showLiveStatusNotice ?? (_ => { }),
                 RecordSubagentMessageDelta = recordSubagentMessageDelta ?? ((_, _) => { }),

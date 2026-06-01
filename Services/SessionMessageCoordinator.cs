@@ -137,6 +137,7 @@ internal static class SessionMessageCoordinator
             {
                 StartReasoningBlock = ConsoleUI.StartReasoningBlock,
                 WriteReasoningText = ConsoleUI.WriteReasoningText,
+                RecordReasoningText = text => request.HistoryTracker.RecordReasoningText(promptIndex, text),
                 EndReasoningBlock = ConsoleUI.EndReasoningBlock,
                 StartAIResponse = ConsoleUI.StartAIResponse,
                 WriteAIResponse = text => ConsoleUI.WriteAIResponse(text),

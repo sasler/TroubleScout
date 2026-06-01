@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add new entries here as they land. -->
 
+## [v1.18.6] - 2026-06-01
+
+### Changed
+
+- 🧾 **Refresh report readability** - session reports now render code and JSON more compactly, show reasoning as collapsed prose, reduce repeated tool plumbing, preserve TUI-style ordering for approval flows, and normalize model labels without misleading source tags.
+
 ## [v1.18.5] - 2026-05-31
 
 ### Changed

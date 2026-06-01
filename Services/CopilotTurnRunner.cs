@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GitHub.Copilot;
 using Spectre.Console;
 using TroubleScout.UI;
@@ -48,6 +49,7 @@ internal sealed class CopilotTurnCallbacks
 {
     public Action StartReasoningBlock { get; init; } = static () => { };
     public Action<string> WriteReasoningText { get; init; } = static _ => { };
+    public Action<string> RecordReasoningText { get; init; } = static _ => { };
     public Action EndReasoningBlock { get; init; } = static () => { };
     public Action StartAIResponse { get; init; } = static () => { };
     public Action<string> WriteAIResponse { get; init; } = static _ => { };
@@ -116,6 +118,7 @@ internal sealed class CopilotTurnRunner
         var processedDeltaIds = new HashSet<string>();
         var messagePhases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var renderedReasoningText = new StringBuilder();
+        var renderedReasoningByStream = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
         var responseBuffer = new StringBuilder();
         var pendingRootToolEnvelope = new StringBuilder();
         var subagentOutput = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
@@ -183,7 +186,9 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
-                        RenderReasoningText(reasoningDelta.Data?.DeltaContent);
+                        RenderIncrementalReasoningText(
+                            reasoningDelta.Data?.DeltaContent,
+                            reasoningDelta.Data?.ReasoningId);
                         break;
 
                     case AssistantReasoningEvent reasoning:
@@ -192,7 +197,7 @@ internal sealed class CopilotTurnRunner
                             break;
                         }
 
-                        RenderReasoningText(reasoning.Data?.Content);
+                        RenderFinalReasoningText(reasoning.Data?.Content);
                         break;
 
                     case ToolExecutionStartEvent toolStart:
@@ -373,7 +378,7 @@ internal sealed class CopilotTurnRunner
                             {
                                 if (!hasStartedStreaming)
                                 {
-                                    RenderReasoningText(delta.Data?.DeltaContent);
+                                    RenderIncrementalReasoningText(delta.Data?.DeltaContent, deltaMessageId);
                                 }
 
                                 break;
@@ -680,6 +685,7 @@ internal sealed class CopilotTurnRunner
 
             renderedReasoningText.Append(text);
             request.Callbacks.WriteReasoningText(text);
+            request.Callbacks.RecordReasoningText(text);
         }
 
         void RenderFinalReasoningText(string? text)
@@ -698,6 +704,16 @@ internal sealed class CopilotTurnRunner
             }
         }
 
+        void RenderIncrementalReasoningText(string? text, string? streamId)
+        {
+            var textToRender = GetUnrenderedReasoningText(text, streamId);
+            if (!string.IsNullOrEmpty(textToRender))
+            {
+                RenderReasoningText(textToRender);
+                AppendRenderedReasoningForStream(streamId, textToRender);
+            }
+        }
+
         void EndReasoningBlock()
         {
             if (!isReasoningBlockOpen)
@@ -709,23 +725,91 @@ internal sealed class CopilotTurnRunner
             request.Callbacks.EndReasoningBlock();
         }
 
-        string GetUnrenderedReasoningText(string? text)
+        string GetUnrenderedReasoningText(string? text, string? streamId = null)
         {
             if (string.IsNullOrEmpty(text))
             {
                 return string.Empty;
             }
 
-            var rendered = renderedReasoningText.ToString();
+            var rendered = GetRenderedReasoningForStream(streamId);
             if (rendered.Trim().Equals(text.Trim(), StringComparison.Ordinal))
             {
                 return string.Empty;
             }
 
-            return text.StartsWith(rendered, StringComparison.Ordinal)
-                ? text[rendered.Length..]
-                : text;
+            if (rendered.EndsWith(text, StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            if (EndsWithNormalizedWhitespace(rendered, text))
+            {
+                return string.Empty;
+            }
+
+            if (text.StartsWith(rendered, StringComparison.Ordinal))
+            {
+                return text[rendered.Length..];
+            }
+
+            var overlap = GetSuffixPrefixOverlapLength(rendered, text);
+            return overlap > 0 ? text[overlap..] : text;
         }
+
+        string GetRenderedReasoningForStream(string? streamId)
+        {
+            if (!string.IsNullOrWhiteSpace(streamId)
+                && renderedReasoningByStream.TryGetValue(streamId, out var streamBuffer))
+            {
+                return streamBuffer.ToString();
+            }
+
+            return string.IsNullOrWhiteSpace(streamId)
+                ? renderedReasoningText.ToString()
+                : string.Empty;
+        }
+
+        void AppendRenderedReasoningForStream(string? streamId, string text)
+        {
+            if (string.IsNullOrWhiteSpace(streamId))
+            {
+                return;
+            }
+
+            if (!renderedReasoningByStream.TryGetValue(streamId, out var streamBuffer))
+            {
+                streamBuffer = new StringBuilder();
+                renderedReasoningByStream[streamId] = streamBuffer;
+            }
+
+            streamBuffer.Append(text);
+        }
+
+        static int GetSuffixPrefixOverlapLength(string rendered, string text)
+        {
+            var max = Math.Min(rendered.Length, text.Length);
+            for (var length = max; length > 0; length--)
+            {
+                if (rendered.AsSpan(rendered.Length - length, length).SequenceEqual(text.AsSpan(0, length)))
+                {
+                    return length;
+                }
+            }
+
+            return 0;
+        }
+
+        static bool EndsWithNormalizedWhitespace(string rendered, string text)
+        {
+            var normalizedRendered = NormalizeWhitespace(rendered);
+            var normalizedText = NormalizeWhitespace(text);
+            return normalizedText.Length > 0
+                && normalizedRendered.EndsWith(normalizedText, StringComparison.Ordinal);
+        }
+
+        static string NormalizeWhitespace(string value)
+            => Regex.Replace(value.Trim(), @"\s+", " ");
 
         void FlushPendingRootToolEnvelopeIfNeeded()
         {
