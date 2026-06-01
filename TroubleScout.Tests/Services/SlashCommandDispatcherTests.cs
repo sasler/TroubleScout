@@ -275,7 +275,7 @@ public class SlashCommandDispatcherTests
         result.Handled.Should().BeTrue();
         writtenPath.Should().Be(reportPath);
         writtenHtml.Should().Contain("Check services");
-        writtenHtml.Should().Contain("gpt-5");
+        writtenHtml.Should().Contain("GPT-5");
     }
 
     [Fact]

@@ -796,9 +796,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     public void BuildReportHtml_ShouldRenderSubagentModelsBillingAndUsage()
     {
         var summary = new ReportSessionSummary(
-            CurrentModel: "gpt-5",
+            CurrentModel: "Claude Sonnet 4.6 [GitHub+BYOK]",
             CurrentProvider: "GitHub Copilot",
-            ModelsUsed: ["gpt-5"],
+            ModelsUsed: ["Claude Sonnet 4.6 [GitHub+BYOK]"],
             ConfiguredMcpServers: [],
             UsedMcpServers: [],
             MonitoringMcp: null,
@@ -822,6 +822,8 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         html.Should().Contain("Subagent model");
         html.Should().Contain("GPT-4.1");
+        html.Should().Contain("Claude Sonnet 4.6");
+        html.Should().NotContain("[GitHub+BYOK]");
         html.Should().NotContain("subagent=gpt-4.1");
         html.Should().Contain("Billing display");
         html.Should().Contain("ai-credits");
@@ -847,6 +849,9 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         html.Should().Contain("data-md-section=\"Reasoning\"");
         html.Should().Contain("<summary>Reasoning</summary>");
+        html.Should().Contain("reasoning-text");
+        html.Should().NotContain("<pre class=\"output-block\">Reviewed CPU");
+        html.Should().Contain("details.reasoning-section .reasoning-text");
         html.Should().Contain("Reviewed CPU, memory, disk, and service evidence.");
         html.Should().Contain("Assistant message");
         html.Should().NotContain("Agent Reply");
@@ -865,6 +870,79 @@ public class TroubleshootingSessionTests : IAsyncDisposable
 
         html.Should().Contain("Approval request");
         html.Should().NotContain("Agent Reply");
+    }
+
+    [Fact]
+    public void BuildReportHtml_ForApprovalPrompt_ShouldRenderReasoningReplyStatusBeforeApprovalAction()
+    {
+        var promptEntry = new ReportPromptEntry(
+            DateTimeOffset.UtcNow,
+            "Check health",
+            [
+                new ReportActionEntry(
+                    DateTimeOffset.UtcNow,
+                    "localhost",
+                    "Get-CimInstance Win32_Processor",
+                    "Command queued for user approval.",
+                    "ApprovalRequested",
+                    "PowerShell")
+            ],
+            "Awaiting your approval to run the health check diagnostics on localhost.")
+        {
+            Reasoning = "Need health data before answering.",
+            StatusBar = new StatusBarInfo("Claude Sonnet 4.6 [GitHub+BYOK]", "GitHub Copilot", 1, 2, 3, 1, "session")
+        };
+
+        var html = ReportHtmlBuilder.BuildReportHtml([promptEntry]);
+
+        html.IndexOf("data-md-section=\"Reasoning\"", StringComparison.Ordinal)
+            .Should().BeLessThan(html.IndexOf("Approval request", StringComparison.Ordinal));
+        html.IndexOf("Approval request", StringComparison.Ordinal)
+            .Should().BeLessThan(html.IndexOf("data-md-section=\"Command\"", StringComparison.Ordinal));
+        html.Should().NotContain("[GitHub+BYOK]");
+    }
+
+    [Fact]
+    public void BuildReportHtml_ShouldHideLowSignalPrimaryToolNoise()
+    {
+        var promptEntry = new ReportPromptEntry(
+            DateTimeOffset.UtcNow,
+            "Check health",
+            [
+                new ReportActionEntry(DateTimeOffset.UtcNow, "Primary agent", "report_intent", "Intent logged", "Tool", "Tool"),
+                new ReportActionEntry(
+                    DateTimeOffset.UtcNow,
+                    "Primary agent",
+                    "write_powershell",
+                    "[error] <unable to send input. no command with id: health1 is currently running>",
+                    "Failed",
+                    "Tool")
+                {
+                    Success = false,
+                    Arguments = "{\"shellId\":\"health1\",\"input\":\"Get-Process\"}"
+                },
+                new ReportActionEntry(
+                    DateTimeOffset.UtcNow,
+                    "Primary agent",
+                    "write_powershell",
+                    "queued",
+                    "Tool",
+                    "Tool")
+                {
+                    Success = true,
+                    Arguments = "{\"shellId\":\"health2\",\"input\":\"Get-Process | Select-Object Name\"}"
+                },
+                new ReportActionEntry(DateTimeOffset.UtcNow, "localhost", "Get-Process", "ok", "StrictReadOnly", "PowerShell")
+            ],
+            "done");
+
+        var html = ReportHtmlBuilder.BuildReportHtml([promptEntry]);
+
+        html.Should().NotContain("report_intent");
+        html.Should().NotContain("write_powershell");
+        html.Should().NotContain("health2");
+        html.Should().NotContain("unable to send input");
+        html.Should().Contain("Get-Process");
     }
 
     [Fact]

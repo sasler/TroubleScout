@@ -67,7 +67,10 @@ internal static class ReportHtmlBuilder
             summary = RedactSummary(summary);
         }
 
-        var totalActions = prompts.Sum(prompt => prompt.Actions.Count);
+        var visiblePromptActions = prompts
+            .Select(prompt => GetVisibleReportActions(prompt.Actions).ToList())
+            .ToList();
+        var totalActions = visiblePromptActions.Sum(actions => actions.Count);
         var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
 
         // Compute session duration from first to last prompt
@@ -89,9 +92,9 @@ internal static class ReportHtmlBuilder
         var approvedCount = 0;
         var blockedCount = 0;
         var deniedCount = 0;
-        foreach (var p in prompts)
+        for (var p = 0; p < prompts.Count; p++)
         {
-            foreach (var a in p.Actions)
+            foreach (var a in visiblePromptActions[p])
             {
                 switch (a.SafetyApproval)
                 {
@@ -287,6 +290,9 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("    .session-grid dt { color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }");
         sb.AppendLine("    .session-grid dd { margin: 0; color: #e2e8f0; word-break: break-word; }");
         sb.AppendLine("    .reasoning-section { margin-top: 12px; }");
+        sb.AppendLine("    .reasoning-text { color: #aebbd0; font-size: 0.92rem; line-height: 1.6; }");
+        sb.AppendLine("    .reasoning-text p { margin: 0 0 0.65em; }");
+        sb.AppendLine("    .reasoning-text p:last-child { margin-bottom: 0; }");
 
         // TOC
         sb.AppendLine("    .toc { position: fixed; top: 80px; right: 16px; max-width: 240px; max-height: calc(100vh - 120px); overflow-y: auto; background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; font-size: 0.82rem; z-index: 50; }");
@@ -415,7 +421,7 @@ internal static class ReportHtmlBuilder
             sb.AppendLine("    <div class=\"session-header\">");
             sb.AppendLine("      <h2>Session</h2>");
             sb.AppendLine("      <dl class=\"session-grid\">");
-            sb.AppendLine($"        <div><dt>Model</dt><dd>{HtmlEncode(summary.CurrentModel)}</dd></div>");
+            sb.AppendLine($"        <div><dt>Model</dt><dd>{HtmlEncode(FormatModelNameForReport(summary.CurrentModel))}</dd></div>");
             sb.AppendLine($"        <div><dt>Provider</dt><dd>{HtmlEncode(summary.CurrentProvider)}</dd></div>");
             sb.AppendLine($"        <div><dt>Target</dt><dd>{HtmlEncode(summary.TargetServer)}</dd></div>");
             sb.AppendLine($"        <div><dt>Execution mode</dt><dd>{HtmlEncode(summary.ExecutionMode)}</dd></div>");
@@ -495,7 +501,9 @@ internal static class ReportHtmlBuilder
         for (var i = 0; i < prompts.Count; i++)
         {
             var prompt = prompts[i];
+            var actions = visiblePromptActions[i];
             var promptTime = prompt.Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
+            var renderNarrativeFirst = ShouldRenderNarrativeBeforeActions(prompt);
 
             sb.AppendLine("      <div class=\"timeline-item\">");
             sb.AppendLine("        <div class=\"timeline-dot\"></div>");
@@ -506,20 +514,25 @@ internal static class ReportHtmlBuilder
             sb.AppendLine($"              <div class=\"prompt-text\">{HtmlEncode(prompt.Prompt)}</div>");
             sb.AppendLine("              <div class=\"prompt-meta\">");
             sb.AppendLine($"                <span class=\"prompt-meta-item\">&#128337; {HtmlEncode(promptTime)}</span>");
-            sb.AppendLine($"                <span class=\"prompt-meta-item\">&#9881; {prompt.Actions.Count} action{(prompt.Actions.Count == 1 ? "" : "s")}</span>");
+            sb.AppendLine($"                <span class=\"prompt-meta-item\">&#9881; {actions.Count} action{(actions.Count == 1 ? "" : "s")}</span>");
             sb.AppendLine("              </div>");
             sb.AppendLine("            </div>");
             sb.AppendLine("            <svg class=\"prompt-chevron\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z\" clip-rule=\"evenodd\" /></svg>");
             sb.AppendLine("          </summary>");
             sb.AppendLine("          <div class=\"prompt-body\">");
 
-            if (prompt.Actions.Count == 0)
+            if (renderNarrativeFirst)
+            {
+                AppendPromptNarrative(sb, prompt, i);
+            }
+
+            if (actions.Count == 0)
             {
                 sb.AppendLine("            <div class=\"no-actions\">No actions captured for this prompt.</div>");
             }
             else
             {
-                foreach (var action in prompt.Actions)
+                foreach (var action in actions)
                 {
                     var actionTime = action.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
                     var isMcp = string.Equals(action.Source, "MCP", StringComparison.OrdinalIgnoreCase);
@@ -614,48 +627,10 @@ internal static class ReportHtmlBuilder
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(prompt.Reasoning))
+            if (!renderNarrativeFirst)
             {
-                sb.AppendLine("            <details class=\"inner-section reasoning-section\" data-md-section=\"Reasoning\">");
-                sb.AppendLine("              <summary>Reasoning</summary>");
-                sb.AppendLine("              <div class=\"inner-content\">");
-                sb.AppendLine($"                <div class=\"code-wrap\"><button class=\"copy-btn\" onclick=\"copyCode(this)\">Copy</button><pre class=\"output-block\">{HtmlEncode(prompt.Reasoning!.Trim())}</pre></div>");
-                sb.AppendLine("              </div>");
-                sb.AppendLine("            </details>");
+                AppendPromptNarrative(sb, prompt, i);
             }
-
-            // Assistant message bubble (markdown rendered)
-            sb.AppendLine("            <div class=\"reply-bubble\">");
-            sb.AppendLine("              <div class=\"reply-header\">");
-            sb.AppendLine("                <div class=\"reply-avatar\">");
-                sb.AppendLine("                  <svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z\" /><path d=\"M20 21v-2a4 4 0 0 0-3-3.87\" /><path d=\"M4 21v-2a4 4 0 0 1 3-3.87\" /><circle cx=\"12\" cy=\"17\" r=\"4\" fill=\"rgba(255,255,255,0.15)\" stroke=\"#fff\" /></svg>");
-            sb.AppendLine("                </div>");
-            sb.AppendLine($"                <span class=\"reply-label\">{HtmlEncode(GetReplyLabel(prompt.AgentReply))}</span>");
-            sb.AppendLine("              </div>");
-            if (string.IsNullOrWhiteSpace(prompt.AgentReply))
-            {
-                sb.AppendLine("              <div class=\"muted\">No assistant reply captured for this prompt.</div>");
-            }
-            else
-            {
-                // Stash raw markdown in a script tag to avoid HTML escaping issues, render via marked+DOMPurify on load.
-                sb.AppendLine($"              <script type=\"text/markdown\" class=\"reply-md-source\" data-target=\"reply-md-{i + 1}\">{EscapeForScriptBlock(prompt.AgentReply)}</script>");
-                sb.AppendLine($"              <div class=\"reply-markdown\" id=\"reply-md-{i + 1}\" data-md-render>{HtmlEncode(prompt.AgentReply)}</div>");
-                sb.AppendLine("              <div class=\"reply-actions\">");
-                sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-md=\"reply-md-{i + 1}\">&#128203; Copy markdown</button>");
-                sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-html=\"reply-md-{i + 1}\">&#10063; Copy rendered</button>");
-                sb.AppendLine("              </div>");
-            }
-
-            // Per-prompt status bar (model + tokens + tools)
-            if (prompt.StatusBar != null)
-            {
-                sb.AppendLine("            <div class=\"statusbar\">");
-                AppendStatusBarChips(sb, prompt.StatusBar);
-                sb.AppendLine("            </div>");
-            }
-
-            sb.AppendLine("            </div>");
 
             sb.AppendLine("          </div>");
             sb.AppendLine("        </details>");
@@ -755,13 +730,11 @@ internal static class ReportHtmlBuilder
         sb.AppendLine("            });");
         sb.AppendLine("          });");
         sb.AppendLine("        }");
-        sb.AppendLine("        var reasoning = card.querySelector('details.reasoning-section pre');");
+        sb.AppendLine("        var reasoning = card.querySelector('details.reasoning-section .reasoning-text');");
         sb.AppendLine("        if (reasoning) {");
         sb.AppendLine("          lines.push('### Reasoning');");
         sb.AppendLine("          lines.push('');");
-        sb.AppendLine("          lines.push('```');");
-        sb.AppendLine("          lines.push(reasoning.textContent.replace(/\\s+$/,''));");
-        sb.AppendLine("          lines.push('```');");
+        sb.AppendLine("          lines.push(reasoning.textContent.trim().replace(/\\n\\s*/g, '\\n\\n'));");
         sb.AppendLine("          lines.push('');");
         sb.AppendLine("        }");
         sb.AppendLine("        var src = card.querySelector('script.reply-md-source');");
@@ -901,6 +874,134 @@ internal static class ReportHtmlBuilder
             ReasoningEffort = SecretRedactor.Redact(statusBar.ReasoningEffort),
             SessionCostEstimate = SecretRedactor.Redact(statusBar.SessionCostEstimate)
         };
+    }
+
+    private static IReadOnlyList<ReportActionEntry> GetVisibleReportActions(IEnumerable<ReportActionEntry> actions)
+    {
+        var entries = actions.ToList();
+        var hasCapturedPowerShellAction = entries.Any(IsCapturedPowerShellAction);
+        return entries
+            .Where(action => !IsLowSignalReportAction(action, hasCapturedPowerShellAction))
+            .ToList();
+    }
+
+    private static bool IsLowSignalReportAction(ReportActionEntry action, bool hasCapturedPowerShellAction)
+    {
+        if (!string.Equals(action.Source, "Tool", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (IsOneOf(action.Command, "report_intent", "list_powershell", "tool_search_tool_regex"))
+        {
+            return true;
+        }
+
+        if (!IsOneOf(action.Command, "write_powershell", "read_powershell"))
+        {
+            return false;
+        }
+
+        return hasCapturedPowerShellAction
+            || (action.Success == false && action.Output.Contains("unable to", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsOneOf(string value, params string[] candidates)
+        => candidates.Any(candidate => string.Equals(value, candidate, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsCapturedPowerShellAction(ReportActionEntry action)
+        => !string.Equals(action.Source, "Tool", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(action.Source, "PowerShell", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action.CodeKind, "PowerShell", StringComparison.OrdinalIgnoreCase));
+
+    private static bool ShouldRenderNarrativeBeforeActions(ReportPromptEntry prompt)
+        => IsApprovalRequestReply(prompt.AgentReply);
+
+    private static void AppendPromptNarrative(StringBuilder sb, ReportPromptEntry prompt, int promptIndex)
+    {
+        AppendReasoningSection(sb, prompt.Reasoning);
+        AppendReplyBubble(sb, prompt, promptIndex);
+    }
+
+    private static void AppendReasoningSection(StringBuilder sb, string? reasoning)
+    {
+        if (string.IsNullOrWhiteSpace(reasoning))
+        {
+            return;
+        }
+
+        sb.AppendLine("            <details class=\"inner-section reasoning-section\" data-md-section=\"Reasoning\">");
+        sb.AppendLine("              <summary>Reasoning</summary>");
+        sb.AppendLine("              <div class=\"inner-content\">");
+        sb.AppendLine("                <div class=\"reasoning-text\">");
+        foreach (var paragraph in FormatReasoningParagraphs(reasoning))
+        {
+            sb.AppendLine($"                  <p>{HtmlEncode(paragraph)}</p>");
+        }
+        sb.AppendLine("                </div>");
+        sb.AppendLine("              </div>");
+        sb.AppendLine("            </details>");
+    }
+
+    private static IReadOnlyList<string> FormatReasoningParagraphs(string reasoning)
+    {
+        var normalized = Regex.Replace(reasoning.Trim(), @"(?<=[.!?])(?=[A-Z])", " ");
+        var sentences = Regex
+            .Split(normalized, @"(?<=[.!?])\s+")
+            .Select(sentence => sentence.Trim())
+            .Where(sentence => sentence.Length > 0)
+            .ToList();
+
+        var result = new List<string>();
+        foreach (var sentence in sentences)
+        {
+            if (result.Count > 0
+                && string.Equals(
+                    Regex.Replace(result[^1], @"\s+", " "),
+                    Regex.Replace(sentence, @"\s+", " "),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            result.Add(sentence);
+        }
+
+        return result.Count == 0 ? [normalized] : result;
+    }
+
+    private static void AppendReplyBubble(StringBuilder sb, ReportPromptEntry prompt, int promptIndex)
+    {
+        sb.AppendLine("            <div class=\"reply-bubble\">");
+        sb.AppendLine("              <div class=\"reply-header\">");
+        sb.AppendLine("                <div class=\"reply-avatar\">");
+        sb.AppendLine("                  <svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z\" /><path d=\"M20 21v-2a4 4 0 0 0-3-3.87\" /><path d=\"M4 21v-2a4 4 0 0 1 3-3.87\" /><circle cx=\"12\" cy=\"17\" r=\"4\" fill=\"rgba(255,255,255,0.15)\" stroke=\"#fff\" /></svg>");
+        sb.AppendLine("                </div>");
+        sb.AppendLine($"                <span class=\"reply-label\">{HtmlEncode(GetReplyLabel(prompt.AgentReply))}</span>");
+        sb.AppendLine("              </div>");
+        if (string.IsNullOrWhiteSpace(prompt.AgentReply))
+        {
+            sb.AppendLine("              <div class=\"muted\">No assistant reply captured for this prompt.</div>");
+        }
+        else
+        {
+            // Stash raw markdown in a script tag to avoid HTML escaping issues, render via marked+DOMPurify on load.
+            sb.AppendLine($"              <script type=\"text/markdown\" class=\"reply-md-source\" data-target=\"reply-md-{promptIndex + 1}\">{EscapeForScriptBlock(prompt.AgentReply)}</script>");
+            sb.AppendLine($"              <div class=\"reply-markdown\" id=\"reply-md-{promptIndex + 1}\" data-md-render>{HtmlEncode(prompt.AgentReply)}</div>");
+            sb.AppendLine("              <div class=\"reply-actions\">");
+            sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-md=\"reply-md-{promptIndex + 1}\">&#128203; Copy markdown</button>");
+            sb.AppendLine($"                <button class=\"reply-action-btn\" type=\"button\" data-copy-html=\"reply-md-{promptIndex + 1}\">&#10063; Copy rendered</button>");
+            sb.AppendLine("              </div>");
+        }
+
+        if (prompt.StatusBar != null)
+        {
+            sb.AppendLine("            <div class=\"statusbar\">");
+            AppendStatusBarChips(sb, prompt.StatusBar);
+            sb.AppendLine("            </div>");
+        }
+
+        sb.AppendLine("            </div>");
     }
 
     internal static string HtmlEncode(string value)
@@ -1147,8 +1248,8 @@ internal static class ReportHtmlBuilder
             return "inherit";
         }
 
-        var trimmed = model.Trim();
-        if (trimmed.Contains(" ", StringComparison.Ordinal) || trimmed.Contains("[", StringComparison.Ordinal))
+        var trimmed = StripModelSourceTags(model.Trim());
+        if (trimmed.Contains(" ", StringComparison.Ordinal))
         {
             return trimmed;
         }
@@ -1172,6 +1273,9 @@ internal static class ReportHtmlBuilder
         return string.Join(' ', parts.Select(TitlePart));
     }
 
+    private static string StripModelSourceTags(string model)
+        => Regex.Replace(model, @"\s*\[[^\]]+\]\s*$", string.Empty).Trim();
+
     private static readonly JsonSerializerOptions IndentedJsonOptions = new()
     {
         WriteIndented = true
@@ -1181,7 +1285,7 @@ internal static class ReportHtmlBuilder
     {
         if (!string.IsNullOrWhiteSpace(info.Model))
         {
-            sb.AppendLine($"              <span class=\"sb-chip sb-model\" title=\"Model\">&#129504; <strong>{HtmlEncode(info.Model!)}</strong></span>");
+            sb.AppendLine($"              <span class=\"sb-chip sb-model\" title=\"Model\">&#129504; <strong>{HtmlEncode(FormatModelNameForReport(info.Model!))}</strong></span>");
         }
 
         if (!string.IsNullOrWhiteSpace(info.Provider))
