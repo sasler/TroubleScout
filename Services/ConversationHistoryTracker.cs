@@ -24,6 +24,7 @@ internal sealed class ConversationHistoryTracker
     private readonly List<ReportPromptEntry> _reportPrompts = [];
     private readonly object _reportLock = new();
     private int _lastPromptIndex = -1;
+    private readonly Dictionary<int, StringBuilder> _promptReasoningBuffers = new();
     private readonly Dictionary<string, McpActionLocation> _pendingMcpActions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, McpActionLocation> _pendingSubagentActions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, McpActionLocation> _pendingSubagentToolActions = new(StringComparer.Ordinal);
@@ -77,10 +78,17 @@ internal sealed class ConversationHistoryTracker
             }
 
             var current = _reportPrompts[promptIndex];
-            _reportPrompts[promptIndex] = current with
+            if (!_promptReasoningBuffers.TryGetValue(promptIndex, out var buffer))
             {
-                Reasoning = (current.Reasoning ?? string.Empty) + text
-            };
+                buffer = new StringBuilder(current.Reasoning);
+                _promptReasoningBuffers[promptIndex] = buffer;
+                if (!string.IsNullOrEmpty(current.Reasoning))
+                {
+                    _reportPrompts[promptIndex] = current with { Reasoning = null };
+                }
+            }
+
+            buffer.Append(text);
         }
     }
 
@@ -387,6 +395,7 @@ internal sealed class ConversationHistoryTracker
         {
             _reportPrompts.Clear();
             _lastPromptIndex = -1;
+            _promptReasoningBuffers.Clear();
             _pendingMcpActions.Clear();
             _pendingSubagentActions.Clear();
             _pendingSubagentToolActions.Clear();
@@ -401,6 +410,7 @@ internal sealed class ConversationHistoryTracker
             _reportPrompts.Clear();
             _reportPrompts.AddRange(SessionTranscriptService.RedactPrompts(prompts));
             _lastPromptIndex = _reportPrompts.Count - 1;
+            _promptReasoningBuffers.Clear();
             _pendingMcpActions.Clear();
             _pendingSubagentActions.Clear();
             _pendingSubagentToolActions.Clear();
@@ -428,7 +438,7 @@ internal sealed class ConversationHistoryTracker
     {
         lock (_reportLock)
         {
-            return SessionTranscriptService.RedactPrompts(_reportPrompts);
+            return SessionTranscriptService.RedactPrompts(MaterializeReasoningBuffers());
         }
     }
 
@@ -499,6 +509,20 @@ internal sealed class ConversationHistoryTracker
 
             _reportPrompts[_lastPromptIndex].Actions.Add(actionEntry);
         }
+    }
+
+    private List<ReportPromptEntry> MaterializeReasoningBuffers()
+    {
+        var prompts = new List<ReportPromptEntry>(_reportPrompts.Count);
+        for (var i = 0; i < _reportPrompts.Count; i++)
+        {
+            var prompt = _reportPrompts[i];
+            prompts.Add(_promptReasoningBuffers.TryGetValue(i, out var reasoning)
+                ? prompt with { Reasoning = reasoning.ToString() }
+                : prompt);
+        }
+
+        return prompts;
     }
 
     private static string TruncateForRecovery(string? value, int maxChars)

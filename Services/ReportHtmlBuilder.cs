@@ -68,7 +68,7 @@ internal static class ReportHtmlBuilder
         }
 
         var visiblePromptActions = prompts
-            .Select(prompt => GetVisibleReportActions(prompt.Actions).ToList())
+            .Select(prompt => GetVisibleReportActions(prompt.Actions))
             .ToList();
         var totalActions = visiblePromptActions.Sum(actions => actions.Count);
         var generatedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
@@ -1274,7 +1274,9 @@ internal static class ReportHtmlBuilder
     }
 
     private static string StripModelSourceTags(string model)
-        => Regex.Replace(model, @"\s*\[[^\]]+\]\s*$", string.Empty).Trim();
+        => ModelSourceTagRegex.Replace(model, string.Empty).Trim();
+
+    private static readonly Regex ModelSourceTagRegex = new(@"\s*\[[^\]]+\]\s*$", RegexOptions.Compiled);
 
     private static readonly JsonSerializerOptions IndentedJsonOptions = new()
     {

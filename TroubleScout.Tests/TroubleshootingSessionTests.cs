@@ -1220,6 +1220,21 @@ public class TroubleshootingSessionTests : IAsyncDisposable
     }
 
     [Fact]
+    public void GetRecordedPromptSnapshot_ShouldMaterializeReasoningDeltas()
+    {
+        var tracker = new ConversationHistoryTracker();
+        var promptIndex = tracker.RecordPrompt("status check");
+
+        tracker.RecordReasoningText(promptIndex, "checking ");
+        tracker.RecordReasoningText(promptIndex, "signals");
+
+        var snapshot = tracker.GetRecordedPromptSnapshot();
+
+        snapshot.Should().ContainSingle();
+        snapshot.Single().Reasoning.Should().Be("checking signals");
+    }
+
+    [Fact]
     public void RenderCommandHtml_ShouldApplyPowerShellSyntaxHighlighting()
     {
         // Arrange
